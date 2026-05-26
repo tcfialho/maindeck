@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: © 2026 Isaac Freund
+# SPDX-License-Identifier: 0BSD
+
+/build/
+/.cache/
+
+# Meson/Ninja local artifacts
+compile_commands.json
+.ninja_*
+
+# Compiler outputs
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+
+# Local logs and editor state
+*.log
+*.swp
+*~
