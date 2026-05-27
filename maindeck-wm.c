@@ -899,9 +899,8 @@ static void seat_manage(struct Seat *seat) {
 	if (seat->interacted != NULL && seat->interacted != seat->focused) {
 		int32_t idx = window_index(seat->interacted);
 		if (idx == 1) {
-			// Clicked DECK window → promote it to MAIN
-			move_first(seat->interacted);
-			wm.target_index = 0;
+			// Clicked DECK window → make it the ALVO (don't promote)
+			wm.target_index = 1;
 			wm.maximized = false;
 		} else if (idx == 0) {
 			wm.target_index = 0;
