@@ -146,12 +146,9 @@ static pthread_mutex_t state_mu = PTHREAD_MUTEX_INITIALIZER;
 #define HANDLE_MAP  256
 
 /* Server-side IDs sent in event new_id arguments must be in libwayland's
- * server object ID range. River forwards other server-created objects such as
- * wl_tablet starting at 0xFF000000. With the per-client foreign-toplevel bind
- * handled locally, River no longer allocates real toplevel handles on that
- * client connection, so the next natural server IDs are safe for synthetic
- * taskbar handles and keep libwayland's server-object map dense. */
-#define SERVER_ID_BASE 0xFF000001u
+ * server object ID range. libwayland expects these IDs to be allocated
+ * sequentially from the start of that range. */
+#define SERVER_ID_BASE 0xFF000000u
 #define FAKE_OUTPUT_GLOBAL 0xE0000000u
 
 struct HEntry {
@@ -187,15 +184,12 @@ struct Client {
     uint32_t       registry_ids[32];
     int            registry_n;
     uint32_t       next_sid;     /* next server-side ID for handle events */
-    uint32_t       generation;
-    bool           manager_ready;
 
     bool           active;
 };
 
 static struct Client    clients[MAX_CLIENTS];
 static pthread_mutex_t  clients_mu = PTHREAD_MUTEX_INITIALIZER;
-static uint32_t         next_client_generation = 1;
 
 static struct Client *alloc_client(void) {
     for (int i = 0; i < MAX_CLIENTS; i++)
@@ -373,10 +367,6 @@ static struct HEntry *client_hentry_for_sid(struct Client *c, uint32_t sid) {
     return NULL;
 }
 
-static bool client_is_synthetic_handle_id(struct Client *c, uint32_t id) {
-    return client_hentry_for_sid(c, id) != NULL;
-}
-
 static bool client_should_drop_server_id(struct Client *c, uint32_t id) {
     for (int i = 0; i < c->drop_n; i++)
         if (c->drop_ids[i] == id) return true;
@@ -415,7 +405,7 @@ static void replay_output_enters(struct Client *c) {
 }
 
 static void flush_toplevel(struct Client *c, struct Toplevel *t) {
-    if (!c->manager_id || !c->manager_ready) return;
+    if (!c->manager_id) return;
     uint32_t sid = emit_toplevel_new(c, t->handle);
     struct HEntry *entry = client_hentry_for_sid(c, sid);
     emit_str         (c, sid, 0, t->title   ? t->title   : "");
@@ -425,56 +415,12 @@ static void flush_toplevel(struct Client *c, struct Toplevel *t) {
     emit_done        (c, sid);
 }
 
-struct DelayedFlush {
-    struct Client *c;
-    uint32_t generation;
-};
-
-static void *delayed_initial_flush(void *arg) {
-    struct DelayedFlush *df = arg;
-    struct timespec ts = { .tv_sec = 0, .tv_nsec = 80 * 1000 * 1000 };
-    nanosleep(&ts, NULL);
-
-    pthread_mutex_lock(&clients_mu);
-    struct Client *c = df->c;
-    if (!c->active || c->generation != df->generation || !c->manager_id) {
-        pthread_mutex_unlock(&clients_mu);
-        free(df);
-        return NULL;
-    }
-    c->manager_ready = true;
-    pthread_mutex_lock(&state_mu);
-    struct Toplevel *t;
-    wl_list_for_each(t, &toplevels, link)
-        flush_toplevel(c, t);
-    pthread_mutex_unlock(&state_mu);
-    pthread_mutex_unlock(&clients_mu);
-    free(df);
-    return NULL;
-}
-
-static void schedule_initial_flush(struct Client *c) {
-    struct DelayedFlush *df = calloc(1, sizeof(*df));
-    if (!df) return;
-    df->c = c;
-    df->generation = c->generation;
-
-    pthread_t th;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    if (pthread_create(&th, &attr, delayed_initial_flush, df) != 0) {
-        free(df);
-    }
-    pthread_attr_destroy(&attr);
-}
-
 /* Called from wayland_thread when a toplevel changes */
 static void broadcast_update(struct Toplevel *t) {
     pthread_mutex_lock(&clients_mu);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         struct Client *c = &clients[i];
-        if (!c->active || !c->manager_id || !c->manager_ready) continue;
+        if (!c->active || !c->manager_id) continue;
         uint32_t sid = client_sid(c, t->handle);
         if (!sid) {
             flush_toplevel(c, t);
@@ -494,7 +440,7 @@ static void broadcast_closed(struct Toplevel *t) {
     pthread_mutex_lock(&clients_mu);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         struct Client *c = &clients[i];
-        if (!c->active || !c->manager_id || !c->manager_ready) continue;
+        if (!c->active || !c->manager_id) continue;
         uint32_t sid = client_sid(c, t->handle);
         if (sid) emit_closed(c, sid);
     }
@@ -770,8 +716,6 @@ static void *relay_c2s(void *arg) {
 	                        if (parse_bind(msg, msize, &gname, iface, sizeof(iface), &gver, &new_id)) {
 	                            if (!strcmp(iface, "zwlr_foreign_toplevel_manager_v1")) {
 	                                c->manager_id = new_id;
-	                                c->manager_ready = false;
-	                                drop_msg = true;
 	                                flush_after_send = true;
 	                            } else if (!strcmp(iface, "wl_compositor")) {
 	                                c->compositor_id = new_id;
@@ -793,12 +737,8 @@ static void *relay_c2s(void *arg) {
 	                                }
 	                            }
 	                        }
-		                    }
-
-	                    if (!drop_msg && c->manager_id &&
-	                            (obj_id == c->manager_id || client_is_synthetic_handle_id(c, obj_id))) {
-	                        drop_msg = true;
 	                    }
+
 	                    if (!drop_msg && c->output_is_fake && obj_id == c->output_id) {
 	                        drop_msg = true;
 	                    }
@@ -846,11 +786,17 @@ static void *relay_c2s(void *arg) {
 	                    mh.msg_iov = &oiov;
 	                    mh.msg_iovlen = 1;
 	                    mh.msg_flags = 0;
-		                    if (sendmsg(dst, &mh, MSG_NOSIGNAL) < 0) goto done;
-		                    if (c->output_is_fake) emit_fake_output_events(c);
-		                    if (flush_after_send) {
-		                        schedule_initial_flush(c);
-		                    }
+	                    if (sendmsg(dst, &mh, MSG_NOSIGNAL) < 0) goto done;
+	                    if (c->output_is_fake) emit_fake_output_events(c);
+	                    if (flush_after_send) {
+	                        pthread_mutex_lock(&clients_mu);
+	                        pthread_mutex_lock(&state_mu);
+	                        struct Toplevel *t;
+	                        wl_list_for_each(t, &toplevels, link)
+	                            flush_toplevel(c, t);
+	                        pthread_mutex_unlock(&state_mu);
+	                        pthread_mutex_unlock(&clients_mu);
+	                    }
 	                    if (replay_after_send) {
 	                        pthread_mutex_lock(&clients_mu);
 	                        replay_output_enters(c);
@@ -896,17 +842,14 @@ static void *relay_c2s(void *arg) {
                 char iface[128];
 	                if (parse_bind(msg, msize, &gname, iface,
 	                               sizeof(iface), &gver, &new_id)) {
-		                    if (!strcmp(iface, "zwlr_foreign_toplevel_manager_v1")) {
-                        /* The proxy owns this object. River's stream lacks
-                         * output_enter, so do not bind a second manager on the
-                         * per-client River connection; just replay our corrected
-                         * toplevel stream on the client's requested object ID. */
+	                    if (!strcmp(iface, "zwlr_foreign_toplevel_manager_v1")) {
+                        /* Forward the bind to River so the client's object ID
+                         * namespace stays contiguous, then send our corrected
+                         * toplevel stream after River has seen the manager. */
                         pthread_mutex_lock(&clients_mu);
                         c->manager_id = new_id;
-                        c->manager_ready = false;
                         pthread_mutex_unlock(&clients_mu);
                         flush_after_forward = true;
-                        drop = true;
 
                     } else if (!strcmp(iface, "wl_compositor")) {
                         c->compositor_id = new_id;
@@ -936,12 +879,7 @@ static void *relay_c2s(void *arg) {
                             drop = true;
                         }
                     }
-	                }
-	            }
-
-            if (!drop && c->manager_id &&
-                    (obj_id == c->manager_id || client_is_synthetic_handle_id(c, obj_id))) {
-                drop = true;
+                }
             }
 
             if (!drop && c->output_is_fake && obj_id == c->output_id)
@@ -981,7 +919,13 @@ static void *relay_c2s(void *arg) {
                 if (send(dst, msg, msize, MSG_NOSIGNAL) < 0) goto done;
             }
             if (flush_after_forward) {
-                schedule_initial_flush(c);
+                pthread_mutex_lock(&clients_mu);
+                pthread_mutex_lock(&state_mu);
+                struct Toplevel *t;
+                wl_list_for_each(t, &toplevels, link)
+                    flush_toplevel(c, t);
+                pthread_mutex_unlock(&state_mu);
+                pthread_mutex_unlock(&clients_mu);
             }
             if (replay_after_forward) {
                 pthread_mutex_lock(&clients_mu);
@@ -1062,10 +1006,12 @@ static void *relay_s2c(void *arg) {
             continue;
         }
 
-        /* Keep protocol-error diagnostics without logging every relayed event. */
+        /* Log ALL messages from River for diagnostics — look for wl_display.error
+         * (obj_id=1, opcode=0) which would tell us why River closes. */
         if (pending == 0 && n >= 8) {
             size_t scan = 0;
-            while (scan + 8 <= (size_t)n) {
+            int msgs = 0;
+            while (scan + 8 <= (size_t)n && msgs < 30) {
                 uint32_t obj = ru32(buf+scan);
                 uint32_t so = ru32(buf+scan+4);
                 uint32_t sz = so >> 16;
@@ -1081,9 +1027,15 @@ static void *relay_s2c(void *arg) {
                         plog("relay_s2c: *** wl_display.error target=%u code=%u msg='%.*s'",
                              target, code, (int)slen, s);
                     }
+                } else if (obj == 1 && op == 1) {
+                    plog("relay_s2c: wl_display.delete_id id=%u", ru32(buf+scan+8));
+                } else if (msgs < 8) {
+                    plog("relay_s2c: msg obj=%u op=%u size=%u", obj, op, sz);
                 }
                 scan += sz;
+                msgs++;
             }
+            plog("relay_s2c: chunk %zd bytes, %d msgs scanned", n, msgs);
         }
 
         pending += (size_t)n;
@@ -1204,7 +1156,6 @@ static void setup_client(int waybar_fd) {
     c->waybar_fd  = waybar_fd;
     c->river_fd   = river_fd;
     c->next_sid   = SERVER_ID_BASE;
-    c->generation = next_client_generation++;
     c->active     = true;
     pthread_mutex_unlock(&clients_mu);
 

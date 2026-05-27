@@ -808,7 +808,7 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		spawn_command("foot");
 		break;
 	case ACTION_SPAWN_LAUNCHER:
-		spawn_sh("/home/tcfialho/.config/niri/fuzzel-toggle.sh");
+		spawn_command("bash /home/tcfialho/.config/niri/fuzzel-toggle.sh");
 		break;
 	case ACTION_CLOSE_TARGET: {
 		struct Window *target = target_window();
@@ -898,9 +898,13 @@ static void seat_manage(struct Seat *seat) {
 	// distingue "click numa janela nova" de "compositor reportando foco atual".
 	if (seat->interacted != NULL && seat->interacted != seat->focused) {
 		int32_t idx = window_index(seat->interacted);
-		if (idx == 0 || idx == 1) {
-			// Click only focuses/selects the visible slot; explicit commands move windows.
-			wm.target_index = (uint32_t)idx;
+		if (idx == 1) {
+			// Clicked DECK window → promote it to MAIN
+			move_first(seat->interacted);
+			wm.target_index = 0;
+			wm.maximized = false;
+		} else if (idx == 0) {
+			wm.target_index = 0;
 			wm.maximized = false;
 		}
 	}
