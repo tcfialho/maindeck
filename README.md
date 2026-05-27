@@ -30,6 +30,9 @@ Machine-local River, Waybar, and Sunshine configuration used on the notebook is
 documented in `docs/local-session-config.md`. Those files live outside this
 repository and must be managed separately from the source tree.
 
+The River/Waybar taskbar investigation and architecture handoff is documented
+in `docs/river-waybar-taskbar-research.md`.
+
 ## Current bindings
 
 The spec asks for tap/hold. This first implementation uses `Super+Shift` as the
