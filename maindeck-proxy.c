@@ -31,6 +31,8 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <signal.h>
+#include <sys/wait.h>
 
 #include <wayland-client.h>
 #include <time.h>
@@ -111,6 +113,13 @@ static ssize_t raw_write(int fd, pthread_mutex_t *mu,
     pthread_mutex_lock(mu);
     r = sendmsg(fd, &mh, MSG_NOSIGNAL);
     pthread_mutex_unlock(mu);
+    if (r < 0) {
+        plog("raw_write: sendmsg fd=%d len=%zu errno=%d (%s)",
+             fd, len, errno, strerror(errno));
+    } else if ((size_t)r != len) {
+        plog("raw_write: short write fd=%d wrote=%zd want=%zu",
+             fd, r, len);
+    }
     return r;
 }
 
@@ -153,6 +162,7 @@ static pthread_mutex_t state_mu = PTHREAD_MUTEX_INITIALIZER;
 
 struct HEntry {
     uint32_t cid;
+    uint32_t manager_id;
     struct zwlr_foreign_toplevel_handle_v1 *h;
     bool output_entered;
 };
@@ -162,7 +172,8 @@ struct Client {
     int            river_fd;
     pthread_mutex_t write_mu;
 
-    uint32_t       manager_id;   /* waybar's object ID for our manager (0=not bound) */
+    uint32_t       manager_ids[8]; /* waybar's object IDs for our managers */
+    int            manager_n;
     uint32_t       output_id;    /* waybar's first wl_output object ID (0=not seen) */
     uint32_t       output_version;
     bool           output_is_fake;
@@ -183,13 +194,18 @@ struct Client {
     int            drop_n;
     uint32_t       registry_ids[32];
     int            registry_n;
+    char           unhandled_binds[32][64]; /* iface names already logged */
+    int            unhandled_n;
     uint32_t       next_sid;     /* next server-side ID for handle events */
 
+    bool           output_done_received;
     bool           active;
 };
 
 static struct Client    clients[MAX_CLIENTS];
 static pthread_mutex_t  clients_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static void cleanup_client(struct Client *c);
 
 static struct Client *alloc_client(void) {
     for (int i = 0; i < MAX_CLIENTS; i++)
@@ -201,16 +217,17 @@ static struct Client *alloc_client(void) {
 
 /* zwlr_foreign_toplevel_manager_v1.toplevel(new_id) */
 static uint32_t emit_toplevel_new(struct Client *c,
-    struct zwlr_foreign_toplevel_handle_v1 *h) {
+    struct zwlr_foreign_toplevel_handle_v1 *h, uint32_t manager_id) {
     uint32_t sid = c->next_sid++;
     if (c->hmap_n < HANDLE_MAP) {
         c->hmap[c->hmap_n].cid = sid;
+        c->hmap[c->hmap_n].manager_id = manager_id;
         c->hmap[c->hmap_n].h   = h;
         c->hmap[c->hmap_n].output_entered = false;
         c->hmap_n++;
     }
     uint8_t msg[12];
-    wu32(msg+0, c->manager_id);
+    wu32(msg+0, manager_id);
     wu32(msg+4, (12u<<16)|0u); /* opcode 0 = toplevel */
     wu32(msg+8, sid);
     raw_write(c->waybar_fd, &c->write_mu, msg, 12);
@@ -354,10 +371,16 @@ static void emit_fake_xdg_output_events(struct Client *c, uint32_t xdg_output_id
     raw_write(c->waybar_fd, &c->write_mu, done, sizeof(done));
 }
 
+static bool client_is_manager_id(struct Client *c, uint32_t id) {
+    for (int i = 0; i < c->manager_n; i++)
+        if (c->manager_ids[i] == id) return true;
+    return false;
+}
+
 static uint32_t client_sid(struct Client *c,
-    struct zwlr_foreign_toplevel_handle_v1 *h) {
+    struct zwlr_foreign_toplevel_handle_v1 *h, uint32_t manager_id) {
     for (int i = 0; i < c->hmap_n; i++)
-        if (c->hmap[i].h == h) return c->hmap[i].cid;
+        if (c->hmap[i].h == h && c->hmap[i].manager_id == manager_id) return c->hmap[i].cid;
     return 0;
 }
 
@@ -371,6 +394,10 @@ static bool client_should_drop_server_id(struct Client *c, uint32_t id) {
     for (int i = 0; i < c->drop_n; i++)
         if (c->drop_ids[i] == id) return true;
     return false;
+}
+
+static bool client_is_synthetic_handle_id(struct Client *c, uint32_t id) {
+    return id >= SERVER_ID_BASE && id < c->next_sid;
 }
 
 static void client_add_drop_server_id(struct Client *c, uint32_t id) {
@@ -390,7 +417,7 @@ static void client_add_registry_id(struct Client *c, uint32_t id) {
 }
 
 static void emit_output_enter_once(struct Client *c, struct HEntry *entry) {
-    if (!c->output_id || entry->output_entered) return;
+    if (!c->output_id || !c->output_done_received || entry->output_entered) return;
     emit_output_enter(c, entry->cid);
     entry->output_entered = true;
 }
@@ -405,14 +432,17 @@ static void replay_output_enters(struct Client *c) {
 }
 
 static void flush_toplevel(struct Client *c, struct Toplevel *t) {
-    if (!c->manager_id) return;
-    uint32_t sid = emit_toplevel_new(c, t->handle);
-    struct HEntry *entry = client_hentry_for_sid(c, sid);
-    emit_str         (c, sid, 0, t->title   ? t->title   : "");
-    emit_str         (c, sid, 1, t->app_id  ? t->app_id  : "");
-    emit_state       (c, sid, t->activated);
-    if (entry) emit_output_enter_once(c, entry);
-    emit_done        (c, sid);
+    for (int i = 0; i < c->manager_n; i++) {
+        uint32_t manager_id = c->manager_ids[i];
+        if (client_sid(c, t->handle, manager_id)) continue;
+        uint32_t sid = emit_toplevel_new(c, t->handle, manager_id);
+        struct HEntry *entry = client_hentry_for_sid(c, sid);
+        emit_str         (c, sid, 0, t->title   ? t->title   : "");
+        emit_str         (c, sid, 1, t->app_id  ? t->app_id  : "");
+        emit_state       (c, sid, t->activated);
+        if (entry) emit_output_enter_once(c, entry);
+        emit_done        (c, sid);
+    }
 }
 
 /* Called from wayland_thread when a toplevel changes */
@@ -420,17 +450,26 @@ static void broadcast_update(struct Toplevel *t) {
     pthread_mutex_lock(&clients_mu);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         struct Client *c = &clients[i];
-        if (!c->active || !c->manager_id) continue;
-        uint32_t sid = client_sid(c, t->handle);
-        if (!sid) {
-            flush_toplevel(c, t);
-        } else {
-            emit_str         (c, sid, 0, t->title   ? t->title   : "");
-            emit_str         (c, sid, 1, t->app_id  ? t->app_id  : "");
-            emit_state       (c, sid, t->activated);
-            struct HEntry *entry = client_hentry_for_sid(c, sid);
-            if (entry) emit_output_enter_once(c, entry);
-            emit_done        (c, sid);
+        if (!c->active || !c->manager_n) continue;
+        for (int m = 0; m < c->manager_n; m++) {
+            uint32_t manager_id = c->manager_ids[m];
+            uint32_t sid = client_sid(c, t->handle, manager_id);
+            if (!sid) {
+                sid = emit_toplevel_new(c, t->handle, manager_id);
+                struct HEntry *entry = client_hentry_for_sid(c, sid);
+                emit_str         (c, sid, 0, t->title   ? t->title   : "");
+                emit_str         (c, sid, 1, t->app_id  ? t->app_id  : "");
+                emit_state       (c, sid, t->activated);
+                if (entry) emit_output_enter_once(c, entry);
+                emit_done        (c, sid);
+            } else {
+                emit_str         (c, sid, 0, t->title   ? t->title   : "");
+                emit_str         (c, sid, 1, t->app_id  ? t->app_id  : "");
+                emit_state       (c, sid, t->activated);
+                struct HEntry *entry = client_hentry_for_sid(c, sid);
+                if (entry) emit_output_enter_once(c, entry);
+                emit_done        (c, sid);
+            }
         }
     }
     pthread_mutex_unlock(&clients_mu);
@@ -440,9 +479,12 @@ static void broadcast_closed(struct Toplevel *t) {
     pthread_mutex_lock(&clients_mu);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         struct Client *c = &clients[i];
-        if (!c->active || !c->manager_id) continue;
-        uint32_t sid = client_sid(c, t->handle);
-        if (sid) emit_closed(c, sid);
+        if (!c->active || !c->manager_n) continue;
+        for (int m = 0; m < c->manager_n; m++) {
+            uint32_t manager_id = c->manager_ids[m];
+            uint32_t sid = client_sid(c, t->handle, manager_id);
+            if (sid) emit_closed(c, sid);
+        }
     }
     pthread_mutex_unlock(&clients_mu);
 }
@@ -684,13 +726,17 @@ static void *relay_c2s(void *arg) {
          * wl_registry.bind, so skipping parse is safe. */
 	        bool has_anc = message_has_fds(&mh);
 	        if (has_anc) {
+	            if (pending > 0) {
+	                if (send(dst, buf, pending, MSG_NOSIGNAL) < 0) goto done;
+	                memmove(buf, buf + pending, (size_t)n);
+	                pending = 0;
+	            }
 	            if (pending == 0) {
 	                uint8_t outbuf[BUF_SZ];
 	                size_t outn = 0;
 	                size_t scan = 0;
 	                bool complete = true;
 	                bool flush_after_send = false;
-	                bool replay_after_send = false;
 	                uint32_t fake_xdg_ids[8];
 	                int fake_xdg_n = 0;
 	                while (scan + MSG_HDR <= (size_t)n) {
@@ -715,7 +761,9 @@ static void *relay_c2s(void *arg) {
 	                        char iface[128];
 	                        if (parse_bind(msg, msize, &gname, iface, sizeof(iface), &gver, &new_id)) {
 	                            if (!strcmp(iface, "zwlr_foreign_toplevel_manager_v1")) {
-	                                c->manager_id = new_id;
+	                                if (c->manager_n < 8) {
+	                                    c->manager_ids[c->manager_n++] = new_id;
+	                                }
 	                                flush_after_send = true;
 	                            } else if (!strcmp(iface, "wl_compositor")) {
 	                                c->compositor_id = new_id;
@@ -728,12 +776,22 @@ static void *relay_c2s(void *arg) {
 	                                c->output_id = new_id;
 	                                c->output_version = gver;
 	                                c->output_is_fake = (gname == FAKE_OUTPUT_GLOBAL);
-	                                replay_after_send = true;
 	                                if (c->output_is_fake && c->fixes_global) {
 	                                    uint32_t fver = c->fixes_version < gver ? c->fixes_version : gver;
 	                                    if (fver == 0) fver = 1;
 	                                    rewritten_len = build_bind(rewritten, sizeof(rewritten), obj_id,
 	                                        c->fixes_global, "wl_fixes", fver, new_id);
+	                                }
+	                            } else {
+	                                bool already = false;
+	                                for (int u = 0; u < c->unhandled_n; u++) {
+	                                    if (!strcmp(c->unhandled_binds[u], iface)) { already = true; break; }
+	                                }
+	                                if (!already && c->unhandled_n < 32) {
+	                                    snprintf(c->unhandled_binds[c->unhandled_n], 64, "%s", iface);
+	                                    c->unhandled_n++;
+	                                    plog("relay_c2s: unhandled bind iface='%s' version=%u new_id=%u",
+	                                         iface, gver, new_id);
 	                                }
 	                            }
 	                        }
@@ -769,6 +827,11 @@ static void *relay_c2s(void *arg) {
 	                        }
 	                    }
 
+	                    if (!drop_msg && c->manager_n > 0 &&
+	                            (client_is_manager_id(c, obj_id) || client_is_synthetic_handle_id(c, obj_id))) {
+	                        drop_msg = true;
+	                    }
+
 	                    const uint8_t *src_msg = rewritten_len ? rewritten : msg;
 	                    size_t src_len = rewritten_len ? rewritten_len : msize;
 	                    if (!drop_msg) {
@@ -797,11 +860,7 @@ static void *relay_c2s(void *arg) {
 	                        pthread_mutex_unlock(&state_mu);
 	                        pthread_mutex_unlock(&clients_mu);
 	                    }
-	                    if (replay_after_send) {
-	                        pthread_mutex_lock(&clients_mu);
-	                        replay_output_enters(c);
-	                        pthread_mutex_unlock(&clients_mu);
-	                    }
+
 	                    for (int i = 0; i < fake_xdg_n; i++)
 	                        emit_fake_xdg_output_events(c, fake_xdg_ids[i]);
 	                    continue;
@@ -830,7 +889,6 @@ static void *relay_c2s(void *arg) {
             uint32_t       opcode = sizeop & 0xffffu;
             bool           drop   = false;
             bool           flush_after_forward = false;
-            bool           replay_after_forward = false;
 
 	            if (obj_id == 1 && opcode == 1 && msize >= 12) {
 	                client_add_registry_id(c, ru32(msg+8));
@@ -847,7 +905,9 @@ static void *relay_c2s(void *arg) {
                          * namespace stays contiguous, then send our corrected
                          * toplevel stream after River has seen the manager. */
                         pthread_mutex_lock(&clients_mu);
-                        c->manager_id = new_id;
+                        if (c->manager_n < 8) {
+                            c->manager_ids[c->manager_n++] = new_id;
+                        }
                         pthread_mutex_unlock(&clients_mu);
                         flush_after_forward = true;
 
@@ -866,7 +926,6 @@ static void *relay_c2s(void *arg) {
                         c->output_id = new_id; /* remember first wl_output */
                         c->output_version = gver;
                         c->output_is_fake = (gname == FAKE_OUTPUT_GLOBAL);
-                        replay_after_forward = true;
 	                        if (c->output_is_fake) {
 	                            uint8_t rewritten[256];
                             uint32_t ver = c->compositor_version < 6 ? c->compositor_version : 6;
@@ -915,6 +974,11 @@ static void *relay_c2s(void *arg) {
                 }
             }
 
+            if (!drop && c->manager_n > 0 &&
+                    (client_is_manager_id(c, obj_id) || client_is_synthetic_handle_id(c, obj_id))) {
+                drop = true;
+            }
+
             if (!drop) {
                 if (send(dst, msg, msize, MSG_NOSIGNAL) < 0) goto done;
             }
@@ -927,11 +991,7 @@ static void *relay_c2s(void *arg) {
                 pthread_mutex_unlock(&state_mu);
                 pthread_mutex_unlock(&clients_mu);
             }
-            if (replay_after_forward) {
-                pthread_mutex_lock(&clients_mu);
-                replay_output_enters(c);
-                pthread_mutex_unlock(&clients_mu);
-            }
+
             off += msize;
         }
 
@@ -943,11 +1003,7 @@ static void *relay_c2s(void *arg) {
     }
 done:
     plog("relay_c2s: ending src=%d dst=%d errno=%d", src, dst, errno);
-    close(src);
-    close(dst);
-    pthread_mutex_lock(&clients_mu);
-    c->active = false;
-    pthread_mutex_unlock(&clients_mu);
+    cleanup_client(c);
     return NULL;
 }
 
@@ -993,49 +1049,57 @@ static void *relay_s2c(void *arg) {
 
         bool has_anc = message_has_fds(&mh);
         if (has_anc) {
+            pthread_mutex_lock(&c->write_mu);
+            if (pending > 0) {
+                if (send(dst, buf, pending, MSG_NOSIGNAL) < 0) {
+                    pthread_mutex_unlock(&c->write_mu);
+                    plog("relay_s2c: send(pending) failed errno=%d", errno);
+                    break;
+                }
+            }
             iov.iov_base = buf + pending;
             iov.iov_len  = (size_t)n;
             mh.msg_flags = 0;
-            pthread_mutex_lock(&c->write_mu);
             if (sendmsg(dst, &mh, MSG_NOSIGNAL) < 0) {
                 pthread_mutex_unlock(&c->write_mu);
                 plog("relay_s2c: sendmsg(anc) failed errno=%d", errno);
                 break;
             }
+            pending = 0;
             pthread_mutex_unlock(&c->write_mu);
             continue;
         }
 
-        /* Log ALL messages from River for diagnostics — look for wl_display.error
-         * (obj_id=1, opcode=0) which would tell us why River closes. */
+        /* Anomaly-only diagnostics: log wl_display.error (always fatal),
+         * malformed messages, and potential server-ID collisions where
+         * River allocates an ID that falls within the proxy's synthetic
+         * range — that class of bug causes waybar EINVAL / configure timeout. */
         if (pending == 0 && n >= 8) {
             size_t scan = 0;
-            int msgs = 0;
-            while (scan + 8 <= (size_t)n && msgs < 30) {
+            while (scan + 8 <= (size_t)n) {
                 uint32_t obj = ru32(buf+scan);
                 uint32_t so = ru32(buf+scan+4);
                 uint32_t sz = so >> 16;
                 uint32_t op = so & 0xffff;
-                if (sz < 8 || scan + sz > (size_t)n) break;
-                if (obj == 1 && op == 0) {
-                    /* wl_display.error: target(uint), code(uint), message(string) */
-                    if (sz >= 16) {
-                        uint32_t target = ru32(buf+scan+8);
-                        uint32_t code = ru32(buf+scan+12);
-                        uint32_t slen = ru32(buf+scan+16);
-                        const char *s = (const char *)(buf+scan+20);
-                        plog("relay_s2c: *** wl_display.error target=%u code=%u msg='%.*s'",
-                             target, code, (int)slen, s);
-                    }
-                } else if (obj == 1 && op == 1) {
-                    plog("relay_s2c: wl_display.delete_id id=%u", ru32(buf+scan+8));
-                } else if (msgs < 8) {
-                    plog("relay_s2c: msg obj=%u op=%u size=%u", obj, op, sz);
+                if (sz < 8 || scan + sz > (size_t)n) {
+                    plog("relay_s2c: !!! malformed msg at off=%zu obj=%u op=%u size=%u chunk=%zd",
+                         scan, obj, op, sz, n);
+                    break;
+                }
+                if (obj == 1 && op == 0 && sz >= 16) {
+                    uint32_t target = ru32(buf+scan+8);
+                    uint32_t code = ru32(buf+scan+12);
+                    uint32_t slen = ru32(buf+scan+16);
+                    const char *s = (const char *)(buf+scan+20);
+                    plog("relay_s2c: *** wl_display.error target=%u code=%u msg='%.*s'",
+                         target, code, (int)slen, s);
+                } else if (obj >= SERVER_ID_BASE && obj < c->next_sid &&
+                           !client_should_drop_server_id(c, obj)) {
+                    plog("relay_s2c: !!! server-ID collision: River obj=0x%x op=%u falls in proxy synthetic range [0x%x..0x%x)",
+                         obj, op, SERVER_ID_BASE, c->next_sid);
                 }
                 scan += sz;
-                msgs++;
             }
-            plog("relay_s2c: chunk %zd bytes, %d msgs scanned", n, msgs);
         }
 
         pending += (size_t)n;
@@ -1068,7 +1132,7 @@ static void *relay_s2c(void *arg) {
                     }
                 }
             }
-            if (c->manager_id && obj_id == c->manager_id && opcode == 0 && msize >= 12) {
+            if (c->manager_n > 0 && client_is_manager_id(c, obj_id) && opcode == 0 && msize >= 12) {
                 client_add_drop_server_id(c, ru32(msg+8));
                 drop = true;
             } else if (client_should_drop_server_id(c, obj_id)) {
@@ -1080,10 +1144,28 @@ static void *relay_s2c(void *arg) {
                 pthread_mutex_lock(&c->write_mu);
                 if (send(dst, msg, msize, MSG_NOSIGNAL) < 0) {
                     pthread_mutex_unlock(&c->write_mu);
-                    return NULL;
+                    plog("relay_s2c: send(dst=%d) failed obj=%u op=%u size=%u errno=%d (%s)",
+                         dst, obj_id, opcode, msize, errno, strerror(errno));
+                    goto done_s2c;
                 }
                 pthread_mutex_unlock(&c->write_mu);
             }
+
+            bool is_output_done = false;
+            pthread_mutex_lock(&clients_mu);
+            if (c->output_id && obj_id == c->output_id && opcode == 2) {
+                is_output_done = true;
+            }
+            pthread_mutex_unlock(&clients_mu);
+
+            if (is_output_done) {
+                plog("relay_s2c: wl_output.done received for output_id=%u, replaying output enters", c->output_id);
+                pthread_mutex_lock(&clients_mu);
+                c->output_done_received = true;
+                replay_output_enters(c);
+                pthread_mutex_unlock(&clients_mu);
+            }
+
             /* DISABLED fake_output injection — suspected cause of River
              * closing per-client connections at boot. Without this, waybar
              * binds only the REAL wl_outputs that River advertises. The proxy
@@ -1099,7 +1181,9 @@ static void *relay_s2c(void *arg) {
             if (pending) memmove(buf, buf+off, pending);
         }
     }
+done_s2c:
     plog("relay_s2c: ending src=%d dst=%d errno=%d", src, dst, errno);
+    cleanup_client(c);
     return NULL;
 }
 
@@ -1131,6 +1215,29 @@ static bool connect_to_river(int *fd_out) {
     }
     *fd_out = fd;
     return true;
+}
+
+static void cleanup_client(struct Client *c) {
+    pthread_mutex_lock(&clients_mu);
+    if (c->active) {
+        c->active = false;
+        if (c->waybar_fd >= 0) {
+            close(c->waybar_fd);
+            c->waybar_fd = -1;
+        }
+        if (c->river_fd >= 0) {
+            close(c->river_fd);
+            c->river_fd = -1;
+        }
+        c->manager_n = 0;
+        c->hmap_n = 0;
+        c->drop_n = 0;
+        c->registry_n = 0;
+        c->unhandled_n = 0;
+        c->output_id = 0;
+        c->output_done_received = false;
+    }
+    pthread_mutex_unlock(&clients_mu);
 }
 
 static void setup_client(int waybar_fd) {
@@ -1310,67 +1417,225 @@ static int create_server_socket(char *out_name, size_t cap) {
     return -1;
 }
 
-/* ── main ──────────────────────────────────────────────────────── */
+/* ── Master-Worker helper functions ────────────────────────────── */
 
-int main(void) {
+static int send_fd(int sock_fd, int fd_to_send) {
+    struct msghdr msg = {0};
+    struct iovec iov[1];
+    char dummy = 'x';
+    iov[0].iov_base = &dummy;
+    iov[0].iov_len = 1;
+    msg.msg_iov = iov;
+    msg.msg_iovlen = 1;
+
+    char cmsg_buf[CMSG_SPACE(sizeof(int))];
+    msg.msg_control = cmsg_buf;
+    msg.msg_controllen = sizeof(cmsg_buf);
+
+    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+    *((int *)CMSG_DATA(cmsg)) = fd_to_send;
+
+    if (sendmsg(sock_fd, &msg, 0) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int recv_fd(int sock_fd) {
+    struct msghdr msg = {0};
+    struct iovec iov[1];
+    char dummy;
+    iov[0].iov_base = &dummy;
+    iov[0].iov_len = 1;
+    msg.msg_iov = iov;
+    msg.msg_iovlen = 1;
+
+    char cmsg_buf[CMSG_SPACE(sizeof(int))];
+    msg.msg_control = cmsg_buf;
+    msg.msg_controllen = sizeof(cmsg_buf);
+
+    if (recvmsg(sock_fd, &msg, 0) < 0) {
+        return -1;
+    }
+
+    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+    if (!cmsg || cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS) {
+        return -1;
+    }
+
+    return *((int *)CMSG_DATA(cmsg));
+}
+
+static volatile sig_atomic_t child_exited = 0;
+static void handle_sigchld(int sig) {
+    (void)sig;
+    child_exited = 1;
+}
+
+static pid_t spawn_worker(int *control_fd) {
+    int pair[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair) < 0) {
+        plog("Master: socketpair failed: %s", strerror(errno));
+        return -1;
+    }
+
+    fcntl(pair[1], F_SETFD, 0);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        plog("Master: fork failed: %s", strerror(errno));
+        close(pair[0]);
+        close(pair[1]);
+        return -1;
+    }
+
+    if (pid == 0) {
+        /* Child process (Worker) */
+        close(pair[0]);
+        char fd_str[16];
+        snprintf(fd_str, sizeof(fd_str), "%d", pair[1]);
+        
+        char *const argv[] = { "/proc/self/exe", "--worker", fd_str, NULL };
+        execv("/proc/self/exe", argv);
+        
+        /* Fallbacks */
+        execv("./build/maindeck-proxy", argv);
+        execv("maindeck-proxy", argv);
+        
+        plog("Child: exec failed: %s", strerror(errno));
+        exit(1);
+    }
+
+    /* Parent process (Master) */
+    close(pair[1]);
+    *control_fd = pair[0];
+    plog("Master: spawned Worker PID %d", pid);
+    return pid;
+}
+
+static void run_worker(int control_fd) {
+    plog("Worker: starting (control_fd=%d)", control_fd);
+    
     wl_list_init(&toplevels);
     memset(clients, 0, sizeof(clients));
 
-    plog("starting (WAYLAND_DISPLAY=%s XDG_RUNTIME_DIR=%s)",
-         getenv("WAYLAND_DISPLAY") ? getenv("WAYLAND_DISPLAY") : "(null)",
-         getenv("XDG_RUNTIME_DIR") ? getenv("XDG_RUNTIME_DIR") : "(null)");
-
     proxy_display = wl_display_connect(NULL);
     if (!proxy_display) {
-        plog("cannot connect to Wayland (errno=%d %s)", errno, strerror(errno));
-        return 1;
+        plog("Worker: cannot connect to Wayland (errno=%d %s)", errno, strerror(errno));
+        exit(1);
     }
-    plog("connected to River display, doing first roundtrip");
+    plog("Worker: connected to River display, doing first roundtrip");
 
     struct wl_registry *reg = wl_display_get_registry(proxy_display);
     wl_registry_add_listener(reg, &reg_listener, NULL);
     wl_display_roundtrip(proxy_display);
     if (!proxy_manager) {
-        plog("zwlr_foreign_toplevel_manager_v1 not available");
-        return 1;
+        plog("Worker: zwlr_foreign_toplevel_manager_v1 not available");
+        exit(1);
     }
-    plog("foreign_toplevel_manager bound, doing second roundtrip for initial toplevels");
+    plog("Worker: foreign_toplevel_manager bound, doing second roundtrip for initial toplevels");
     wl_display_roundtrip(proxy_display); /* receive initial toplevels */
-    plog("second roundtrip done");
+    plog("Worker: second roundtrip done");
 
-    /* Wait until River is willing to keep fresh client connections alive.
-     * Without this, the init script sees the socket appear, waybar tries to
-     * connect, River kills the proxy's per-client River connection, waybar
-     * gets EOF, retries 22 times, ~20s of black screen at login. */
+    pthread_t wl_thr;
+    pthread_create(&wl_thr, NULL, wayland_thread, NULL);
+    plog("Worker: wayland_thread started, entering FD reception loop");
+
+    while (1) {
+        int cfd = recv_fd(control_fd);
+        if (cfd < 0) {
+            plog("Worker: recv_fd returned error (control socket closed), exiting");
+            break;
+        }
+        plog("Worker: received accepted client connection fd=%d", cfd);
+        setup_client(cfd);
+    }
+    
+    plog("Worker: exiting");
+    exit(0);
+}
+
+static void run_master(int srv) {
+    plog("Master: starting");
+
+    struct sigaction sa;
+    sa.sa_handler = handle_sigchld;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_NOCLDSTOP;
+    sigaction(SIGCHLD, &sa, NULL);
+
+    int control_fd = -1;
+    pid_t worker_pid = spawn_worker(&control_fd);
+    if (worker_pid < 0) {
+        plog("Master: failed to spawn initial worker, exiting");
+        return;
+    }
+
+    while (1) {
+        int cfd = accept(srv, NULL, NULL);
+        if (cfd < 0) {
+            if (errno == EINTR) {
+                if (child_exited) {
+                    child_exited = 0;
+                    int status;
+                    pid_t reaped = waitpid(worker_pid, &status, WNOHANG);
+                    if (reaped == worker_pid) {
+                        plog("Master: Worker PID %d exited with status %d, restarting...", worker_pid, status);
+                        close(control_fd);
+                        worker_pid = spawn_worker(&control_fd);
+                        if (worker_pid < 0) {
+                            plog("Master: failed to restart worker, exiting");
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+            plog("Master: accept failed: %s", strerror(errno));
+            break;
+        }
+
+        plog("Master: accepted new client connection cfd=%d, handing off to Worker", cfd);
+        if (send_fd(control_fd, cfd) < 0) {
+            plog("Master: failed to send fd to Worker, closing cfd");
+        }
+        close(cfd);
+    }
+}
+
+/* ── main ──────────────────────────────────────────────────────── */
+
+int main(int argc, char *argv[]) {
+    if (argc >= 3 && strcmp(argv[1], "--worker") == 0) {
+        int control_fd = atoi(argv[2]);
+        run_worker(control_fd);
+        return 0;
+    }
+
+    plog("Master starting (WAYLAND_DISPLAY=%s XDG_RUNTIME_DIR=%s)",
+         getenv("WAYLAND_DISPLAY") ? getenv("WAYLAND_DISPLAY") : "(null)",
+         getenv("XDG_RUNTIME_DIR") ? getenv("XDG_RUNTIME_DIR") : "(null)");
+
     wait_for_river_stable();
 
     char name[64];
-    int  srv = create_server_socket(name, sizeof(name));
+    int srv = create_server_socket(name, sizeof(name));
     if (srv < 0) {
-        plog("cannot create socket");
+        plog("Master: cannot create server socket");
         return 1;
     }
 
     /* Print socket name so the init script can use it */
     printf("%s\n", name);
     fflush(stdout);
-    plog("listening on %s/%s",
+    plog("Master listening on %s/%s",
          getenv("XDG_RUNTIME_DIR") ? getenv("XDG_RUNTIME_DIR") : "?", name);
 
-    pthread_t wl_thr;
-    pthread_create(&wl_thr, NULL, wayland_thread, NULL);
-    plog("wayland_thread started, entering accept loop");
+    run_master(srv);
 
-    while (1) {
-        int cfd = accept(srv, NULL, NULL);
-        if (cfd < 0) {
-            plog("accept failed errno=%d (%s)", errno, strerror(errno));
-            if (errno == EINTR) continue;
-            break;
-        }
-        plog("accepted connection cfd=%d", cfd);
-        setup_client(cfd);
-    }
-    plog("main loop exited");
+    close(srv);
     return 0;
 }
