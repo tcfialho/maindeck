@@ -291,6 +291,37 @@ static void spawn_sh(const char *cmd) {
 	}
 }
 
+// When the user clicks/focuses a normal window while the fuzzel launcher is
+// open, it should dismiss (Windows-like). fuzzel is a layer-surface, so the
+// compositor never reports it as a "window" — instead River sends us
+// window_interaction (a normal window got focus) vs shell_surface_interaction
+// (the layer surface itself was clicked). We close fuzzel on the former only.
+//
+// We deliberately do NOT track open-state in the WM: the launcher can be opened
+// by the waybar click too, which never routes through us. So close_launcher is
+// self-sufficient — it just pkills fuzzel (a no-op if none is running). The
+// time guard suppresses the focus shuffle that the *open itself* causes (River
+// reports window_interaction for the window that lost focus as fuzzel maps);
+// without it the launcher would dismiss the instant it appears. last_launcher
+// is stamped whenever WE spawn it; opens via waybar can't race us anyway because
+// the click that opens lands on the bar (a layer surface), not a window.
+static struct timespec last_launcher_spawn;
+static bool last_launcher_spawn_valid = false;
+
+static void close_launcher(void) {
+	if (last_launcher_spawn_valid) {
+		struct timespec now;
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		long since_ms = (now.tv_sec - last_launcher_spawn.tv_sec) * 1000L
+			+ (now.tv_nsec - last_launcher_spawn.tv_nsec) / 1000000L;
+		if (since_ms < 250) return; // ignore the open's own focus settling
+	}
+	if (fork() == 0) {
+		execlp("pkill", "pkill", "-x", "fuzzel", (char *)0);
+		_exit(127);
+	}
+}
+
 static void window_set_string(char **field, const char *value) {
 	free(*field);
 	*field = value == NULL ? NULL : strdup(value);
@@ -438,7 +469,11 @@ static void md_insert_new_window(struct Window *window) {
 		struct Window *old_main = window_at(0);
 		struct Window *deck = window_at(1);
 		wl_list_insert(&wm.windows, &window->link);
-		move_after(old_main, &deck->link);
+		/* Defensive: window_at should be non-NULL when count>=2, but never
+		 * deref a NULL on an unexpected list state — just insert at front. */
+		if (old_main != NULL && deck != NULL) {
+			move_after(old_main, &deck->link);
+		}
 		osd("nova janela em MAIN \xc2\xb7 DECK vis\xc3\xadvel preservado");
 	}
 	wm.target_index = 0;
@@ -765,9 +800,12 @@ static void seat_handle_pointer_leave(void *data, struct river_seat_v1 *obj) {
 static void seat_handle_window_interaction(void *data, struct river_seat_v1 *obj, struct river_window_v1 *river_window) {
 	struct Seat *seat = data;
 	seat->interacted = river_window_v1_get_user_data(river_window);
+	// Focus went to a normal window → dismiss the launcher if it's open.
+	close_launcher();
 }
 
 static void seat_handle_wl_seat(void *data, struct river_seat_v1 *obj, uint32_t id) {}
+// Clicking the layer surface itself (the fuzzel window) — do NOT dismiss.
 static void seat_handle_shell_surface_interaction(void *data, struct river_seat_v1 *obj, struct river_shell_surface_v1 *river_shell_surface) {}
 static void seat_handle_op_delta(void *data, struct river_seat_v1 *obj, int32_t dx, int32_t dy) {}
 static void seat_handle_op_release(void *data, struct river_seat_v1 *obj) {}
@@ -808,7 +846,11 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		spawn_command("foot");
 		break;
 	case ACTION_SPAWN_LAUNCHER:
-		spawn_command("bash /home/tcfialho/.config/niri/fuzzel-toggle.sh");
+		// spawn_sh (sh -c) — NOT spawn_command: the latter execlp's the whole
+		// string as one argv[0] (a "program" with spaces) → ENOENT → never runs.
+		spawn_sh("bash /home/tcfialho/.config/niri/fuzzel-toggle.sh");
+		clock_gettime(CLOCK_MONOTONIC, &last_launcher_spawn);
+		last_launcher_spawn_valid = true;
 		break;
 	case ACTION_CLOSE_TARGET: {
 		struct Window *target = target_window();
@@ -870,14 +912,33 @@ static void seat_manage(struct Seat *seat) {
 		seat->new = false;
 		LOG_EVENT("seat init: creating xkb bindings");
 		const uint32_t super = RIVER_SEAT_V1_MODIFIERS_MOD4;
+		const uint32_t ctrl  = RIVER_SEAT_V1_MODIFIERS_CTRL;
+		const uint32_t alt   = RIVER_SEAT_V1_MODIFIERS_MOD1;
 
-		// Tap/hold bindings (spec section 8):
-		// Tab: tap=toggle ALVO, hold=swap MAIN↔DECK
-		xkb_binding_create(seat, super, XKB_KEY_Tab, ACTION_TOGGLE_TARGET, ACTION_SWAP_MAIN_DECK);
-		// Right: tap=deck next, hold=send ALVO to deck bottom
-		xkb_binding_create(seat, super, XKB_KEY_Right, ACTION_DECK_NEXT, ACTION_SEND_TARGET_TO_DECK_BOTTOM);
-		// Left: tap=deck prev, hold=promote ALVO to MAIN
-		xkb_binding_create(seat, super, XKB_KEY_Left, ACTION_DECK_PREV, ACTION_PROMOTE_TARGET_TO_MAIN);
+		// --- Tap/hold via keyd (the real input path on this machine) ---
+		// keyd's [meta] layer (active while Super is held) resolves tap vs hold
+		// itself and emits DIFFERENT F-keys to the compositor — Super is NOT
+		// passed through. So River never sees Super+Tab/Left/Right; it sees
+		// these F-key combos. We mirror niri's config.kdl exactly (keyd runs
+		// below the compositor, so the mapping is identical for both).
+		// Each is tap-only from our side (keyd already decided tap/hold).
+		//   Win+Tab tap=Alt+F23  hold=Alt+Ctrl+F23
+		//   Win+←   tap=F23       hold=Ctrl+F23
+		//   Win+→   tap=F24       hold=Ctrl+F24
+		xkb_binding_create(seat, alt,        XKB_KEY_F23, ACTION_TOGGLE_TARGET,             ACTION_NONE);
+		xkb_binding_create(seat, alt | ctrl, XKB_KEY_F23, ACTION_SWAP_MAIN_DECK,            ACTION_NONE);
+		xkb_binding_create(seat, 0,          XKB_KEY_F23, ACTION_DECK_PREV,                 ACTION_NONE);
+		xkb_binding_create(seat, ctrl,       XKB_KEY_F23, ACTION_PROMOTE_TARGET_TO_MAIN,    ACTION_NONE);
+		xkb_binding_create(seat, 0,          XKB_KEY_F24, ACTION_DECK_NEXT,                 ACTION_NONE);
+		xkb_binding_create(seat, ctrl,       XKB_KEY_F24, ACTION_SEND_TARGET_TO_DECK_BOTTOM,ACTION_NONE);
+
+		// Insurance: also bind the raw Super+Tab/Left/Right with our own
+		// tap/hold timer, for the case where keyd is NOT running (then these
+		// keysyms reach River directly). When keyd IS active these never fire
+		// (it emits F23/F24 instead), so they're harmless duplicates.
+		xkb_binding_create(seat, super, XKB_KEY_Tab,   ACTION_TOGGLE_TARGET, ACTION_SWAP_MAIN_DECK);
+		xkb_binding_create(seat, super, XKB_KEY_Right, ACTION_DECK_NEXT,     ACTION_SEND_TARGET_TO_DECK_BOTTOM);
+		xkb_binding_create(seat, super, XKB_KEY_Left,  ACTION_DECK_PREV,     ACTION_PROMOTE_TARGET_TO_MAIN);
 
 		// Tap-only bindings:
 		// F19 is emitted by keyd on lone Super tap (overload(meta, f19))
@@ -986,6 +1047,10 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 
 static void wm_handle_window(void *data, struct river_window_manager_v1 *obj, struct river_window_v1 *river_window) {
 	struct Window *window = calloc(1, sizeof(struct Window));
+	if (window == NULL) {
+		LOG_WARN("calloc(Window) failed; dropping window (OOM)");
+		return; /* never crash the sole window manager on OOM */
+	}
 	window->obj = river_window;
 	window->node = river_window_v1_get_node(window->obj);
 	window->new = true;
@@ -995,6 +1060,10 @@ static void wm_handle_window(void *data, struct river_window_manager_v1 *obj, st
 
 static void wm_handle_output(void *data, struct river_window_manager_v1 *obj, struct river_output_v1 *river_output) {
 	struct Output *output = calloc(1, sizeof(struct Output));
+	if (output == NULL) {
+		LOG_WARN("calloc(Output) failed; dropping output (OOM)");
+		return;
+	}
 	output->obj = river_output;
 	river_output_v1_add_listener(output->obj, &river_output_listener, output);
 	wl_list_insert(wm.outputs.prev, &output->link);
@@ -1007,6 +1076,10 @@ static void wm_handle_output(void *data, struct river_window_manager_v1 *obj, st
 
 static void wm_handle_seat(void *data, struct river_window_manager_v1 *obj, struct river_seat_v1 *river_seat) {
 	struct Seat *seat = calloc(1, sizeof(struct Seat));
+	if (seat == NULL) {
+		LOG_WARN("calloc(Seat) failed; dropping seat (OOM)");
+		return;
+	}
 	seat->obj = river_seat;
 	seat->new = true;
 	wl_list_init(&seat->xkb_bindings);
