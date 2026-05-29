@@ -154,11 +154,26 @@ static pthread_mutex_t state_mu = PTHREAD_MUTEX_INITIALIZER;
 #define MAX_CLIENTS 8
 #define HANDLE_MAP  256
 
-/* Server-side IDs sent in event new_id arguments must be in libwayland's
- * server object ID range. libwayland expects these IDs to be allocated
- * sequentially from the start of that range. */
-#define SERVER_ID_BASE 0xFF000000u
+/* WARNING: A fixed high SERVER_ID_BASE is fundamentally broken. libwayland
+ * (src/wayland-util.c, wl_map_insert_at) stores server-allocated objects
+ * (id >= WL_SERVER_ID_START = 0xff000000) in a DENSE array indexed by
+ * (id - 0xff000000), and rejects any insert where that index exceeds the
+ * current entry count: `if (count < i) { errno = EINVAL; return -1; }`.
+ * So synthetic server IDs MUST continue River's own sequence (the next id is
+ * 0xff000000 + current_count) — you cannot pick an arbitrary high base, or
+ * the first synthetic handle waybar receives triggers EINVAL and the whole
+ * connection dies. This is the waybar crash. The real fix (Direction B) is to
+ * NOT synthesize handles at all: forward River's real (dense) handles and
+ * inject only output_enter. SERVER_ID_BASE is retained only for the legacy
+ * synthesis path, which MAINDECK_PASSTHROUGH=1 disables. */
+#define SERVER_ID_BASE 0xFFF00000u
 #define FAKE_OUTPUT_GLOBAL 0xE0000000u
+
+/* Runtime toggles (set from env in main).
+ * Direction B (forward River's real handles + inject output_enter) is the
+ * DEFAULT. The legacy synthetic-handle path (which causes the waybar EINVAL)
+ * is kept only as an opt-in escape hatch for A/B comparison in the harness. */
+static bool opt_synthesize = false;    /* MAINDECK_SYNTHESIZE=1: re-enable legacy synthetic toplevels */
 
 struct HEntry {
     uint32_t cid;
@@ -192,11 +207,24 @@ struct Client {
     int            hmap_n;
     uint32_t       drop_ids[HANDLE_MAP];
     int            drop_n;
+    /* IDs assigned by waybar for layer surfaces (via get_layer_surface new_id).
+     * These client-side IDs are echoed back by River in configure events and must
+     * NEVER be dropped even if they collide with a toplevel handle drop_id. */
+    uint32_t       layer_surface_ids[64];
+    int            layer_surface_n;
     uint32_t       registry_ids[32];
     int            registry_n;
     char           unhandled_binds[32][64]; /* iface names already logged */
     int            unhandled_n;
     uint32_t       next_sid;     /* next server-side ID for handle events */
+
+    /* Direction B: River's REAL foreign-toplevel handle IDs as seen on THIS
+     * waybar connection (parsed from the s2c stream: manager.toplevel new_id).
+     * We forward River's handles untouched and inject output_enter on these
+     * real IDs — no synthetic server-id allocation, so no libwayland EINVAL. */
+    uint32_t       real_handle_ids[HANDLE_MAP];
+    bool           real_handle_entered[HANDLE_MAP]; /* output_enter already injected */
+    int            real_handle_n;
 
     bool           output_done_received;
     bool           active;
@@ -230,6 +258,8 @@ static uint32_t emit_toplevel_new(struct Client *c,
     wu32(msg+0, manager_id);
     wu32(msg+4, (12u<<16)|0u); /* opcode 0 = toplevel */
     wu32(msg+8, sid);
+    plog("emit_toplevel_new: SENDING synthetic toplevel sid=0x%x (mgr=%u) to waybar "
+         "[libwayland needs server ids DENSE from 0xff000000 — this WILL EINVAL]", sid, manager_id);
     raw_write(c->waybar_fd, &c->write_mu, msg, 12);
     return sid;
 }
@@ -264,6 +294,66 @@ static void emit_output_enter(struct Client *c, uint32_t obj) {
     wu32(msg+4, (12u<<16)|2u); /* opcode 2 = output_enter */
     wu32(msg+8, c->output_id);
     raw_write(c->waybar_fd, &c->write_mu, msg, 12);
+}
+
+/* ── Direction B: real-handle tracking + output_enter injection ──────
+ * River forwards real foreign-toplevel handles to waybar untouched; River
+ * 0.4.5 just never emits output_enter, so waybar's wlr/taskbar shows no
+ * button. We track each real handle ID (from manager.toplevel new_id in the
+ * s2c stream) and inject exactly one output_enter on it, using the real
+ * wl_output waybar already bound (c->output_id). No server-id allocation. */
+
+static int real_handle_index(struct Client *c, uint32_t hid) {
+    for (int i = 0; i < c->real_handle_n; i++)
+        if (c->real_handle_ids[i] == hid) return i;
+    return -1;
+}
+
+/* Inject output_enter for handle hid if the output is known and we haven't
+ * already. If the output isn't bound yet, leave it pending for replay on
+ * wl_output.done. Caller must hold clients_mu. */
+static void inject_output_enter_for(struct Client *c, uint32_t hid) {
+    int i = real_handle_index(c, hid);
+    if (i < 0) return;
+    if (c->real_handle_entered[i]) return;
+    if (!c->output_id) return;             /* defer until output bound */
+    emit_output_enter(c, hid);
+    c->real_handle_entered[i] = true;
+    plog("dirB: injected output_enter(handle=%u, output=%u)", hid, c->output_id);
+}
+
+/* Record a real handle id seen on the s2c stream. Caller must hold clients_mu. */
+static void real_handle_add(struct Client *c, uint32_t hid) {
+    if (real_handle_index(c, hid) >= 0) return;
+    if (c->real_handle_n >= HANDLE_MAP) return;
+    c->real_handle_ids[c->real_handle_n] = hid;
+    c->real_handle_entered[c->real_handle_n] = false;
+    c->real_handle_n++;
+}
+
+/* River sent .closed for a handle: forget it so we never replay onto a dead
+ * object. Caller must hold clients_mu. */
+static void real_handle_remove(struct Client *c, uint32_t hid) {
+    int i = real_handle_index(c, hid);
+    if (i < 0) return;
+    for (int j = i; j < c->real_handle_n - 1; j++) {
+        c->real_handle_ids[j] = c->real_handle_ids[j+1];
+        c->real_handle_entered[j] = c->real_handle_entered[j+1];
+    }
+    c->real_handle_n--;
+}
+
+/* Replay output_enter for every known real handle not yet entered (used once
+ * the real wl_output's .done arrives). Caller must hold clients_mu. */
+static void replay_real_output_enters(struct Client *c) {
+    if (!c->output_id) return;
+    for (int i = 0; i < c->real_handle_n; i++)
+        if (!c->real_handle_entered[i]) {
+            emit_output_enter(c, c->real_handle_ids[i]);
+            c->real_handle_entered[i] = true;
+            plog("dirB: replayed output_enter(handle=%u, output=%u)",
+                 c->real_handle_ids[i], c->output_id);
+        }
 }
 
 static void emit_done(struct Client *c, uint32_t obj) {
@@ -377,6 +467,17 @@ static bool client_is_manager_id(struct Client *c, uint32_t id) {
     return false;
 }
 
+static bool client_is_layer_surface_id(struct Client *c, uint32_t id) {
+    for (int i = 0; i < c->layer_surface_n; i++)
+        if (c->layer_surface_ids[i] == id) return true;
+    return false;
+}
+
+static void client_add_layer_surface_id(struct Client *c, uint32_t id) {
+    if (client_is_layer_surface_id(c, id)) return;
+    if (c->layer_surface_n < 64) c->layer_surface_ids[c->layer_surface_n++] = id;
+}
+
 static uint32_t client_sid(struct Client *c,
     struct zwlr_foreign_toplevel_handle_v1 *h, uint32_t manager_id) {
     for (int i = 0; i < c->hmap_n; i++)
@@ -391,6 +492,8 @@ static struct HEntry *client_hentry_for_sid(struct Client *c, uint32_t sid) {
 }
 
 static bool client_should_drop_server_id(struct Client *c, uint32_t id) {
+    /* Never drop a layer_surface ID: the configure event must reach waybar. */
+    if (client_is_layer_surface_id(c, id)) return false;
     for (int i = 0; i < c->drop_n; i++)
         if (c->drop_ids[i] == id) return true;
     return false;
@@ -401,6 +504,7 @@ static bool client_is_synthetic_handle_id(struct Client *c, uint32_t id) {
 }
 
 static void client_add_drop_server_id(struct Client *c, uint32_t id) {
+    if (client_is_layer_surface_id(c, id)) return;  /* never drop layer_surface IDs */
     if (client_should_drop_server_id(c, id)) return;
     if (c->drop_n < HANDLE_MAP) c->drop_ids[c->drop_n++] = id;
 }
@@ -432,6 +536,9 @@ static void replay_output_enters(struct Client *c) {
 }
 
 static void flush_toplevel(struct Client *c, struct Toplevel *t) {
+    /* Direction B (default): never synthesize. River's own real handle is
+     * forwarded to waybar by relay_s2c; output_enter is injected there. */
+    if (!opt_synthesize) return;
     for (int i = 0; i < c->manager_n; i++) {
         uint32_t manager_id = c->manager_ids[i];
         if (client_sid(c, t->handle, manager_id)) continue;
@@ -447,6 +554,9 @@ static void flush_toplevel(struct Client *c, struct Toplevel *t) {
 
 /* Called from wayland_thread when a toplevel changes */
 static void broadcast_update(struct Toplevel *t) {
+    /* Direction B (default): River's own handle stream (forwarded by relay_s2c)
+     * is authoritative; nothing to synthesize or update here. */
+    if (!opt_synthesize) return;
     pthread_mutex_lock(&clients_mu);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         struct Client *c = &clients[i];
@@ -818,11 +928,17 @@ static void *relay_c2s(void *arg) {
 	                    }
 	                    if (!drop_msg && c->output_is_fake && c->zwlr_layer_shell_id &&
 	                            obj_id == c->zwlr_layer_shell_id && opcode == 0 && msize >= 24) {
-	                        if (msize <= sizeof(rewritten)) {
-	                            memcpy(rewritten, msg, msize);
-	                            if (ru32(rewritten + 16) == c->output_id) {
-	                                wu32(rewritten + 16, 0);
-	                                rewritten_len = msize;
+	                        /* get_layer_surface in ancillary path - track the new_id */
+	                        uint32_t ls_new_id = ru32(msg + 8);
+	                        client_add_layer_surface_id(c, ls_new_id);
+	                        plog("relay_c2s(anc): get_layer_surface new_id=%u tracked", ls_new_id);
+	                        if (c->output_is_fake) {
+	                            if (msize <= sizeof(rewritten)) {
+	                                memcpy(rewritten, msg, msize);
+	                                if (ru32(rewritten + 16) == c->output_id) {
+	                                    wu32(rewritten + 16, 0);
+	                                    rewritten_len = msize;
+	                                }
 	                            }
 	                        }
 	                    }
@@ -961,15 +1077,22 @@ static void *relay_c2s(void *arg) {
                 }
             }
 
-            if (!drop && c->output_is_fake && c->zwlr_layer_shell_id &&
+            if (!drop && c->zwlr_layer_shell_id &&
                     obj_id == c->zwlr_layer_shell_id && opcode == 0 && msize >= 24) {
-                uint8_t rewritten[BUF_SZ];
-                if (msize <= sizeof(rewritten)) {
-                    memcpy(rewritten, msg, msize);
-                    if (ru32(rewritten + 16) == c->output_id) {
-                        wu32(rewritten + 16, 0);
-                        if (send(dst, rewritten, msize, MSG_NOSIGNAL) < 0) goto done;
-                        drop = true;
+                /* get_layer_surface(new_id, surface, output, layer, namespace)
+                 * Track the new_id so relay_s2c never drops the configure event. */
+                uint32_t ls_new_id = ru32(msg + 8);
+                client_add_layer_surface_id(c, ls_new_id);
+                plog("relay_c2s: get_layer_surface new_id=%u tracked", ls_new_id);
+                if (c->output_is_fake) {
+                    uint8_t rewritten[BUF_SZ];
+                    if (msize <= sizeof(rewritten)) {
+                        memcpy(rewritten, msg, msize);
+                        if (ru32(rewritten + 16) == c->output_id) {
+                            wu32(rewritten + 16, 0);
+                            if (send(dst, rewritten, msize, MSG_NOSIGNAL) < 0) goto done;
+                            drop = true;
+                        }
                     }
                 }
             }
@@ -1132,11 +1255,31 @@ static void *relay_s2c(void *arg) {
                     }
                 }
             }
+            /* Newly-created real handle id, if this is manager.toplevel(new_id).
+             * In Direction B we inject output_enter on it after forwarding. */
+            uint32_t new_real_handle = 0;
+            bool     handle_closed   = false;
             if (c->manager_n > 0 && client_is_manager_id(c, obj_id) && opcode == 0 && msize >= 12) {
-                client_add_drop_server_id(c, ru32(msg+8));
-                drop = true;
+                uint32_t hid = ru32(msg+8);
+                if (opt_synthesize) {
+                    /* Legacy: suppress River's real handle; a synthetic one
+                     * (allocated by the proxy) replaces it. This is the path
+                     * that causes the waybar EINVAL. */
+                    client_add_drop_server_id(c, hid);
+                    drop = true;
+                } else {
+                    /* Direction B: keep River's real handle; remember it so we
+                     * can inject output_enter once it has been forwarded. */
+                    real_handle_add(c, hid);
+                    new_real_handle = hid;
+                }
             } else if (client_should_drop_server_id(c, obj_id)) {
+                /* drop_ids are only populated in synthesis mode */
                 drop = true;
+            } else if (!opt_synthesize && opcode == 6 && real_handle_index(c, obj_id) >= 0) {
+                /* zwlr_foreign_toplevel_handle_v1.closed — forward it, then
+                 * forget the handle so we don't replay output_enter onto it. */
+                handle_closed = true;
             }
             pthread_mutex_unlock(&clients_mu);
 
@@ -1151,6 +1294,20 @@ static void *relay_s2c(void *arg) {
                 pthread_mutex_unlock(&c->write_mu);
             }
 
+            /* Direction B: inject output_enter immediately after River's
+             * toplevel(new_id) has been forwarded. It lands before River's
+             * .done for the handle, so waybar commits the button correctly. */
+            if (new_real_handle) {
+                pthread_mutex_lock(&clients_mu);
+                inject_output_enter_for(c, new_real_handle);
+                pthread_mutex_unlock(&clients_mu);
+            }
+            if (handle_closed) {
+                pthread_mutex_lock(&clients_mu);
+                real_handle_remove(c, obj_id);
+                pthread_mutex_unlock(&clients_mu);
+            }
+
             bool is_output_done = false;
             pthread_mutex_lock(&clients_mu);
             if (c->output_id && obj_id == c->output_id && opcode == 2) {
@@ -1162,7 +1319,8 @@ static void *relay_s2c(void *arg) {
                 plog("relay_s2c: wl_output.done received for output_id=%u, replaying output enters", c->output_id);
                 pthread_mutex_lock(&clients_mu);
                 c->output_done_received = true;
-                replay_output_enters(c);
+                replay_output_enters(c);        /* legacy synthetic handles */
+                replay_real_output_enters(c);   /* Direction B real handles */
                 pthread_mutex_unlock(&clients_mu);
             }
 
@@ -1232,6 +1390,7 @@ static void cleanup_client(struct Client *c) {
         c->manager_n = 0;
         c->hmap_n = 0;
         c->drop_n = 0;
+        c->layer_surface_n = 0;
         c->registry_n = 0;
         c->unhandled_n = 0;
         c->output_id = 0;
@@ -1609,15 +1768,23 @@ static void run_master(int srv) {
 /* ── main ──────────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[]) {
+    /* Read runtime toggles from env (inherited across the worker re-exec).
+     * Default is Direction B (no synthesis). MAINDECK_SYNTHESIZE=1 opts back
+     * into the legacy synthetic-handle path for A/B comparison. */
+    const char *syn = getenv("MAINDECK_SYNTHESIZE");
+    opt_synthesize = (syn && syn[0] && syn[0] != '0');
+
     if (argc >= 3 && strcmp(argv[1], "--worker") == 0) {
         int control_fd = atoi(argv[2]);
+        plog("Worker: mode=%s", opt_synthesize ? "LEGACY-SYNTHESIS" : "DIRECTION-B (forward real handles + inject output_enter)");
         run_worker(control_fd);
         return 0;
     }
 
-    plog("Master starting (WAYLAND_DISPLAY=%s XDG_RUNTIME_DIR=%s)",
+    plog("Master starting (WAYLAND_DISPLAY=%s XDG_RUNTIME_DIR=%s synthesize=%d)",
          getenv("WAYLAND_DISPLAY") ? getenv("WAYLAND_DISPLAY") : "(null)",
-         getenv("XDG_RUNTIME_DIR") ? getenv("XDG_RUNTIME_DIR") : "(null)");
+         getenv("XDG_RUNTIME_DIR") ? getenv("XDG_RUNTIME_DIR") : "(null)",
+         opt_synthesize);
 
     wait_for_river_stable();
 
