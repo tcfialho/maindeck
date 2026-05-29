@@ -118,9 +118,9 @@ Notes:
 
 This is the part of the setup that lives **entirely outside any dotfiles repo**
 and is required for the MainDeck keybindings to work. `keyd` runs as a system
-daemon *below* the compositor, so it transforms keys before River **or** niri
-ever see them. Both compositors are configured to bind the keys keyd emits, not
-the physical keys.
+daemon *below* the compositor, so it transforms keys before River ever sees
+them. `maindeck-wm` is configured to bind the keys keyd emits, not the physical
+keys.
 
 ### Install / enable
 
@@ -177,26 +177,26 @@ right = timeout(f24,   360, C-f24)
 | `Win` + `→`        | `F24`         | `Ctrl+F24` |
 | `Win` + `↑` / `↓`  | (passthrough — real `Super+Up/Down`) | — |
 
-### How the compositors consume this (the linkage)
+### How `maindeck-wm` consumes this (the linkage)
 
-The keyd side above and the compositor side below must agree; this doc is the
-only place they are connected.
+The keyd side above and the `maindeck-wm` side below must agree; this doc is the
+only place they are connected. All of this is in committed source
+(`seat_manage`, `maindeck-wm.c`). The WM binds the F-key combos keyd emits,
+**with no `Super`**:
 
-- **River / `maindeck-wm`** — in committed source (`seat_manage`,
-  `maindeck-wm.c`). Binds the F-key combos keyd emits, **with no `Super`**:
-  - `Alt+F23` → toggle ALVO · `Alt+Ctrl+F23` → swap MAIN/DECK
-  - `F23` → DECK prev · `Ctrl+F23` → promote ALVO to MAIN
-  - `F24` → DECK next · `Ctrl+F24` → send ALVO to DECK bottom
-  - `F19` → launcher (fuzzel)
-  - These reach the compositor directly (keyd does not remap them), so they use
-    real `Super`: `Super+Return` (kitty), `Super+Up`/`Super+Down` (maximize/
-    restore), `Super+Delete` (close), `Alt+F4` (close), `Super+Shift+Escape`
-    (exit).
-  - The raw `Super+Tab`/`Super+Left`/`Super+Right` are also bound as a fallback
-    for when keyd is not running; with keyd active they never fire.
-- **niri** — in `~/.config/niri/config.kdl`. Binds the same F-key combos
-  (`Alt+F23`, `F23`, `Ctrl+F23`, `F24`, `Ctrl+F24`, `F19`) plus its own
-  `Mod+…` binds. `Alt+F4` and `Mod+Return` (kitty) were added to match River.
+- `Alt+F23` → toggle ALVO · `Alt+Ctrl+F23` → swap MAIN/DECK
+- `F23` → DECK prev · `Ctrl+F23` → promote ALVO to MAIN
+- `F24` → DECK next · `Ctrl+F24` → send ALVO to DECK bottom
+- `F19` → launcher (fuzzel)
+
+Keys that keyd does **not** remap reach the compositor directly, so the WM binds
+them with the real modifier: `Super+Return` (kitty), `Super+Up`/`Super+Down`
+(maximize/restore), `Super+Delete` (close), `Alt+F4` (close),
+`Super+Shift+Escape` (exit).
+
+The raw `Super+Tab`/`Super+Left`/`Super+Right` are also bound as a fallback for
+when keyd is not running; with keyd active they never fire (keyd emits the
+F-keys instead).
 
 ### XKB layout (set in the River init)
 
@@ -206,19 +206,19 @@ XKB_DEFAULT_VARIANT=,intl
 XKB_DEFAULT_OPTIONS=grp:win_space_toggle   # Super+Space toggles br/us
 ```
 
-niri sets the equivalent in its own config. The `br,us-intl` choice is why only
-`F23`/`F24` are usable F-keys (see the keyd comment).
+The `br,us-intl` choice is why only `F23`/`F24` are usable F-keys (see the keyd
+comment).
 
 ## Launcher (fuzzel)
 
 - Config: `~/.config/fuzzel/fuzzel.ini`.
 - Toggle script: `~/.config/niri/fuzzel-toggle.sh`.
 
-**Cross-dependency footgun:** the toggle script lives in the *niri* config
-directory but is used by **both** niri (its `F19` bind) and River (the
-`maindeck-wm` `F19` → launcher action runs `bash …/niri/fuzzel-toggle.sh`, and
-the Waybar start button's `on-click`). Do not move or delete it assuming it is
-niri-only.
+**Path footgun:** the toggle script lives under `~/.config/niri/` for historical
+reasons, but the River session depends on it: the `maindeck-wm` `F19` launcher
+action runs `bash …/niri/fuzzel-toggle.sh`, and the Waybar start button's
+`on-click` points at the same path. Do not move or delete it assuming the
+directory name implies it is unused by River.
 
 Current script (final form):
 
@@ -231,8 +231,8 @@ set -eu
 # fuzzel mapped there does NOT get keyboard focus (the proxy doesn't grant
 # layer-shell focus) — so you can't type and "click away to dismiss" never
 # fires. Always launch fuzzel on the real River display (the one maindeck-wm
-# uses). Derived, not hardcoded, since the socket name can vary. On niri there
-# is no maindeck-wm, so we keep the inherited WAYLAND_DISPLAY.
+# uses). Derived, not hardcoded, since the socket name can vary. If maindeck-wm
+# isn't running, keep the inherited WAYLAND_DISPLAY.
 wm_pid="$(pgrep -x maindeck-wm | head -n1 || true)"
 if [ -n "${wm_pid:-}" ] && [ -r "/proc/${wm_pid}/environ" ]; then
     wm_disp="$(tr '\0' '\n' < "/proc/${wm_pid}/environ" | sed -n 's/^WAYLAND_DISPLAY=//p' | head -n1 || true)"
@@ -267,7 +267,7 @@ Behavior notes:
   - `maindeck-wm` also closes it when focus moves to a normal window (a backup
     via `close_launcher`/`pkill -x fuzzel`).
   - On the empty desktop (no windows) there is no window to click, so void-clicks
-    do not dismiss it in River — use `Esc` or Win again. (niri equivalent: TODO.)
+    do not dismiss it in River — use `Esc` or Win again.
 
 ## Waybar
 
@@ -485,8 +485,7 @@ journalctl --user -b --no-pager | rg -i 'waybar|sunshine|river'
 | --- | --- | --- |
 | `/etc/keyd/default.conf` | root | Key remapping (Win→F19, Tab/←/→→F23/F24). **Critical.** |
 | `~/.config/river/init` | user | River session entry: env, proxy, waybar, WM loops. |
-| `~/.config/niri/config.kdl` | user | niri's binds (mirrors the keyd F-keys). |
-| `~/.config/niri/fuzzel-toggle.sh` | user | Launcher toggle — used by **both** River and niri. |
+| `~/.config/niri/fuzzel-toggle.sh` | user | Launcher toggle (path is historical; used by River). |
 | `~/.config/fuzzel/fuzzel.ini` | user | Launcher appearance. |
 | `~/.config/waybar/{config.jsonc,style.css,power-menu.sh}` | user | Taskbar + start menu. |
 | `/usr/share/wayland-sessions/river.desktop` | root | How SDDM launches River. |
