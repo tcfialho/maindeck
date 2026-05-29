@@ -225,6 +225,22 @@ Current script (final form):
 ```sh
 #!/usr/bin/env bash
 set -eu
+
+# Under River, Waybar runs on the proxy display (maindeck-0). If this script is
+# invoked from a Waybar button it inherits WAYLAND_DISPLAY=maindeck-0, and a
+# fuzzel mapped there does NOT get keyboard focus (the proxy doesn't grant
+# layer-shell focus) — so you can't type and "click away to dismiss" never
+# fires. Always launch fuzzel on the real River display (the one maindeck-wm
+# uses). Derived, not hardcoded, since the socket name can vary. On niri there
+# is no maindeck-wm, so we keep the inherited WAYLAND_DISPLAY.
+wm_pid="$(pgrep -x maindeck-wm | head -n1 || true)"
+if [ -n "${wm_pid:-}" ] && [ -r "/proc/${wm_pid}/environ" ]; then
+    wm_disp="$(tr '\0' '\n' < "/proc/${wm_pid}/environ" | sed -n 's/^WAYLAND_DISPLAY=//p' | head -n1 || true)"
+    if [ -n "${wm_disp:-}" ]; then
+        export WAYLAND_DISPLAY="$wm_disp"
+    fi
+fi
+
 if pgrep -x fuzzel >/dev/null 2>&1; then
     pkill -x fuzzel
 else
@@ -239,11 +255,19 @@ Behavior notes:
 - It is a **toggle**: Win (or the start button) opens it; pressing again closes
   it.
 - It does **not** pass `--keyboard-focus`, so fuzzel uses its default
-  (`exclusive`) and opens already focused — you can type immediately.
-- "Click outside to dismiss" is handled **WM-side** in River (`maindeck-wm`
-  closes fuzzel when focus moves to a normal window). On the empty desktop
-  (no windows) there is no window to click, so void-clicks do not dismiss it
-  in River — use `Esc` or Win again. (niri equivalent: TODO.)
+  (`exclusive`) and opens already focused — you can type immediately. **This
+  only holds if fuzzel runs on the real River display**, which is why the script
+  forces `WAYLAND_DISPLAY` to the WM's display (see the comment above): a fuzzel
+  on `maindeck-0` gets no keyboard focus, so launching it from the Waybar button
+  used to open an unfocused, undismissable launcher.
+- "Click outside to dismiss":
+  - Fuzzel's own `exit-on-keyboard-focus-loss=yes` (in `fuzzel.ini`) closes it
+    when keyboard focus moves away — this is the primary mechanism and now works
+    from both the Win key and the Waybar button (both run on the WM's display).
+  - `maindeck-wm` also closes it when focus moves to a normal window (a backup
+    via `close_launcher`/`pkill -x fuzzel`).
+  - On the empty desktop (no windows) there is no window to click, so void-clicks
+    do not dismiss it in River — use `Esc` or Win again. (niri equivalent: TODO.)
 
 ## Waybar
 
