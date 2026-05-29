@@ -92,6 +92,13 @@ struct Window {
 	char *app_id;
 	char *title;
 
+	// Client-requested fullscreen (e.g. a game). Separate from wm.maximized
+	// (Super+Up), which only fills the usable area. Fullscreen covers the whole
+	// output, including waybar.
+	bool fullscreen;
+	bool applied_fullscreen; // what we last told the server, to act only on edges
+	struct river_output_v1 *fs_output;
+
 	struct wl_list link; // WindowManager.windows in MainDeck order
 };
 
@@ -571,8 +578,31 @@ static void window_handle_pointer_resize_requested(void *data, struct river_wind
 static void window_handle_show_window_menu_requested(void *data, struct river_window_v1 *obj, int32_t x, int32_t y) {}
 static void window_handle_maximize_requested(void *data, struct river_window_v1 *obj) {}
 static void window_handle_unmaximize_requested(void *data, struct river_window_v1 *obj) {}
-static void window_handle_fullscreen_requested(void *data, struct river_window_v1 *obj, struct river_output_v1 *river_output) {}
-static void window_handle_exit_fullscreen_requested(void *data, struct river_window_v1 *obj) {}
+static void window_handle_fullscreen_requested(void *data, struct river_window_v1 *obj, struct river_output_v1 *river_output) {
+	struct Window *window = data;
+	// Record intent; the fullscreen() request itself must be made in the
+	// manage sequence (which the server sends right after this event).
+	window->fullscreen = true;
+	window->fs_output = river_output; // may be NULL → choose in manage_start
+	// Make it the target so it gets keyboard focus (a fullscreen game must
+	// receive input). Only indices 0/1 are valid targets; if it's a hidden
+	// DECK card, promote it to MAIN first.
+	int32_t idx = window_index(window);
+	if (idx == 0 || idx == 1) {
+		wm.target_index = idx;
+	} else if (idx >= 2) {
+		move_first(window);
+		wm.target_index = 0;
+	}
+	wm.maximized = false;
+	LOG_EVENT("fullscreen requested: \"%s\" app_id=%s", window->title ? window->title : "", window->app_id ? window->app_id : "");
+}
+static void window_handle_exit_fullscreen_requested(void *data, struct river_window_v1 *obj) {
+	struct Window *window = data;
+	window->fullscreen = false;
+	window->fs_output = NULL;
+	LOG_EVENT("exit fullscreen requested: \"%s\" app_id=%s", window->title ? window->title : "", window->app_id ? window->app_id : "");
+}
 static void window_handle_minimize_requested(void *data, struct river_window_v1 *obj) {}
 static void window_handle_unreliable_pid(void *data, struct river_window_v1 *obj, int32_t unreliable_pid) {}
 static void window_handle_presentation_hint(void *data, struct river_window_v1 *obj, uint32_t hint) {}
@@ -613,6 +643,32 @@ static void window_maybe_destroy(struct Window *window) {
 }
 
 static void window_manage_layout(struct Window *window, size_t index) {
+	// Client-requested fullscreen: the compositor owns position/dimensions, so
+	// we must NOT propose_dimensions/set_tiled. Issue fullscreen()/exit on the
+	// transition edge (both are manage-sequence-only requests).
+	if (window->fullscreen) {
+		if (!window->applied_fullscreen) {
+			struct river_output_v1 *out = window->fs_output;
+			if (out == NULL) {
+				struct Output *o = active_output();
+				out = o ? o->obj : NULL;
+			}
+			if (out != NULL) {
+				river_window_v1_fullscreen(window->obj, out);
+				river_window_v1_inform_fullscreen(window->obj); // tell the client too
+				window->applied_fullscreen = true;
+			}
+		}
+		window->new = false;
+		return;
+	}
+	if (window->applied_fullscreen) {
+		// Leaving fullscreen: exit + re-propose dimensions this same sequence.
+		river_window_v1_exit_fullscreen(window->obj);
+		river_window_v1_inform_not_fullscreen(window->obj);
+		window->applied_fullscreen = false;
+	}
+
 	if (!window_is_visible_index(index)) return;
 	struct Box box = layout_box_for_index(index);
 	int32_t width = box.width - (BORDER_WIDTH * 2);
@@ -624,6 +680,16 @@ static void window_manage_layout(struct Window *window, size_t index) {
 }
 
 static void window_render_layout(struct Window *window, size_t index) {
+	// Fullscreen window: compositor owns geometry; just show it, no borders,
+	// node on top (so it's the top fullscreen window — anything above it in the
+	// render order, like waybar, keeps drawing; see place_top handling).
+	if (window->fullscreen) {
+		river_window_v1_show(window->obj);
+		river_window_v1_set_borders(window->obj, RIVER_WINDOW_V1_EDGES_NONE, 0, 0, 0, 0, 0);
+		river_node_v1_place_top(window->node);
+		return;
+	}
+
 	if (!window_is_visible_index(index)) {
 		river_window_v1_hide(window->obj);
 		river_window_v1_set_borders(window->obj, RIVER_WINDOW_V1_EDGES_NONE, 0, 0, 0, 0, 0);
