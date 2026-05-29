@@ -469,19 +469,18 @@ static void md_insert_new_window(struct Window *window) {
 	size_t count = window_count();
 	LOG_EVENT("new window: count_before=%zu", count);
 	if (count == 0) {
+		// First window: just MAIN.
 		wl_list_insert(wm.windows.prev, &window->link);
-	} else if (count == 1) {
-		wl_list_insert(&wm.windows, &window->link);
 	} else {
-		struct Window *old_main = window_at(0);
-		struct Window *deck = window_at(1);
+		// Stack behavior: the new window becomes MAIN (index 0), the previous
+		// MAIN slides to the visible DECK (index 1), the previous visible DECK
+		// is pushed back to hidden (index 2), and so on — like a stack where new
+		// windows always come out on top. Inserting at the head of the list does
+		// exactly this, since the list is already in MainDeck order.
 		wl_list_insert(&wm.windows, &window->link);
-		/* Defensive: window_at should be non-NULL when count>=2, but never
-		 * deref a NULL on an unexpected list state — just insert at front. */
-		if (old_main != NULL && deck != NULL) {
-			move_after(old_main, &deck->link);
+		if (count >= 2) {
+			osd("nova janela em MAIN \xc2\xb7 anterior \xe2\x86\x92 DECK");
 		}
-		osd("nova janela em MAIN \xc2\xb7 DECK vis\xc3\xadvel preservado");
 	}
 	wm.target_index = 0;
 	wm.maximized = false;
