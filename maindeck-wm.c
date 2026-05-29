@@ -843,7 +843,7 @@ static void seat_action(struct Seat *seat, enum Action action) {
 	case ACTION_NONE:
 		break;
 	case ACTION_SPAWN_TERMINAL:
-		spawn_command("foot");
+		spawn_command("kitty");
 		break;
 	case ACTION_SPAWN_LAUNCHER:
 		// spawn_sh (sh -c) — NOT spawn_command: the latter execlp's the whole
@@ -945,6 +945,8 @@ static void seat_manage(struct Seat *seat) {
 		xkb_binding_create(seat, 0, XKB_KEY_F19, ACTION_SPAWN_LAUNCHER, ACTION_NONE);
 		xkb_binding_create(seat, super, XKB_KEY_Return, ACTION_SPAWN_TERMINAL, ACTION_NONE);
 		xkb_binding_create(seat, super, XKB_KEY_Delete, ACTION_CLOSE_TARGET, ACTION_NONE);
+		// Alt+F4: close focused window (Windows-like). keyd doesn't touch Alt+F4.
+		xkb_binding_create(seat, alt, XKB_KEY_F4, ACTION_CLOSE_TARGET, ACTION_NONE);
 		xkb_binding_create(seat, super, XKB_KEY_Up, ACTION_MAXIMIZE_TARGET, ACTION_NONE);
 		xkb_binding_create(seat, super, XKB_KEY_Down, ACTION_RESTORE, ACTION_NONE);
 		xkb_binding_create(seat, super | RIVER_SEAT_V1_MODIFIERS_SHIFT, XKB_KEY_Escape, ACTION_EXIT, ACTION_NONE);
