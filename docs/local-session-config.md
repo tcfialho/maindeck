@@ -4,19 +4,45 @@ This file documents machine-local configuration that is required by the
 current MainDeck/River session but is not stored directly in this repository.
 
 The paths below describe the current notebook setup. They should be treated as
-deployment notes, not as portable project source.
+deployment notes, not as portable project source. Everything here reflects the
+**current, working** state (verified 2026-05-29); git history is the changelog.
+
+> The single most important / least reproducible dependency is **keyd** (see
+> the [Keyboard](#keyboard-keyd--the-key-mapping-contract) section). Without it
+> the MainDeck keybindings (Win+Tab/←/→, the Win-tap launcher) do not work,
+> because the window manager binds the F-keys that keyd synthesizes, not the
+> raw keys.
+
+## Build and install
+
+```sh
+meson setup build
+ninja -C build
+# install the built binaries where the River init script expects them:
+install -m755 build/maindeck-wm    ~/.local/bin/maindeck-wm
+install -m755 build/maindeck-proxy ~/.local/bin/maindeck-proxy
+```
+
+`maindeck-wm` is hot-reloadable: after installing, `pkill -x maindeck-wm` and
+the River init loop re-execs it (no relogin needed). The proxy is NOT — every
+GUI client connects through it, so restarting it ends the session; install it
+and pick it up on the next login.
 
 ## Installed MainDeck binaries
 
 - `/home/tcfialho/.local/bin/maindeck-wm`
   - Installed copy of the compositor helper built from this repository.
-  - Started by the River init script with `exec`.
+  - Run by the River init script in a restart loop (`while true; … maindeck-wm`).
 - `/home/tcfialho/.local/bin/maindeck-proxy`
   - Installed copy of the Wayland proxy built from this repository.
-  - Still started by the River init script for diagnostics and future taskbar
-    work.
-  - Waybar is no longer launched through this proxy because the proxy-backed
-    `maindeck-0` display was causing Waybar to exit after windows appeared.
+  - **Waybar (and every GUI app launched in the session) connects through this
+    proxy** on the `maindeck-0` display. The proxy forwards River's real
+    foreign-toplevel handles and injects the `output_enter` event that River
+    0.4.5 never sends — without it Waybar's `wlr/taskbar` shows no buttons.
+  - Started by the River init script in its own restart loop so a proxy crash
+    self-heals (it is a session-wide single point of failure).
+  - See `docs/river-waybar-taskbar-research.md` for the full root-cause of the
+    earlier EINVAL/configure-timeout crash and the "Direction B" fix.
 
 ## River
 
@@ -39,41 +65,185 @@ Current responsibilities:
 - Forces the internal display mode:
   - `eDP-1`
   - `1920x1080@165.014999Hz`
-- Starts `maindeck-proxy` in the background.
-- Starts Waybar in a restart loop on the real River Wayland display.
-- Replaces the shell with:
-  - `/home/tcfialho/.local/bin/maindeck-wm`
+- Starts `maindeck-proxy` in a restart loop (background).
+- Starts Waybar in a restart loop on the **proxy** display (`maindeck-0`).
+- Ends with the `maindeck-wm` restart loop (the foreground of the init script).
 
-Waybar launch detail:
+The session is launched by SDDM via `/usr/share/wayland-sessions/river.desktop`
+(`Exec=river`), so `~/.config/river/init` is the entry point for everything
+above.
 
-```sh
-env -u DISPLAY \
-    XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
-    GDK_BACKEND=wayland \
-    WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-1}" \
-    waybar
-```
-
-The important detail is that Waybar is launched on `wayland-1`, not on
-`maindeck-0`. The proxy display produced errors like:
-
-- `Timed out waiting for initial .configure`
-- `Gdk-Message: Error reading events from display: Argumento invalido`
-
-The River init script keeps Waybar in a simple restart loop:
+Proxy launch (its own restart loop — a proxy crash must self-heal because every
+client depends on it):
 
 ```sh
-while true; do
-    waybar
-    status=$?
-    echo "waybar exited with status ${status}; restarting in 1s"
-    sleep 1
-done
+(
+    while true; do
+        maindeck-proxy 2>>"$HOME/.local/state/river/session.log"
+        echo "maindeck-proxy exited with status $?; restarting in 1s" \
+            >>"$HOME/.local/state/river/session.log"
+        sleep 1
+    done
+) &
 ```
 
-There is also a transient copy of that loop running in the current login
-session when this note was written. After the next login, the persistent River
-init script is the source of truth.
+Waybar launch (on `maindeck-0`, i.e. through the proxy — this is what makes the
+taskbar show buttons):
+
+```sh
+(
+    while true; do
+        env XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
+            GDK_BACKEND=wayland \
+            WAYLAND_DISPLAY="maindeck-0" \
+            waybar
+        status=$?
+        echo "waybar exited with status ${status}; restarting in 1s"
+        sleep 1
+    done
+) &
+```
+
+Notes:
+
+- `WAYLAND_DISPLAY="maindeck-0"` (the proxy), **not** `wayland-1`. The earlier
+  EINVAL / `configure timeout` crash was a proxy bug (synthetic handle IDs),
+  fixed in the proxy itself, not by bypassing it.
+- There is **no** `env -u DISPLAY` here. Waybar must keep `DISPLAY` so that X11
+  apps launched from its taskbar/start-menu (e.g. Steam) inherit it and can
+  reach Xwayland. (Apps launched via the WM keybindings already inherit
+  `DISPLAY` from `maindeck-wm`.)
+
+## Keyboard (keyd) — the key-mapping contract
+
+This is the part of the setup that lives **entirely outside any dotfiles repo**
+and is required for the MainDeck keybindings to work. `keyd` runs as a system
+daemon *below* the compositor, so it transforms keys before River **or** niri
+ever see them. Both compositors are configured to bind the keys keyd emits, not
+the physical keys.
+
+### Install / enable
+
+- File: `/etc/keyd/default.conf` (root-owned; embedded verbatim below).
+- Requires the `keyd` package, installed with root, and the service enabled:
+  ```sh
+  sudo install -m644 default.conf /etc/keyd/default.conf
+  sudo systemctl enable --now keyd
+  ```
+- Current state on this machine: **enabled and active**.
+
+### `/etc/keyd/default.conf` (verbatim)
+
+```ini
+[ids]
+*
+
+[main]
+# Win mantido + outra tecla = Super (Mod). Win tocado sozinho = F19 (toggle fuzzel).
+leftmeta = overload(meta, f19)
+
+[meta]
+# Tap/Hold do MainDeck via timeout(tap, 360ms, hold).
+# Só F23/F24 chegam ao niri como keysym real neste layout (br,us-intl) — as demais
+# F-keys viram XF86* (mídia/launch). Por isso as 3 teclas compartilham F23/F24 com
+# modificadores distintos: Tab usa Alt+F23, ← usa F23, → usa F24.
+#   tab  TAP=Alt+F23      HOLD=Alt+Ctrl+F23
+#   ←    TAP=F23          HOLD=Ctrl+F23
+#   →    TAP=F24          HOLD=Ctrl+F24
+tab   = timeout(A-f23, 360, A-C-f23)
+left  = timeout(f23,   360, C-f23)
+right = timeout(f24,   360, C-f24)
+```
+
+### What keyd does, and why
+
+- `leftmeta = overload(meta, f19)`:
+  - **Tap** Win alone → emits `F19` → opens the fuzzel launcher.
+  - **Hold** Win → activates the `[meta]` layer = acts as the real `Super`/`Mod`
+    modifier (so `Super+Return`, `Super+Up/Down`, `Super+1..9`, etc. work).
+- The `[meta]` layer (active while Win is held) resolves **tap vs hold itself**
+  via `timeout(tap, 360ms, hold)` and emits **F-keys**, *not* the raw key —
+  and it does **not** pass `Super` through. So the compositor never sees
+  `Super+Tab`/`Super+Left`/`Super+Right`; it sees the F-key combos below.
+- Only `F23`/`F24` survive as real keysyms in the `br,us-intl` layout (other
+  F-keys become `XF86*` media keys), which is why the three keys share `F23`/
+  `F24` distinguished by modifiers.
+
+| Physical keys | keyd emits (tap) | keyd emits (hold) |
+| --- | --- | --- |
+| `Win`              | `F19`         | acts as `Super`/`Mod` |
+| `Win` + `Tab`      | `Alt+F23`     | `Alt+Ctrl+F23` |
+| `Win` + `←`        | `F23`         | `Ctrl+F23` |
+| `Win` + `→`        | `F24`         | `Ctrl+F24` |
+| `Win` + `↑` / `↓`  | (passthrough — real `Super+Up/Down`) | — |
+
+### How the compositors consume this (the linkage)
+
+The keyd side above and the compositor side below must agree; this doc is the
+only place they are connected.
+
+- **River / `maindeck-wm`** — in committed source (`seat_manage`,
+  `maindeck-wm.c`). Binds the F-key combos keyd emits, **with no `Super`**:
+  - `Alt+F23` → toggle ALVO · `Alt+Ctrl+F23` → swap MAIN/DECK
+  - `F23` → DECK prev · `Ctrl+F23` → promote ALVO to MAIN
+  - `F24` → DECK next · `Ctrl+F24` → send ALVO to DECK bottom
+  - `F19` → launcher (fuzzel)
+  - These reach the compositor directly (keyd does not remap them), so they use
+    real `Super`: `Super+Return` (kitty), `Super+Up`/`Super+Down` (maximize/
+    restore), `Super+Delete` (close), `Alt+F4` (close), `Super+Shift+Escape`
+    (exit).
+  - The raw `Super+Tab`/`Super+Left`/`Super+Right` are also bound as a fallback
+    for when keyd is not running; with keyd active they never fire.
+- **niri** — in `~/.config/niri/config.kdl`. Binds the same F-key combos
+  (`Alt+F23`, `F23`, `Ctrl+F23`, `F24`, `Ctrl+F24`, `F19`) plus its own
+  `Mod+…` binds. `Alt+F4` and `Mod+Return` (kitty) were added to match River.
+
+### XKB layout (set in the River init)
+
+```
+XKB_DEFAULT_LAYOUT=br,us
+XKB_DEFAULT_VARIANT=,intl
+XKB_DEFAULT_OPTIONS=grp:win_space_toggle   # Super+Space toggles br/us
+```
+
+niri sets the equivalent in its own config. The `br,us-intl` choice is why only
+`F23`/`F24` are usable F-keys (see the keyd comment).
+
+## Launcher (fuzzel)
+
+- Config: `~/.config/fuzzel/fuzzel.ini`.
+- Toggle script: `~/.config/niri/fuzzel-toggle.sh`.
+
+**Cross-dependency footgun:** the toggle script lives in the *niri* config
+directory but is used by **both** niri (its `F19` bind) and River (the
+`maindeck-wm` `F19` → launcher action runs `bash …/niri/fuzzel-toggle.sh`, and
+the Waybar start button's `on-click`). Do not move or delete it assuming it is
+niri-only.
+
+Current script (final form):
+
+```sh
+#!/usr/bin/env bash
+set -eu
+if pgrep -x fuzzel >/dev/null 2>&1; then
+    pkill -x fuzzel
+else
+    exec fuzzel \
+        --anchor=bottom-left --x-margin=2 --y-margin=34 \
+        --width=36 --lines=12 --layer=overlay --border-radius=2
+fi
+```
+
+Behavior notes:
+
+- It is a **toggle**: Win (or the start button) opens it; pressing again closes
+  it.
+- It does **not** pass `--keyboard-focus`, so fuzzel uses its default
+  (`exclusive`) and opens already focused — you can type immediately.
+- "Click outside to dismiss" is handled **WM-side** in River (`maindeck-wm`
+  closes fuzzel when focus moves to a normal window). On the empty desktop
+  (no windows) there is no window to click, so void-clicks do not dismiss it
+  in River — use `Esc` or Win again. (niri equivalent: TODO.)
 
 ## Waybar
 
@@ -100,18 +270,18 @@ Behavior:
   - `clock`
   - `custom/power`
 
-Launcher actions:
+Launcher actions (`on-click`):
 
-- Start/menu button:
-  - `/home/tcfialho/.config/niri/fuzzel-toggle.sh`
-- Browser:
-  - `chromium`
-- Files:
-  - `thunar`
-- Terminal:
-  - `xfce4-terminal`
-- Power menu:
-  - `/home/tcfialho/.config/waybar/power-menu.sh`
+- Start/menu button: `/home/tcfialho/.config/niri/fuzzel-toggle.sh`
+- Browser: `chromium`
+- Files: `thunar`
+- Terminal: `kitty`
+- Power menu: `/home/tcfialho/.config/waybar/power-menu.sh`
+
+`wlr/taskbar` (`all-outputs: true`): `on-click` = `activate` (raise/focus the
+window — this is the Windows-style taskbar behavior), `on-click-middle` =
+`close`. The taskbar only shows buttons because `maindeck-proxy` injects the
+`output_enter` event (see the proxy notes above).
 
 Style:
 
@@ -267,9 +437,33 @@ Do not commit or copy Sunshine credentials:
 ## Useful checks
 
 ```sh
+# session / init
 sh -n ~/.config/river/init
-ps -eo pid,comm,args | rg -i 'waybar|maindeck|river|sunshine'
+ps -eo pid,comm,args | rg -i 'waybar|maindeck|river|sunshine|keyd'
+
+# keyboard (keyd)
+systemctl status keyd --no-pager          # must be enabled + active
+sudo keyd monitor                          # live: shows what keyd emits per key
+#   tap Win → f19 ; hold Win + Tab → A-f23 / A-C-f23 ; etc.
+
+# what maindeck-wm actually receives (after keyd) — it logs each bound key:
+tail -f ~/.local/state/maindeck/maindeck.log   # "[EVENT] key pressed: tap=N hold=M"
+
+# sunshine
 systemctl --user status sunshine-after-login.service --no-pager
 systemctl status sunshine-prelogin.service --no-pager
 journalctl --user -b --no-pager | rg -i 'waybar|sunshine|river'
 ```
+
+## Summary: out-of-repo files this WM depends on
+
+| File | Owner | Purpose |
+| --- | --- | --- |
+| `/etc/keyd/default.conf` | root | Key remapping (Win→F19, Tab/←/→→F23/F24). **Critical.** |
+| `~/.config/river/init` | user | River session entry: env, proxy, waybar, WM loops. |
+| `~/.config/niri/config.kdl` | user | niri's binds (mirrors the keyd F-keys). |
+| `~/.config/niri/fuzzel-toggle.sh` | user | Launcher toggle — used by **both** River and niri. |
+| `~/.config/fuzzel/fuzzel.ini` | user | Launcher appearance. |
+| `~/.config/waybar/{config.jsonc,style.css,power-menu.sh}` | user | Taskbar + start menu. |
+| `/usr/share/wayland-sessions/river.desktop` | root | How SDDM launches River. |
+| `~/.local/bin/maindeck-wm`, `~/.local/bin/maindeck-proxy` | user | Installed builds of this repo. |
