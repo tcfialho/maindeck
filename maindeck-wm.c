@@ -359,6 +359,24 @@ static void osd2(const char *a, const char *b) {
 	osd(buf);
 }
 
+// Dismiss the "loading" notification (fired by maindeck-launch at app launch)
+// now that a window has mapped — i.e. the app has appeared on screen. Coarse by
+// design: cleared on the next window to map, not matched to a specific app_id
+// (a game launched via Steam has an unrelated app_id). The id file is written
+// by maindeck-launch; the notification also self-expires as a backstop.
+static void clear_loading_notification(void) {
+	if (fork() == 0) {
+		execlp("sh", "sh", "-c",
+			"f=\"${XDG_RUNTIME_DIR:-/tmp}/maindeck-loading.id\"; "
+			"[ -f \"$f\" ] || exit 0; "
+			"id=$(cat \"$f\" 2>/dev/null); rm -f \"$f\"; "
+			"[ -n \"$id\" ] && makoctl dismiss -n \"$id\" 2>/dev/null; "
+			"exit 0",
+			(char *)0);
+		_exit(127);
+	}
+}
+
 static void focus_target_on_seats(void) {
 	clamp_target();
 	struct Window *target = target_window();
@@ -1123,6 +1141,8 @@ static void wm_handle_window(void *data, struct river_window_manager_v1 *obj, st
 	window->new = true;
 	river_window_v1_add_listener(window->obj, &river_window_listener, window);
 	md_insert_new_window(window);
+	// A window appeared → clear any pending "loading" notification.
+	clear_loading_notification();
 }
 
 static void wm_handle_output(void *data, struct river_window_manager_v1 *obj, struct river_output_v1 *river_output) {
