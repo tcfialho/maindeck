@@ -28,6 +28,9 @@
 #define DEFAULT_HEIGHT 720
 #define BORDER_WIDTH 3
 #define HOLD_THRESHOLD_MS 360
+// Win+Tab double-tap (two quick taps) → cycle the DECK, same as Win+→. This is a
+// WM-side window on the Alt+F23 tap; unrelated to keyd's hold timeout.
+#define DOUBLE_TAP_MS 280
 
 // --- Logging ---
 
@@ -742,9 +745,38 @@ static void xkb_binding_handle_pressed(void *data, struct river_xkb_binding_v1 *
 		clock_gettime(CLOCK_MONOTONIC, &binding->press_time);
 		binding->held = true;
 		binding->hold_fired = false;
-	} else {
-		binding->seat->pending_action = binding->tap_action;
+		return;
 	}
+
+	// Win+Tab double-tap → cycle the DECK. The first tap fires the normal
+	// ACTION_TOGGLE_TARGET immediately (no latency on the common action). A
+	// second toggle-tap within DOUBLE_TAP_MS runs DECK_NEXT. We deliberately do
+	// NOT undo the first tap's toggle: the ALVO simply lands on DECK and stays
+	// (no flash-and-restore), trading exact "like Win+→" parity for zero latency
+	// and no flicker.
+	if (binding->tap_action == ACTION_TOGGLE_TARGET) {
+		static struct timespec last_toggle_tap;
+		static bool last_toggle_tap_valid = false;
+		struct timespec now;
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		long since_ms = last_toggle_tap_valid
+			? (now.tv_sec - last_toggle_tap.tv_sec) * 1000L
+				+ (now.tv_nsec - last_toggle_tap.tv_nsec) / 1000000L
+			: -1;
+		if (last_toggle_tap_valid && since_ms >= 0 && since_ms <= DOUBLE_TAP_MS) {
+			// Second quick tap: cycle the DECK (don't undo the first toggle).
+			binding->seat->pending_action = ACTION_DECK_NEXT;
+			last_toggle_tap_valid = false; // a third tap starts fresh
+			return;
+		}
+		// First tap: fire the toggle now and arm the double-tap window.
+		last_toggle_tap = now;
+		last_toggle_tap_valid = true;
+		binding->seat->pending_action = ACTION_TOGGLE_TARGET;
+		return;
+	}
+
+	binding->seat->pending_action = binding->tap_action;
 }
 
 static void xkb_binding_handle_released(void *data, struct river_xkb_binding_v1 *obj) {
