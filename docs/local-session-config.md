@@ -43,6 +43,12 @@ and pick it up on the next login.
     self-heals (it is a session-wide single point of failure).
   - See `docs/river-waybar-taskbar-research.md` for the full root-cause of the
     earlier EINVAL/configure-timeout crash and the "Direction B" fix.
+- `/home/tcfialho/.local/bin/maindeck-launch`
+  - **Not built from this repo — a small wrapper script** (embedded verbatim in
+    the "Launch feedback" section below). Shows an "Abrindo aplicativo…"
+    notification, then execs the app. `maindeck-wm` dismisses the notification
+    when a window maps. Used as fuzzel's `--launch-prefix`, so the session's
+    launcher depends on it — if it's missing, launching from the menu breaks.
 
 ## River
 
@@ -244,9 +250,13 @@ fi
 if pgrep -x fuzzel >/dev/null 2>&1; then
     pkill -x fuzzel
 else
+    # --launch-prefix runs the picked app through maindeck-launch (loading
+    # feedback). Absolute path: it resolves via PATH at fuzzel's exec time, and
+    # the bar-launched fuzzel is a child of waybar whose PATH we don't control.
     exec fuzzel \
         --anchor=bottom-left --x-margin=2 --y-margin=34 \
-        --width=36 --lines=12 --layer=overlay --border-radius=2
+        --width=36 --lines=12 --layer=overlay --border-radius=2 \
+        --launch-prefix="$HOME/.local/bin/maindeck-launch"
 fi
 ```
 
@@ -268,6 +278,56 @@ Behavior notes:
     via `close_launcher`/`pkill -x fuzzel`).
   - On the empty desktop (no windows) there is no window to click, so void-clicks
     do not dismiss it in River — use `Esc` or Win again.
+
+## Launch feedback (`maindeck-launch`)
+
+A heavy app (e.g. a game) can take many seconds to show a window, with no
+on-screen feedback in between. `~/.local/bin/maindeck-launch` shows an "Abrindo
+aplicativo…" notification at launch; `maindeck-wm` dismisses it when the next
+window maps (in `wm_handle_window`, committed source). The mako daemon must be
+running for the notification to show (it is started in the session).
+
+Wiring:
+
+- **fuzzel menu** (the heavy/game path): `--launch-prefix=$HOME/.local/bin/maindeck-launch`
+  in `fuzzel-toggle.sh` (above), so every picked app runs through it.
+- **Keybind launches** (`Super+Return` → kitty) do **not** use it — they open
+  fast and don't need a loading hint. (Easy to add later: wrap the command in
+  `maindeck-wm`'s `spawn_*`.)
+
+Design notes:
+
+- Correlation is **coarse on purpose**: the notification is cleared by the
+  *next* window to map, not matched to a specific `app_id`. A game launched via
+  Steam carries an `app_id` unrelated to the command, so per-app matching can't
+  work. The id is tracked via `${XDG_RUNTIME_DIR}/maindeck-loading.id`.
+- The notification **self-expires** (`-t 30000`) as a backstop for apps that
+  never open a window (crash / no-window tool). A leftover id file is harmless
+  (dismissing an already-expired id is a no-op) and is cleared by the next map.
+- Trade-off: every menu launch flashes the notification, even light apps — but
+  it clears in well under a second when their window maps.
+
+`~/.local/bin/maindeck-launch` (verbatim):
+
+```sh
+#!/usr/bin/env bash
+# maindeck-launch CMD [ARGS...]
+# Shows a "loading" notification, then execs the command. maindeck-wm clears it
+# when the next window maps. Correlation is coarse (one pending state via an id
+# file, not per-app_id) because a game launched via Steam has an unrelated
+# app_id. The notification self-expires (-t) as a backstop.
+set -u
+ID_FILE="${XDG_RUNTIME_DIR:-/tmp}/maindeck-loading.id"
+nid="$(notify-send -a maindeck-loading -p -t 30000 \
+    "Abrindo aplicativo…" "Aguarde, carregando." 2>/dev/null || true)"
+if [ -n "${nid:-}" ]; then
+    printf '%s\n' "$nid" > "$ID_FILE" 2>/dev/null || true
+fi
+exec "$@"
+```
+
+The WM side (committed) dismisses it via `makoctl dismiss -n <id>` read from
+that id file when a window maps.
 
 ## Waybar
 
@@ -490,3 +550,4 @@ journalctl --user -b --no-pager | rg -i 'waybar|sunshine|river'
 | `~/.config/waybar/{config.jsonc,style.css,power-menu.sh}` | user | Taskbar + start menu. |
 | `/usr/share/wayland-sessions/river.desktop` | root | How SDDM launches River. |
 | `~/.local/bin/maindeck-wm`, `~/.local/bin/maindeck-proxy` | user | Installed builds of this repo. |
+| `~/.local/bin/maindeck-launch` | user | Launcher wrapper — loading notification (fuzzel `--launch-prefix`). |
