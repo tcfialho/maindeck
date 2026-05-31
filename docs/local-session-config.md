@@ -360,7 +360,8 @@ Launcher actions (`on-click`):
 - Browser: `chromium`
 - Files: `thunar`
 - Terminal: `kitty`
-- Power menu: `/home/tcfialho/.config/waybar/power-menu.sh`
+- Power menu: `/home/tcfialho/.config/wlogout/power.sh` (Windows-style wlogout
+  menu — see the "Power menu" section below)
 
 `wlr/taskbar` (`all-outputs: true`): `on-click` = `activate` (raise/focus the
 window — this is the Windows-style taskbar behavior), `on-click-middle` =
@@ -374,24 +375,80 @@ Style:
 - Compact square-ish launcher buttons.
 - Highlighted active taskbar item.
 
-Power menu:
-
-- Prefers `fuzzel --dmenu`.
-- Falls back to `wofi`, `rofi`, `bemenu`, `tofi`, then `zenity`.
-- Supports:
-  - lock
-  - logout
-  - suspend
-  - hibernate
-  - reboot into Windows through `efibootmgr --bootnext`
-  - reboot
-  - power off
-- Detects `niri`, `labwc`, `river`, `sway`, and `hyprland` for logout.
-- Logs errors to:
-  - `${XDG_CACHE_HOME:-$HOME/.cache}/waybar-power-menu.log`
-
 The packaged user unit `/usr/lib/systemd/user/waybar.service` exists but is
 disabled. River owns Waybar startup for this session.
+
+## Power menu (wlogout, Windows-style)
+
+The Waybar power button (`custom/power` → `~/.config/wlogout/power.sh`) opens a
+**wlogout** menu styled like the Windows power menu: a small centered row of
+four large icon buttons — **Sair · Desligar · Reiniciar · Reiniciar no
+Windows**.
+
+Architecture (one source of truth): **wlogout is only the front-end.** Each
+button's action calls `~/.config/waybar/power-menu.sh <action>`, which keeps all
+the robust logic (River-correct logout, reboot-into-Windows via
+`efibootmgr --bootnext` + `pkexec`). `power-menu.sh` still opens its old
+fuzzel/wofi/rofi/zenity menu when called with **no argument**; the
+direct-action mode (`logout`/`poweroff`/`reboot`/`reboot-windows`) was added so
+wlogout (or anything) can trigger one action without a menu.
+
+Requirements / pieces (all out-of-repo):
+
+- **Package:** `wlogout` (installed from the `cachyos` repo:
+  `sudo pacman -S wlogout`). Not a daemon — it runs only while the menu is open
+  (0 RAM at rest).
+- `~/.config/wlogout/power.sh` — the launcher/wrapper (toggles wlogout; sets the
+  layout/CSS and the big margins that keep the small button row centered instead
+  of stretched across the screen).
+- `~/.config/wlogout/layout` — the four buttons → `power-menu.sh <action>`.
+- `~/.config/wlogout/style.css` — Windows-look CSS (fixed 140px buttons so
+  wlogout can't stretch them; 56px icons at `background-position: center 32%`;
+  17px labels; Windows-blue hover). NOTE: do **not** add `padding-top` to push
+  the label down — it inflates the button height and opens a big gap between
+  icon and label; let GTK vertically center the label instead.
+- `~/.config/wlogout/icons/windows.svg` — the 4-square Windows logo for the
+  "Reiniciar no Windows" button (wlogout's icon set has no Windows glyph).
+- `~/.config/waybar/power-menu.sh` — the action backend (logout / poweroff /
+  reboot / reboot-windows), unchanged except for the direct-action arg parsing.
+- The Waybar `custom/power` `on-click` points at `power.sh` (in
+  `config.jsonc`). Waybar caches its config in memory; after editing it, reload
+  with `kill -USR2 $(pgrep -x waybar)` (a soft reload — does NOT restart the
+  process or drop its proxy connection) or just re-login.
+
+`~/.config/wlogout/power.sh` (verbatim):
+
+```sh
+#!/usr/bin/env bash
+# Windows-style power menu (wlogout front-end → power-menu.sh actions).
+# Small row of compact buttons centered on screen. Toggle: if open, close it.
+set -u
+if pkill -x wlogout 2>/dev/null; then
+    exit 0
+fi
+exec wlogout \
+    --buttons-per-row 4 \
+    --column-spacing 8 \
+    --row-spacing 8 \
+    --margin-top 470 --margin-bottom 470 \
+    --margin-left 650 --margin-right 650 \
+    --layout "$HOME/.config/wlogout/layout" \
+    --css "$HOME/.config/wlogout/style.css" \
+    --protocol layer-shell
+```
+
+`~/.config/wlogout/layout` (verbatim):
+
+```
+{ "label":"logout",   "action":"/home/tcfialho/.config/waybar/power-menu.sh logout",         "text":"Sair",                 "keybind":"e" }
+{ "label":"shutdown", "action":"/home/tcfialho/.config/waybar/power-menu.sh poweroff",       "text":"Desligar",             "keybind":"s" }
+{ "label":"reboot",   "action":"/home/tcfialho/.config/waybar/power-menu.sh reboot",         "text":"Reiniciar",            "keybind":"r" }
+{ "label":"windows",  "action":"/home/tcfialho/.config/waybar/power-menu.sh reboot-windows", "text":"Reiniciar no Windows", "keybind":"w" }
+```
+
+`~/.config/wlogout/style.css` and `icons/windows.svg` are short; see those files
+for the exact look. The `power-menu.sh` backend logs errors to
+`${XDG_CACHE_HOME:-$HOME/.cache}/waybar-power-menu.log`.
 
 ## Sunshine
 
@@ -548,6 +605,8 @@ journalctl --user -b --no-pager | rg -i 'waybar|sunshine|river'
 | `~/.config/niri/fuzzel-toggle.sh` | user | Launcher toggle (path is historical; used by River). |
 | `~/.config/fuzzel/fuzzel.ini` | user | Launcher appearance. |
 | `~/.config/waybar/{config.jsonc,style.css,power-menu.sh}` | user | Taskbar + start menu. |
+| `~/.config/wlogout/{power.sh,layout,style.css,icons/windows.svg}` | user | Windows-style power menu (front-end → power-menu.sh). |
+| `wlogout` (pkg) | system | Power-menu UI; install `sudo pacman -S wlogout` (cachyos repo). |
 | `/usr/share/wayland-sessions/river.desktop` | root | How SDDM launches River. |
 | `~/.local/bin/maindeck-wm`, `~/.local/bin/maindeck-proxy` | user | Installed builds of this repo. |
 | `~/.local/bin/maindeck-launch` | user | Launcher wrapper — loading notification (fuzzel `--launch-prefix`). |
