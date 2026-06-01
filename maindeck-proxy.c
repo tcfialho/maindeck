@@ -214,7 +214,7 @@ struct Client {
     int            layer_surface_n;
     uint32_t       registry_ids[32];
     int            registry_n;
-    char           unhandled_binds[32][64]; /* iface names already logged */
+    char           unhandled_binds[32][128]; /* iface names already logged (matches iface[128] parse buffer) */
     int            unhandled_n;
     uint32_t       next_sid;     /* next server-side ID for handle events */
 
@@ -858,7 +858,8 @@ static void *relay_c2s(void *arg) {
 	                                    if (!strcmp(c->unhandled_binds[u], iface)) { already = true; break; }
 	                                }
 	                                if (!already && c->unhandled_n < 32) {
-	                                    snprintf(c->unhandled_binds[c->unhandled_n], 64, "%s", iface);
+	                                    snprintf(c->unhandled_binds[c->unhandled_n],
+	                                        sizeof(c->unhandled_binds[0]), "%s", iface);
 	                                    c->unhandled_n++;
 	                                    plog("relay_c2s: unhandled bind iface='%s' version=%u new_id=%u",
 	                                         iface, gver, new_id);
@@ -1329,7 +1330,13 @@ static bool connect_to_river(int *fd_out) {
     if (fd < 0) { plog("connect_to_river: socket() failed errno=%d", errno); return false; }
 
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
-    strncpy(addr.sun_path, path, sizeof(addr.sun_path)-1);
+    /* snprintf into sun_path (always NUL-terminates) and fail on truncation —
+     * a silently truncated path would connect to the wrong socket. */
+    if ((size_t)snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path)
+            >= sizeof(addr.sun_path)) {
+        plog("connect_to_river: path too long for sun_path: %s", path);
+        close(fd); return false;
+    }
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         plog("connect_to_river: connect(%s) failed errno=%d (%s)", path, errno, strerror(errno));
         close(fd); return false;
@@ -1514,7 +1521,13 @@ static int create_server_socket(char *out_name, size_t cap) {
 		snprintf(path, sizeof(path), "%s/%s", dir, out_name);
 
 		struct sockaddr_un addr = { .sun_family = AF_UNIX };
-		strncpy(addr.sun_path, path, sizeof(addr.sun_path)-1);
+		/* snprintf (always NUL-terminates) + fail on truncation: a too-long
+		 * path can't bind correctly, and the length is index-independent. */
+		if ((size_t)snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path)
+				>= sizeof(addr.sun_path)) {
+			plog("create_server_socket: path too long for sun_path: %s", path);
+			return -1;
+		}
 
 		int probe = socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0);
 		if (probe >= 0) {
