@@ -337,29 +337,22 @@ static void window_set_string(char **field, const char *value) {
 	*field = value == NULL ? NULL : strdup(value);
 }
 
-static const char *window_label(struct Window *window) {
-	if (window == NULL) return "(none)";
-	if (window->title != NULL && window->title[0] != '\0') return window->title;
-	if (window->app_id != NULL && window->app_id[0] != '\0') return window->app_id;
-	return "(window)";
-}
-
 static void osd(const char *message) {
 	LOG_INFO("OSD: %s", message);
 	if (fork() == 0) {
+		// x-canonical-private-synchronous: notificações com o mesmo valor de
+		// hint se substituem no lugar em vez de empilhar (suportado pelo mako).
+		// Sem isso, cada comando gera um OSD novo e eles acumulam — e como não
+		// há config do mako, o default-timeout dele é 0 (nunca expira sozinho),
+		// então os antigos só sairiam pelo expire-time, ficando empilhados.
 		execlp("notify-send", "notify-send",
 			"--expire-time=1200",
 			"--urgency=low",
 			"--app-name=maindeck",
+			"--hint=string:x-canonical-private-synchronous:maindeck-osd",
 			message, (char *)0);
 		_exit(127);
 	}
-}
-
-static void osd2(const char *a, const char *b) {
-	char buf[512];
-	snprintf(buf, sizeof(buf), "%s%s", a, b);
-	osd(buf);
 }
 
 // Dismiss the "loading" notification (fired by maindeck-launch at app launch)
@@ -416,7 +409,6 @@ static void md_swap_main_deck(void) {
 	move_first(deck);
 	wm.target_index = wm.target_index == 0 ? 1 : 0;
 	wm.maximized = false;
-	osd("MAIN \xe2\x86\x94 DECK"); // ↔
 	log_state();
 }
 
@@ -429,7 +421,6 @@ static void md_deck_next(void) {
 	move_last(deck);
 	wm.target_index = 1;
 	wm.maximized = false;
-	osd2(window_label(window_at(1)), " entrou no DECK \xc2\xb7 ALVO");
 	log_state();
 }
 
@@ -444,7 +435,6 @@ static void md_deck_prev(void) {
 	move_after(last, &main->link);
 	wm.target_index = 1;
 	wm.maximized = false;
-	osd2(window_label(window_at(1)), " entrou no DECK \xc2\xb7 ALVO");
 	log_state();
 }
 
@@ -454,7 +444,6 @@ static void md_send_target_to_deck_bottom(void) {
 	struct Window *target = target_window();
 	if (target == NULL) return;
 	if (wm.target_index == 1 && count <= 2) return;
-	const char *label = window_label(target);
 
 	if (wm.target_index == 0) {
 		// MAIN → move to DECK visible (index 1), ALVO follows the window there.
@@ -463,12 +452,10 @@ static void md_send_target_to_deck_bottom(void) {
 		wl_list_remove(&target->link);
 		wl_list_insert(&deck->link, &target->link); // deck=0, target=1
 		wm.target_index = 1;
-		osd2(label, " MAIN \xe2\x86\x92 DECK \xc2\xb7 ALVO");
 	} else {
 		// DECK → send to hidden bottom as before; next hidden window surfaces to DECK.
 		move_last(target);
 		clamp_target();
-		osd2(label, " ao fundo do DECK");
 	}
 
 	wm.maximized = false;
@@ -478,11 +465,9 @@ static void md_send_target_to_deck_bottom(void) {
 static void md_promote_target_to_main(void) {
 	struct Window *target = target_window();
 	if (target == NULL || wm.target_index == 0) return;
-	const char *label = window_label(target);
 	move_first(target);
 	wm.target_index = 0;
 	wm.maximized = false;
-	osd2(label, " \xe2\x86\x92 MAIN");
 	log_state();
 }
 
@@ -499,9 +484,6 @@ static void md_insert_new_window(struct Window *window) {
 		// windows always come out on top. Inserting at the head of the list does
 		// exactly this, since the list is already in MainDeck order.
 		wl_list_insert(&wm.windows, &window->link);
-		if (count >= 2) {
-			osd("nova janela em MAIN \xc2\xb7 anterior \xe2\x86\x92 DECK");
-		}
 	}
 	wm.target_index = 0;
 	wm.maximized = false;
@@ -722,17 +704,17 @@ static void window_render_layout(struct Window *window, size_t index) {
 	river_node_v1_place_top(window->node);
 
 	if (index == wm.target_index) {
-		// ALVO: yellow
+		// ALVO (focado): borda amarela.
 		river_window_v1_set_borders(window->obj, all_edges(), BORDER_WIDTH,
 			chan(245), chan(197), chan(66), 0xffffffffu);
-	} else if (index == 0) {
-		// MAIN: blue
-		river_window_v1_set_borders(window->obj, all_edges(), BORDER_WIDTH,
-			chan(59), chan(130), chan(246), 0xffffffffu);
 	} else {
-		// DECK: purple
+		// Sem foco (MAIN ou DECK): borda transparente. Mantemos a MESMA largura
+		// (BORDER_WIDTH) com alpha 0 em vez de largura 0, pois a geometria das
+		// janelas já é insetada por BORDER_WIDTH (window_apply_dimensions e o
+		// set_position com +BORDER_WIDTH). Largura 0 deixaria um buraco de 3px;
+		// alpha 0 some com a borda sem mexer em posição/tamanho.
 		river_window_v1_set_borders(window->obj, all_edges(), BORDER_WIDTH,
-			chan(139), chan(92), chan(246), 0xffffffffu);
+			0, 0, 0, 0x00000000u);
 	}
 }
 
@@ -970,7 +952,6 @@ static void seat_action(struct Seat *seat, enum Action action) {
 	case ACTION_CLOSE_TARGET: {
 		struct Window *target = target_window();
 		if (target != NULL) {
-			osd2(window_label(target), " fechado");
 			river_window_v1_close(target->obj);
 			wm.maximized = false;
 		}
@@ -980,7 +961,6 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		if (window_count() >= 2) {
 			wm.target_index = wm.target_index == 0 ? 1 : 0;
 			wm.maximized = false;
-			osd(wm.target_index == 0 ? "alvo: MAIN" : "alvo: DECK");
 		}
 		break;
 	case ACTION_SWAP_MAIN_DECK:
@@ -1002,16 +982,12 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		struct Window *target = target_window();
 		if (target != NULL && !wm.maximized) {
 			wm.maximized = true;
-			char buf[256];
-			snprintf(buf, sizeof(buf), "%s em MAX", window_label(target));
-			osd(buf);
 		}
 		break;
 	}
 	case ACTION_RESTORE:
 		if (wm.maximized) {
 			wm.maximized = false;
-			osd("restaurado");
 		}
 		break;
 	case ACTION_EXIT:
