@@ -388,10 +388,19 @@ Windows**.
 Architecture (one source of truth): **wlogout is only the front-end.** Each
 button's action calls `~/.config/waybar/power-menu.sh <action>`, which keeps all
 the robust logic (River-correct logout, reboot-into-Windows via
-`efibootmgr --bootnext` + `pkexec`). `power-menu.sh` still opens its old
+`efibootmgr --bootnext` then reboot). `power-menu.sh` still opens its old
 fuzzel/wofi/rofi/zenity menu when called with **no argument**; the
 direct-action mode (`logout`/`poweroff`/`reboot`/`reboot-windows`) was added so
 wlogout (or anything) can trigger one action without a menu.
+
+**"Reiniciar no Windows" uses `sudo -n`, not `pkexec`.** River runs no polkit
+agent and the menu is launched with no controlling tty, so `pkexec` can't prompt
+and fails silently (the original bug — it set no BootNext and didn't reboot).
+Since sudo here is passwordless (`NOPASSWD: ALL`), `reboot_windows()` runs
+`sudo -n efibootmgr --bootnext <Windows entry> && systemctl reboot` (pkexec kept
+only as a fallback). Note: `efibootmgr --delete-bootnext` is broken on this
+firmware, but that's irrelevant — BootNext is a one-shot consumed by the next
+boot, and the flow sets it *and* reboots immediately.
 
 Requirements / pieces (all out-of-repo):
 
