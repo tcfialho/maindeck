@@ -1093,6 +1093,52 @@ static void wm_handle_finished(void *data, struct river_window_manager_v1 *obj) 
 	exit(0);
 }
 
+// Assinatura do que afeta layout/foco. O River roda um manage cycle a cada
+// mudança de propriedade de janela — inclusive título/app_id (um spinner de
+// terminal dispara isso ~1-2×/s). Mas título NÃO afeta layout. Comparamos esta
+// assinatura com a do ciclo anterior e, se for igual, pulamos a re-aplicação de
+// layout+foco (que reenviaria propose_dimensions/set_borders/focus idênticos).
+// Inclui tudo que de fato muda o layout — e exclui título/app_id de propósito.
+// Janela `new` força recálculo (hash muda) pois precisa do primeiro layout.
+static uint64_t compute_layout_signature(void) {
+	uint64_t h = 1469598103934665603ULL; // FNV-1a 64
+	#define SIG_MIX(val) do { \
+		uint64_t _v = (uint64_t)(val); \
+		for (int _b = 0; _b < 8; _b++) { \
+			h ^= (_v & 0xff); h *= 1099511628211ULL; _v >>= 8; \
+		} \
+	} while (0)
+
+	SIG_MIX(wm.target_index);
+	SIG_MIX(wm.maximized);
+
+	struct Window *w;
+	wl_list_for_each(w, &wm.windows, link) {
+		SIG_MIX((uintptr_t)w->obj);   // identidade + ordem
+		SIG_MIX(w->fullscreen);
+		SIG_MIX(w->applied_fullscreen); // capta a borda da transição de fullscreen
+		SIG_MIX(w->new);              // janela nova sempre força layout
+	}
+
+	struct Output *o;
+	wl_list_for_each(o, &wm.outputs, link) {
+		SIG_MIX(o->removed);
+		SIG_MIX((uint32_t)o->usable_x);
+		SIG_MIX((uint32_t)o->usable_y);
+		SIG_MIX((uint32_t)o->usable_width);
+		SIG_MIX((uint32_t)o->usable_height);
+	}
+
+	struct Seat *s;
+	wl_list_for_each(s, &wm.seats, link) {
+		if (s->removed) continue;
+		SIG_MIX((uintptr_t)s->obj); // seat novo precisa receber foco
+	}
+
+	#undef SIG_MIX
+	return h;
+}
+
 static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *obj) {
 	struct Output *output, *output_tmp;
 	wl_list_for_each_safe(output, output_tmp, &wm.outputs, link) {
@@ -1128,26 +1174,48 @@ static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *o
 		primary->default_set = true;
 	}
 
-	size_t index = 0;
-	wl_list_for_each(window, &wm.windows, link) {
-		window_manage_layout(window, index);
-		index++;
+	// Pula layout+foco se nada relevante mudou (ex.: só o título girou). As
+	// etapas com efeito colateral acima (destroy/hold-timers/seat_manage/
+	// clamp_target/default-layer) e o manage_finish abaixo SEMPRE rodam — só o
+	// reenvio redundante de dimensões/bordas/foco é evitado.
+	static uint64_t last_layout_sig = 0;
+	static bool have_last_sig = false;
+	uint64_t sig = compute_layout_signature();
+	if (!have_last_sig || sig != last_layout_sig) {
+		size_t index = 0;
+		wl_list_for_each(window, &wm.windows, link) {
+			window_manage_layout(window, index);
+			index++;
+		}
+		focus_target_on_seats();
+		log_state();
+		last_layout_sig = sig;
+		have_last_sig = true;
 	}
-	focus_target_on_seats();
-	log_state();
 
 	river_window_manager_v1_manage_finish(window_manager_v1);
 }
 
 static void wm_handle_render_start(void *data, struct river_window_manager_v1 *obj) {
-	size_t index = 0;
-	struct Window *window;
-	wl_list_for_each(window, &wm.windows, link) {
-		window_render_layout(window, index);
-		index++;
-	}
-	if (target_window() != NULL) {
-		river_node_v1_place_top(target_window()->node);
+	// Mesma ideia do manage cycle: window_render_layout só depende de ordem,
+	// target_index (borda amarela), fullscreen e visibilidade — NÃO do título.
+	// Se a assinatura de layout não mudou, as bordas/posições seriam idênticas,
+	// então pulamos o re-render. render_finish sempre roda.
+	static uint64_t last_render_sig = 0;
+	static bool have_last_render_sig = false;
+	uint64_t sig = compute_layout_signature();
+	if (!have_last_render_sig || sig != last_render_sig) {
+		size_t index = 0;
+		struct Window *window;
+		wl_list_for_each(window, &wm.windows, link) {
+			window_render_layout(window, index);
+			index++;
+		}
+		if (target_window() != NULL) {
+			river_node_v1_place_top(target_window()->node);
+		}
+		last_render_sig = sig;
+		have_last_render_sig = true;
 	}
 	river_window_manager_v1_render_finish(window_manager_v1);
 }
