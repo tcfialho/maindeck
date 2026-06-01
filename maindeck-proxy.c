@@ -370,20 +370,6 @@ static void emit_closed(struct Client *c, uint32_t obj) {
     raw_write(c->waybar_fd, &c->write_mu, msg, 8);
 }
 
-static void emit_registry_global(struct Client *c, uint32_t registry_id,
-        uint32_t name, const char *iface, uint32_t version) {
-    uint8_t buf[256];
-    uint32_t off = 8;
-    wu32(buf + off, name); off += 4;
-    int sl = encode_str(buf + off, sizeof(buf) - off - 4, iface);
-    if (sl < 0) return;
-    off += (uint32_t)sl;
-    wu32(buf + off, version); off += 4;
-    wu32(buf+0, registry_id);
-    wu32(buf+4, (off<<16)|0u); /* wl_registry.global */
-    raw_write(c->waybar_fd, &c->write_mu, buf, off);
-}
-
 static void emit_fake_output_events(struct Client *c) {
     if (!c->output_id || !c->output_is_fake) return;
 
@@ -753,32 +739,6 @@ static size_t build_bind(uint8_t *out, size_t cap, uint32_t registry_id,
     wu32(out+0, registry_id);
     wu32(out+4, (off<<16)|0u);
     return off;
-}
-
-static bool rewrite_fake_output_bind_inplace(struct Client *c, uint8_t *msg, size_t msz) {
-    uint32_t name, ver, new_id;
-    char iface[128];
-    if (!parse_bind(msg, msz, &name, iface, sizeof(iface), &ver, &new_id)) return false;
-    if (name != FAKE_OUTPUT_GLOBAL || strcmp(iface, "wl_output") != 0) return false;
-    if (!c->fixes_global) return false;
-
-    c->output_id = new_id;
-    c->output_version = ver;
-    c->output_is_fake = true;
-
-    size_t off = MSG_HDR;
-    wu32(msg + off, c->fixes_global); off += 4;
-    uint32_t slen = ru32(msg + off); off += 4;
-    uint32_t pad = (slen + 3u) & ~3u;
-    memset(msg + off, 0, pad);
-    memcpy(msg + off, "wl_fixes", sizeof("wl_fixes"));
-    off += pad;
-    uint32_t fver = c->fixes_version < ver ? c->fixes_version : ver;
-    if (fver == 0) fver = 1;
-    wu32(msg + off, fver);
-
-    emit_fake_output_events(c);
-    return true;
 }
 
 /* ── Per-client relay threads ──────────────────────────────────── */
