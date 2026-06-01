@@ -24,11 +24,27 @@ ninja -C build
 river -c ./build/maindeck-wm
 ```
 
+## Visual feedback
+
+- **Borders:** only the focused window (`ALVO`) draws a border (yellow).
+  Unfocused windows (MAIN/DECK) have a transparent border — same width, alpha 0
+  — so the layout never shifts when focus changes.
+- **OSD:** intentionally sparse. The WM notifies only for the two navigation
+  no-ops (`sem janela invisível à direita/esquerda`), where nothing moves on
+  screen. Every command with a visible effect (swap, deck cycle, promote,
+  send-to-deck, new window, close, maximize, restore) is silent. The OSD uses
+  the mako `x-canonical-private-synchronous` hint, so a new message replaces the
+  previous one instead of stacking.
+
 ## Local deployment notes
 
-Machine-local River, Waybar, and Sunshine configuration used on the notebook is
-documented in `docs/local-session-config.md`. Those files live outside this
-repository and must be managed separately from the source tree.
+Machine-local River, Waybar, Sunshine, and notification (mako) configuration
+used on the notebook is documented in `docs/local-session-config.md`. Those
+files live outside this repository and must be managed separately from the
+source tree. In particular the OSD's "replace, don't stack" behavior and its
+auto-expiry rely on mako: see the **Notifications (mako)** section there for
+`~/.config/mako/config` (the 10-second ceiling) — without it, notifications
+never auto-expire.
 
 The River/Waybar taskbar investigation and architecture handoff is documented
 in `docs/river-waybar-taskbar-research.md`.

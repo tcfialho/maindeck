@@ -329,6 +329,40 @@ exec "$@"
 The WM side (committed) dismisses it via `makoctl dismiss -n <id>` read from
 that id file when a window maps.
 
+## Notifications (mako)
+
+The notification daemon is **mako**, run as the systemd user service
+`mako.service` (shared across sessions; started on demand when a Wayland
+display exists). River's init does not spawn it. Both the MainDeck OSD and the
+launch-feedback notification depend on it.
+
+Two machine-local concerns live outside the repo:
+
+1. **`~/.config/mako/config`** — a 10-second ceiling so nothing lingers:
+
+   ```ini
+   # Rede de segurança: nenhuma notificação fica mais que 10s na tela.
+   # Sem isso, o mako usa default-timeout=0 (nunca expira sozinho), e qualquer
+   # notificação sem --expire-time explícito ficaria empilhada para sempre.
+   # O OSD do MainDeck já pede 1200ms via notify-send; este teto só pega o resto.
+   default-timeout=10000
+   ```
+
+   Apply without restarting: `makoctl reload`. Without this file mako's
+   `default-timeout` is `0` (never auto-expires) — that's why OSDs used to pile
+   up and stay forever.
+
+2. **The OSD synchronous hint (committed source, listed here for context).**
+   `maindeck-wm`'s `osd()` passes
+   `--hint=string:x-canonical-private-synchronous:maindeck-osd`. mako collapses
+   all notifications sharing that value into one slot, so a new OSD **replaces**
+   the previous one instead of stacking. This is a mako feature; a different
+   notification daemon may not honor the hint (OSDs would stack again).
+
+The OSD itself is intentionally sparse: the WM only notifies for the two
+navigation no-ops (`sem janela invisível à direita/esquerda`) where nothing
+moves on screen. Every command with a visible effect is silent.
+
 ## Waybar
 
 Main files:
@@ -614,6 +648,7 @@ journalctl --user -b --no-pager | rg -i 'waybar|sunshine|river'
 | `~/.config/niri/fuzzel-toggle.sh` | user | Launcher toggle (path is historical; used by River). |
 | `~/.config/fuzzel/fuzzel.ini` | user | Launcher appearance. |
 | `~/.config/waybar/{config.jsonc,style.css,power-menu.sh}` | user | Taskbar + start menu. |
+| `~/.config/mako/config` | user | Notification 10s ceiling (`default-timeout`). Without it OSDs never auto-expire. |
 | `~/.config/wlogout/{power.sh,layout,style.css,icons/windows.svg}` | user | Windows-style power menu (front-end → power-menu.sh). |
 | `wlogout` (pkg) | system | Power-menu UI; install `sudo pacman -S wlogout` (cachyos repo). |
 | `/usr/share/wayland-sessions/river.desktop` | root | How SDDM launches River. |
