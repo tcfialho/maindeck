@@ -9,11 +9,17 @@ project(
   default_options: [
     'c_std=c99',
     'warning_level=3',
-    # -O2 + símbolos. O proxy faz relay de todo o tráfego Wayland de todo app
-    # (caminho quente); o default do meson (-O0) deixava o .text ~20% maior e o
-    # hot path sem otimização. debugoptimized mantém símbolos pra debug.
-    # Override com -Dbuildtype=debug para builds de depuração.
+    # Default DISTRIBUÍVEL/genérico: -O2 + símbolos + LTO. Portável (sem
+    # -march), seguro pra pipeline. O proxy faz relay de todo o tráfego Wayland
+    # de todo app (caminho quente); o default do meson (-O0) deixava o hot path
+    # sem otimização. Override com -Dbuildtype=debug pra depurar.
+    #
+    # Build local "máximo" (só esta máquina, não versionado): aplicado no build/
+    # via `meson configure build -Doptimization=3 -Dc_args=-march=native
+    # -Dc_link_args=-march=native`. -O3 + instruções nativas do CPU (Alder Lake:
+    # AVX2/BMI). NÃO colocar -march aqui: quebraria o build genérico.
     'buildtype=debugoptimized',
+    'b_lto=true',
   ],
 )
 
