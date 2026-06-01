@@ -9,6 +9,11 @@ project(
   default_options: [
     'c_std=c99',
     'warning_level=3',
+    # -O2 + símbolos. O proxy faz relay de todo o tráfego Wayland de todo app
+    # (caminho quente); o default do meson (-O0) deixava o .text ~20% maior e o
+    # hot path sem otimização. debugoptimized mantém símbolos pra debug.
+    # Override com -Dbuildtype=debug para builds de depuração.
+    'buildtype=debugoptimized',
   ],
 )
 

@@ -1085,7 +1085,10 @@ static void *relay_c2s(void *arg) {
                 client_add_layer_surface_id(c, ls_new_id);
                 plog("relay_c2s: get_layer_surface new_id=%u tracked", ls_new_id);
                 if (c->output_is_fake) {
-                    uint8_t rewritten[BUF_SZ];
+                    /* get_layer_surface é pequeno (5 args + namespace curto);
+                     * 256B bastam. O guard mantém o caso patológico seguro:
+                     * se algo vier maior, não reescreve (cai no forward normal). */
+                    uint8_t rewritten[256];
                     if (msize <= sizeof(rewritten)) {
                         memcpy(rewritten, msg, msize);
                         if (ru32(rewritten + 16) == c->output_id) {
