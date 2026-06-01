@@ -49,21 +49,7 @@ static void log_init(void) {
 	}
 }
 
-// Logging verboso (INFO/EVENT/STATE) só sai com MAINDECK_DEBUG=1. WARN sempre.
-// Motivo: o River roda um ciclo de manage a cada mudança de propriedade de
-// janela — um spinner no título (kitty) dispara isso ~1-2×/s, e o STATE por
-// ciclo enchia o session.log (chegou a 244MB). O gate fica no TOPO de md_log,
-// antes de qualquer formatação, então linhas suprimidas custam ~0.
-static int md_debug_log(void) {
-	static int cached = -1;
-	if (cached < 0) cached = getenv("MAINDECK_DEBUG") != NULL ? 1 : 0;
-	return cached;
-}
-
 static void md_log(const char *level, const char *fmt, ...) {
-	// WARN (e qualquer nível != verboso) sempre passa; o resto só em debug.
-	if (level[0] != 'W' && !md_debug_log()) return;
-
 	struct timespec ts;
 	clock_gettime(CLOCK_REALTIME, &ts);
 	struct tm *t = localtime(&ts.tv_sec);
