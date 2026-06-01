@@ -1087,28 +1087,40 @@ static void wm_handle_finished(void *data, struct river_window_manager_v1 *obj) 
 // Inclui tudo que de fato muda o layout — e exclui título/app_id de propósito.
 // Janela `new` força recálculo (hash muda) pois precisa do primeiro layout.
 static uint64_t compute_layout_signature(void) {
-	uint64_t h = 1469598103934665603ULL; // FNV-1a 64
-	#define SIG_MIX(val) do { \
-		uint64_t _v = (uint64_t)(val); \
-		for (int _b = 0; _b < 8; _b++) { \
-			h ^= (_v & 0xff); h *= 1099511628211ULL; _v >>= 8; \
-		} \
-	} while (0)
+	// FNV-1a 64, misturando uma palavra de 64 bits por campo (não byte-a-byte:
+	// os campos já cabem em 64 bits, então um mix por valor basta e é mais
+	// barato/legível).
+	uint64_t h = 1469598103934665603ULL;
+	#define SIG_MIX(val) do { h = (h ^ (uint64_t)(val)) * 1099511628211ULL; } while (0)
 
 	SIG_MIX(wm.target_index);
 	SIG_MIX(wm.maximized);
 
+	// Contagem entra explícita: o layout muda de regime em count<=1 (tela cheia)
+	// vs count>=2 (split 67/33), independente de qual janela é.
+	SIG_MIX(window_count());
+
 	struct Window *w;
 	wl_list_for_each(w, &wm.windows, link) {
-		SIG_MIX((uintptr_t)w->obj);   // identidade + ordem
+		SIG_MIX((uintptr_t)w->obj);     // identidade + ordem (FNV é sensível à ordem)
 		SIG_MIX(w->fullscreen);
 		SIG_MIX(w->applied_fullscreen); // capta a borda da transição de fullscreen
-		SIG_MIX(w->new);              // janela nova sempre força layout
+		SIG_MIX(w->new);                // janela nova sempre força layout
 	}
 
+	// output_box()/active_output() usam usable_* QUANDO válidos, senão caem para
+	// width/height crus, senão DEFAULT. active_output() ainda troca o output
+	// ativo com base em width/height. Por isso a assinatura precisa de AMBOS os
+	// conjuntos (usable_* e os crus x/y/width/height) — senão uma mudança de
+	// resolução no estado usable=0, ou a transição usable 0→válido, passaria
+	// despercebida e o layout ficaria com tamanho errado sem corrigir.
 	struct Output *o;
 	wl_list_for_each(o, &wm.outputs, link) {
 		SIG_MIX(o->removed);
+		SIG_MIX((uint32_t)o->x);
+		SIG_MIX((uint32_t)o->y);
+		SIG_MIX((uint32_t)o->width);
+		SIG_MIX((uint32_t)o->height);
 		SIG_MIX((uint32_t)o->usable_x);
 		SIG_MIX((uint32_t)o->usable_y);
 		SIG_MIX((uint32_t)o->usable_width);
