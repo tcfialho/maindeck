@@ -1053,19 +1053,10 @@ static void seat_manage(struct Seat *seat) {
 	if (seat->interacted != NULL && seat->interacted != seat->focused) {
 		int32_t idx = window_index(seat->interacted);
 		if (idx == 1) {
-			// Clicou na DECK visível → vira ALVO, sem promover.
+			// Clicked DECK window → make it the ALVO (don't promote)
 			wm.target_index = 1;
 			wm.maximized = false;
 		} else if (idx == 0) {
-			// Clicou na MAIN → vira ALVO.
-			wm.target_index = 0;
-			wm.maximized = false;
-		} else if (idx >= 2) {
-			// Clicou (na taskbar) numa janela OCULTA → promove pra MAIN.
-			// Janela visível só recebe foco (acima); oculta precisa vir à frente,
-			// senão o clique não tem efeito visível. Era o comportamento até
-			// f2d6aa0, que o removeu ao parar de promover a DECK visível.
-			move_first(seat->interacted);
 			wm.target_index = 0;
 			wm.maximized = false;
 		}
