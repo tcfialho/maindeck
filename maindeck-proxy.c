@@ -38,21 +38,43 @@
 #include <time.h>
 #include <stdarg.h>
 #include "wlr-foreign-toplevel-management-unstable-v1-client-protocol.h"
+#include "ext-foreign-toplevel-list-v1-client-protocol.h"
 
-/* ── Logging ───────────────────────────────────────────────────── */
-static void plog(const char *fmt, ...) {
+/* ── Logging ───────────────────────────────────────────────────────
+ * Default "quase mudo": só erros (plog_err) saem. O log verboso (plog) só
+ * sai com MAINDECK_LOG=debug. Sem fflush no caminho comum — deixa o SO
+ * bufferizar; erros forçam flush pra não se perderem num crash. */
+static int proxy_verbose(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("MAINDECK_LOG");
+        v = (e && (e[0] == 'd' || e[0] == 'D')) ? 1 : 0;
+    }
+    return v;
+}
+
+static void vplog(int force, const char *fmt, va_list ap) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    struct tm *t = localtime(&ts.tv_sec);
-    char tbuf[32];
-    strftime(tbuf, sizeof(tbuf), "%H:%M:%S", t);
+    struct tm tmv;
+    localtime_r(&ts.tv_sec, &tmv);
+    char tbuf[16];
+    strftime(tbuf, sizeof(tbuf), "%H:%M:%S", &tmv);
     fprintf(stderr, "[%s.%03ld] [proxy] ", tbuf, ts.tv_nsec / 1000000);
-    va_list ap;
-    va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
-    va_end(ap);
     fputc('\n', stderr);
-    fflush(stderr);
+    if (force) fflush(stderr); // só erros forçam flush
+}
+
+/* Verboso: suprimido por padrão. */
+static void plog(const char *fmt, ...) {
+    if (!proxy_verbose()) return;
+    va_list ap; va_start(ap, fmt); vplog(0, fmt, ap); va_end(ap);
+}
+
+/* Erros: sempre saem, com flush. */
+static void plog_err(const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt); vplog(1, fmt, ap); va_end(ap);
 }
 
 /* ── Wayland binary protocol helpers ───────────────────────────── */
@@ -114,7 +136,7 @@ static ssize_t raw_write(int fd, pthread_mutex_t *mu,
     r = sendmsg(fd, &mh, MSG_NOSIGNAL);
     pthread_mutex_unlock(mu);
     if (r < 0) {
-        plog("raw_write: sendmsg fd=%d len=%zu errno=%d (%s)",
+        plog_err("raw_write: sendmsg fd=%d len=%zu errno=%d (%s)",
              fd, len, errno, strerror(errno));
     } else if ((size_t)r != len) {
         plog("raw_write: short write fd=%d wrote=%zd want=%zu",
@@ -137,16 +159,28 @@ static int encode_str(uint8_t *out, size_t cap, const char *s) {
 
 /* ── Toplevel state ─────────────────────────────────────────────── */
 
+/* ExtToplevel: rastreia um ext_foreign_toplevel_handle_v1 do River.
+ * Mantém o identifier único (imutável após recebido) e linkagem direta
+ * com o Toplevel zwlr correspondente (lockstep garantido pelo River). */
+struct ExtToplevel {
+    struct ext_foreign_toplevel_handle_v1 *handle;
+    char   identifier[33];
+    int    refcount;  /* inicia em 2: 1 pelo Toplevel zwlr + 1 pelo ext handle */
+    struct wl_list link;
+};
+
 struct Toplevel {
     struct zwlr_foreign_toplevel_handle_v1 *handle;
     char   *title;
     char   *app_id;
     bool    activated;
     bool    closed;
+    struct ExtToplevel *ext; /* ponteiro direto para o ext correspondente (lockstep) */
     struct wl_list link;
 };
 
 static struct wl_list  toplevels;
+static struct wl_list  ext_toplevels;
 static pthread_mutex_t state_mu = PTHREAD_MUTEX_INITIALIZER;
 
 /* ── Client registry ─────────────────────────────────────────────── */
@@ -227,17 +261,18 @@ struct Client {
     int            real_handle_n;
 
     bool           output_done_received;
+    int            active_threads;
     bool           active;
 };
 
 static struct Client    clients[MAX_CLIENTS];
 static pthread_mutex_t  clients_mu = PTHREAD_MUTEX_INITIALIZER;
 
-static void cleanup_client(struct Client *c);
+static void client_thread_exit(struct Client *c);
 
 static struct Client *alloc_client(void) {
     for (int i = 0; i < MAX_CLIENTS; i++)
-        if (!clients[i].active) return &clients[i];
+        if (!clients[i].active && clients[i].active_threads == 0) return &clients[i];
     return NULL;
 }
 
@@ -341,6 +376,99 @@ static void real_handle_remove(struct Client *c, uint32_t hid) {
         c->real_handle_entered[j] = c->real_handle_entered[j+1];
     }
     c->real_handle_n--;
+}
+
+/* Retorna o identifier do handle zwlr hid nesta conexão de cliente.
+ *
+ * INVARIANTE em que isto se apoia: tanto a lista per-client (real_handle_ids[])
+ * quanto a lista global `toplevels` são replays append-only da MESMA lista
+ * canônica de toplevels do River (insert no tail + remove por identidade nos
+ * dois lados). Logo o índice `i` do handle na visão do cliente == posição `i`
+ * na lista global, e o Toplevel[i].ext é o ext correspondente (lockstep
+ * garantido pelo River: cria/destrói ext e zwlr juntos, mesma ordem).
+ * Se algum dos lados deixar de ser append+remove-por-identidade, o mapeamento
+ * posicional quebra. Único desvio possível: skew transitório de sub-segundo
+ * enquanto um stream (worker vs relay do cliente) está atrás do outro — erra
+ * 1 clique e se auto-corrige no próximo evento.
+ * Caller deve NÃO segurar nenhum lock (adquire state_mu internamente). */
+static bool real_handle_identifier(struct Client *c, uint32_t hid, char out[33]) {
+    int i = real_handle_index(c, hid);
+    if (i < 0) return false;
+    bool ok = false;
+    pthread_mutex_lock(&state_mu);
+    int j = 0;
+    struct Toplevel *tt;
+    wl_list_for_each(tt, &toplevels, link) {
+        if (j == i) {
+            if (tt->ext != NULL && tt->ext->identifier[0] != '\0') {
+                snprintf(out, 33, "%s", tt->ext->identifier);
+                ok = true;
+            }
+            break;
+        }
+        j++;
+    }
+    pthread_mutex_unlock(&state_mu);
+    return ok;
+}
+
+/* Envia mensagem "activate <identifier>" para o WM via SOCK_DGRAM. */
+static bool send_wm_activate(const char *identifier) {
+    const char *dir = getenv("XDG_RUNTIME_DIR");
+    if (!dir || !identifier || identifier[0] == '\0') return false;
+
+    char path[256];
+    if ((size_t)snprintf(path, sizeof(path), "%s/maindeck-wm.sock", dir) >= sizeof(path))
+        return false;
+
+    int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return false;
+
+    char msg[64];
+    int len = snprintf(msg, sizeof(msg), "activate %s", identifier);
+    if (len < 0 || (size_t)len >= sizeof(msg)) {
+        close(fd);
+        return false;
+    }
+
+    struct sockaddr_un addr = { .sun_family = AF_UNIX };
+    if ((size_t)snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path) >= sizeof(addr.sun_path)) {
+        close(fd);
+        return false;
+    }
+
+    bool ok = sendto(fd, msg, (size_t)len, MSG_NOSIGNAL,
+        (struct sockaddr *)&addr, sizeof(addr)) == (ssize_t)len;
+    if (!ok) {
+        plog_err("send_wm_activate: sendto(%s) failed errno=%d (%s)",
+             path, errno, strerror(errno));
+    }
+    close(fd);
+    return ok;
+}
+
+/* Intercepta activate (opcode 4) em handle zwlr real da taskbar.
+ * Resolve o identifier via ponteiro direto Toplevel->ext, envia ao WM,
+ * retorna true para sinalizar que a mensagem deve ser dropada. */
+static bool handle_taskbar_activate(struct Client *c, uint32_t obj_id, uint32_t opcode) {
+    /* zwlr_foreign_toplevel_handle_v1 requests (opcode = índice 0-based):
+     * 0=set_maximized 1=unset_maximized 2=set_minimized 3=unset_minimized
+     * 4=activate 5=close 6=set_rectangle 7=destroy 8=set_fullscreen 9=unset_fullscreen */
+    if (opcode != 4) return false; /* 4 = activate */
+    if (real_handle_index(c, obj_id) < 0) return false;
+
+    char identifier[33];
+    identifier[0] = '\0';
+    bool got_id = real_handle_identifier(c, obj_id, identifier);
+    if (!got_id || identifier[0] == '\0') {
+        plog("taskbar activate: handle=%u sem identifier (ext ainda não chegou?), ignorando", obj_id);
+        return true; /* drop: River ignora activate mesmo */
+    }
+
+    bool sent = send_wm_activate(identifier);
+    plog("taskbar activate: handle=%u identifier=%s enviado=%s",
+         obj_id, identifier, sent ? "sim" : "FALHOU");
+    return true; /* drop: River ignora activate de qualquer forma */
 }
 
 /* Replay output_enter for every known real handle not yet entered (used once
@@ -616,6 +744,21 @@ static void tl_state(void *data,
     t->activated = act;
     pthread_mutex_unlock(&state_mu);
 }
+
+/* Libera uma referência ao ExtToplevel. Quando refcount cai a zero,
+ * destroi o handle Wayland e libera a memória.
+ * Caller deve NÃO segurar state_mu ao chamar (adquire internamente). */
+static void ext_unref(struct ExtToplevel *ext) {
+    pthread_mutex_lock(&state_mu);
+    int ref = --ext->refcount;
+    pthread_mutex_unlock(&state_mu);
+    if (ref == 0) {
+        plog("ext_unref: identifier=%s — destruindo e liberando", ext->identifier);
+        ext_foreign_toplevel_handle_v1_destroy(ext->handle);
+        free(ext);
+    }
+}
+
 static void tl_done(void *data,
     struct zwlr_foreign_toplevel_handle_v1 *h) {
     (void)h; struct Toplevel *t = data;
@@ -627,14 +770,24 @@ static void tl_done(void *data,
 static void tl_closed(void *data,
     struct zwlr_foreign_toplevel_handle_v1 *h) {
     (void)h; struct Toplevel *t = data;
+    plog("tl_closed: title='%s' ext=%p", t->title ? t->title : "", (void*)t->ext);
     broadcast_closed(t);
     pthread_mutex_lock(&state_mu);
     t->closed = true;
     wl_list_remove(&t->link);
+    struct ExtToplevel *ext = t->ext;
+    if (ext != NULL) {
+        /* Remover da lista de índice agora (sincronia de lookup) */
+        wl_list_remove(&ext->link);
+        t->ext = NULL;
+    }
     zwlr_foreign_toplevel_handle_v1_destroy(t->handle);
     free(t->title); free(t->app_id);
     pthread_mutex_unlock(&state_mu);
+    plog("tl_closed: done");
     free(t);
+    /* Decrementa ref do ExtToplevel DEPOIS de liberar t (t->ext não mais acessado) */
+    if (ext != NULL) ext_unref(ext);
 }
 static void tl_parent(void *d, struct zwlr_foreign_toplevel_handle_v1 *h,
     struct zwlr_foreign_toplevel_handle_v1 *p) { (void)d;(void)h;(void)p; }
@@ -653,10 +806,30 @@ static void mgr_toplevel(void *data,
     struct Toplevel *t = calloc(1, sizeof(*t));
     if (!t) return;
     t->handle = h;
+    t->ext = NULL;
     pthread_mutex_lock(&state_mu);
+    int zwlr_count = 0;
+    struct Toplevel *tt;
+    wl_list_for_each(tt, &toplevels, link) { zwlr_count++; }
+    int ext_idx = 0;
+    struct ExtToplevel *ext;
+    wl_list_for_each(ext, &ext_toplevels, link) {
+        if (ext_idx == zwlr_count) {
+            t->ext = ext;
+            break;
+        }
+        ext_idx++;
+    }
     wl_list_insert(toplevels.prev, &t->link);
     pthread_mutex_unlock(&state_mu);
     zwlr_foreign_toplevel_handle_v1_add_listener(h, &tl_listener, t);
+    if (t->ext != NULL) {
+        plog("mgr_toplevel: zwlr handle linkado ao ext identifier=%s",
+             t->ext->identifier[0] ? t->ext->identifier : "(pendente)");
+    } else {
+        plog("mgr_toplevel: aviso — ext não encontrado para novo zwlr (ext_count=%d zwlr_count=%d)",
+             ext_idx, zwlr_count);
+    }
 }
 static void mgr_finished(void *d,
     struct zwlr_foreign_toplevel_manager_v1 *m) { (void)d;(void)m; }
@@ -665,6 +838,107 @@ static const struct zwlr_foreign_toplevel_manager_v1_listener mgr_listener = {
 };
 
 static struct zwlr_foreign_toplevel_manager_v1 *proxy_manager = NULL;
+static struct ext_foreign_toplevel_list_v1     *ext_toplevel_list = NULL;
+
+/* ── ext_foreign_toplevel_list_v1 listeners ────────────────────── */
+
+static void ext_handle_identifier(void *data,
+    struct ext_foreign_toplevel_handle_v1 *handle,
+    const char *identifier) {
+    (void)handle;
+    struct ExtToplevel *ext = data;
+    if (identifier == NULL || identifier[0] == '\0') return;
+    pthread_mutex_lock(&state_mu);
+    snprintf(ext->identifier, sizeof(ext->identifier), "%s", identifier);
+    /* Tentar linkar ao Toplevel zwlr correspondente se ainda não linkado. */
+    int ext_idx = 0;
+    struct ExtToplevel *e;
+    wl_list_for_each(e, &ext_toplevels, link) {
+        if (e == ext) break;
+        ext_idx++;
+    }
+    int zwlr_idx = 0;
+    struct Toplevel *ttt;
+    wl_list_for_each(ttt, &toplevels, link) {
+        if (zwlr_idx == ext_idx) {
+            if (ttt->ext == NULL) ttt->ext = ext;
+            plog("ext_handle_identifier: identifier=%s linkado ao zwlr idx=%d",
+                 identifier, ext_idx);
+            break;
+        }
+        zwlr_idx++;
+    }
+    pthread_mutex_unlock(&state_mu);
+}
+
+static void ext_handle_title(void *data,
+    struct ext_foreign_toplevel_handle_v1 *handle,
+    const char *title) {
+    (void)data; (void)handle; (void)title;
+}
+
+static void ext_handle_app_id(void *data,
+    struct ext_foreign_toplevel_handle_v1 *handle,
+    const char *app_id) {
+    (void)data; (void)handle; (void)app_id;
+}
+
+static void ext_handle_done(void *data,
+    struct ext_foreign_toplevel_handle_v1 *handle) {
+    (void)data; (void)handle;
+}
+
+/* ext_handle_closed: o River fechou o ext handle. Pode chegar antes ou depois
+ * de tl_closed. Remove da lista de índice se ainda lá estiver, e decrementa
+ * a referência. O free só acontece quando o último a chegar (zwlr ou ext)
+ * chamar ext_unref e o refcount zerar. */
+static void ext_handle_closed(void *data,
+    struct ext_foreign_toplevel_handle_v1 *handle) {
+    (void)handle;
+    struct ExtToplevel *ext = data;
+    plog("ext_handle_closed: identifier=%s", ext->identifier);
+    pthread_mutex_lock(&state_mu);
+    if (ext->link.next && ext->link.next != &ext->link) {
+        wl_list_remove(&ext->link);
+        wl_list_init(&ext->link);
+    }
+    pthread_mutex_unlock(&state_mu);
+    ext_unref(ext);
+}
+
+static const struct ext_foreign_toplevel_handle_v1_listener ext_handle_listener = {
+    .identifier = ext_handle_identifier,
+    .title      = ext_handle_title,
+    .app_id     = ext_handle_app_id,
+    .done       = ext_handle_done,
+    .closed     = ext_handle_closed,
+};
+
+static void ext_list_toplevel(void *data,
+    struct ext_foreign_toplevel_list_v1 *list,
+    struct ext_foreign_toplevel_handle_v1 *handle) {
+    (void)data; (void)list;
+    struct ExtToplevel *ext = calloc(1, sizeof(*ext));
+    if (!ext) return;
+    ext->handle = handle;
+    ext->identifier[0] = '\0';
+    ext->refcount = 2;
+    wl_list_init(&ext->link);
+    pthread_mutex_lock(&state_mu);
+    wl_list_insert(ext_toplevels.prev, &ext->link);
+    pthread_mutex_unlock(&state_mu);
+    ext_foreign_toplevel_handle_v1_add_listener(handle, &ext_handle_listener, ext);
+}
+
+static void ext_list_finished(void *data,
+    struct ext_foreign_toplevel_list_v1 *list) {
+    (void)data; (void)list;
+}
+
+static const struct ext_foreign_toplevel_list_v1_listener ext_list_listener = {
+    .toplevel = ext_list_toplevel,
+    .finished = ext_list_finished,
+};
 
 static void reg_global(void *d, struct wl_registry *reg,
     uint32_t name, const char *iface, uint32_t ver) {
@@ -674,6 +948,11 @@ static void reg_global(void *d, struct wl_registry *reg,
             &zwlr_foreign_toplevel_manager_v1_interface, ver<3?ver:3);
         zwlr_foreign_toplevel_manager_v1_add_listener(
             proxy_manager, &mgr_listener, NULL);
+    } else if (!strcmp(iface, ext_foreign_toplevel_list_v1_interface.name)) {
+        ext_toplevel_list = wl_registry_bind(reg, name,
+            &ext_foreign_toplevel_list_v1_interface, ver < 1 ? ver : 1);
+        ext_foreign_toplevel_list_v1_add_listener(
+            ext_toplevel_list, &ext_list_listener, NULL);
     }
 }
 static void reg_remove(void *d, struct wl_registry *r, uint32_t n)
@@ -1066,6 +1345,12 @@ static void *relay_c2s(void *arg) {
                 drop = true;
             }
 
+            /* Intercepta activate (opcode 9) em handle real da taskbar.
+             * Resolve identifier via ext handle, envia ao WM via DGRAM. */
+            if (!drop && handle_taskbar_activate(c, obj_id, opcode)) {
+                drop = true;
+            }
+
             if (!drop) {
                 if (send(dst, msg, msize, MSG_NOSIGNAL) < 0) goto done;
             }
@@ -1090,7 +1375,7 @@ static void *relay_c2s(void *arg) {
     }
 done:
     plog("relay_c2s: ending src=%d dst=%d errno=%d", src, dst, errno);
-    cleanup_client(c);
+    client_thread_exit(c);
     return NULL;
 }
 
@@ -1140,7 +1425,7 @@ static void *relay_s2c(void *arg) {
             if (pending > 0) {
                 if (send(dst, buf, pending, MSG_NOSIGNAL) < 0) {
                     pthread_mutex_unlock(&c->write_mu);
-                    plog("relay_s2c: send(pending) failed errno=%d", errno);
+                    plog_err("relay_s2c: send(pending) failed errno=%d", errno);
                     break;
                 }
             }
@@ -1149,7 +1434,7 @@ static void *relay_s2c(void *arg) {
             mh.msg_flags = 0;
             if (sendmsg(dst, &mh, MSG_NOSIGNAL) < 0) {
                 pthread_mutex_unlock(&c->write_mu);
-                plog("relay_s2c: sendmsg(anc) failed errno=%d", errno);
+                plog_err("relay_s2c: sendmsg(anc) failed errno=%d", errno);
                 break;
             }
             pending = 0;
@@ -1169,7 +1454,7 @@ static void *relay_s2c(void *arg) {
                 uint32_t sz = so >> 16;
                 uint32_t op = so & 0xffff;
                 if (sz < 8 || scan + sz > (size_t)n) {
-                    plog("relay_s2c: !!! malformed msg at off=%zu obj=%u op=%u size=%u chunk=%zd",
+                    plog_err("relay_s2c: !!! malformed msg at off=%zu obj=%u op=%u size=%u chunk=%zd",
                          scan, obj, op, sz, n);
                     break;
                 }
@@ -1178,11 +1463,11 @@ static void *relay_s2c(void *arg) {
                     uint32_t code = ru32(buf+scan+12);
                     uint32_t slen = ru32(buf+scan+16);
                     const char *s = (const char *)(buf+scan+20);
-                    plog("relay_s2c: *** wl_display.error target=%u code=%u msg='%.*s'",
+                    plog_err("relay_s2c: *** wl_display.error target=%u code=%u msg='%.*s'",
                          target, code, (int)slen, s);
                 } else if (obj >= SERVER_ID_BASE && obj < c->next_sid &&
                            !client_should_drop_server_id(c, obj)) {
-                    plog("relay_s2c: !!! server-ID collision: River obj=0x%x op=%u falls in proxy synthetic range [0x%x..0x%x)",
+                    plog_err("relay_s2c: !!! server-ID collision: River obj=0x%x op=%u falls in proxy synthetic range [0x%x..0x%x)",
                          obj, op, SERVER_ID_BASE, c->next_sid);
                 }
                 scan += sz;
@@ -1251,7 +1536,7 @@ static void *relay_s2c(void *arg) {
                 pthread_mutex_lock(&c->write_mu);
                 if (send(dst, msg, msize, MSG_NOSIGNAL) < 0) {
                     pthread_mutex_unlock(&c->write_mu);
-                    plog("relay_s2c: send(dst=%d) failed obj=%u op=%u size=%u errno=%d (%s)",
+                    plog_err("relay_s2c: send(dst=%d) failed obj=%u op=%u size=%u errno=%d (%s)",
                          dst, obj_id, opcode, msize, errno, strerror(errno));
                     goto done_s2c;
                 }
@@ -1305,7 +1590,7 @@ static void *relay_s2c(void *arg) {
     }
 done_s2c:
     plog("relay_s2c: ending src=%d dst=%d errno=%d", src, dst, errno);
-    cleanup_client(c);
+    client_thread_exit(c);
     return NULL;
 }
 
@@ -1327,28 +1612,37 @@ static bool connect_to_river(int *fd_out) {
         snprintf(path, sizeof(path), "%s/%s", dir, disp);
 
     int fd = socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0);
-    if (fd < 0) { plog("connect_to_river: socket() failed errno=%d", errno); return false; }
+    if (fd < 0) { plog_err("connect_to_river: socket() failed errno=%d", errno); return false; }
 
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
     /* snprintf into sun_path (always NUL-terminates) and fail on truncation —
      * a silently truncated path would connect to the wrong socket. */
     if ((size_t)snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path)
             >= sizeof(addr.sun_path)) {
-        plog("connect_to_river: path too long for sun_path: %s", path);
+        plog_err("connect_to_river: path too long for sun_path: %s", path);
         close(fd); return false;
     }
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        plog("connect_to_river: connect(%s) failed errno=%d (%s)", path, errno, strerror(errno));
+        plog_err("connect_to_river: connect(%s) failed errno=%d (%s)", path, errno, strerror(errno));
         close(fd); return false;
     }
     *fd_out = fd;
     return true;
 }
 
-static void cleanup_client(struct Client *c) {
+static void client_thread_exit(struct Client *c) {
     pthread_mutex_lock(&clients_mu);
-    if (c->active) {
-        c->active = false;
+    c->active_threads--;
+    int threads = c->active_threads;
+    if (threads == 1) {
+        /* Este é o primeiro thread a sair. Solicita shutdown em ambos os sockets.
+         * Isso acorda o outro thread que possa estar bloqueado no recv/send. */
+        plog("client_thread_exit: primeira thread terminando, efetuando shutdown dos sockets");
+        if (c->waybar_fd >= 0) shutdown(c->waybar_fd, SHUT_RDWR);
+        if (c->river_fd >= 0) shutdown(c->river_fd, SHUT_RDWR);
+    } else if (threads == 0) {
+        /* Este é o segundo thread a sair. Podemos fechar os FDs com segurança. */
+        plog("client_thread_exit: segunda thread terminando, liberando recursos do cliente");
         if (c->waybar_fd >= 0) {
             close(c->waybar_fd);
             c->waybar_fd = -1;
@@ -1357,12 +1651,14 @@ static void cleanup_client(struct Client *c) {
             close(c->river_fd);
             c->river_fd = -1;
         }
+        c->active = false;
         c->manager_n = 0;
         c->hmap_n = 0;
         c->drop_n = 0;
         c->layer_surface_n = 0;
         c->registry_n = 0;
         c->unhandled_n = 0;
+        c->real_handle_n = 0;
         c->output_id = 0;
         c->output_done_received = false;
     }
@@ -1373,17 +1669,26 @@ static void setup_client(int waybar_fd) {
     plog("setup_client: waybar_fd=%d, connecting to River", waybar_fd);
     int river_fd;
     if (!connect_to_river(&river_fd)) {
-        plog("setup_client: connect_to_river failed, closing waybar_fd=%d", waybar_fd);
+        plog_err("setup_client: connect_to_river failed, closing waybar_fd=%d", waybar_fd);
         close(waybar_fd);
         return;
     }
     plog("setup_client: river_fd=%d", river_fd);
 
+    struct RelayArgs *a1 = malloc(sizeof(*a1));
+    struct RelayArgs *a2 = malloc(sizeof(*a2));
+    if (!a1 || !a2) {
+        free(a1); free(a2);
+        close(waybar_fd); close(river_fd);
+        return;
+    }
+
     pthread_mutex_lock(&clients_mu);
     struct Client *c = alloc_client();
     if (!c) {
         pthread_mutex_unlock(&clients_mu);
-        plog("setup_client: no client slot free, closing both fds");
+        plog_err("setup_client: no client slot free, closing both fds");
+        free(a1); free(a2);
         close(waybar_fd); close(river_fd);
         return;
     }
@@ -1392,12 +1697,9 @@ static void setup_client(int waybar_fd) {
     c->waybar_fd  = waybar_fd;
     c->river_fd   = river_fd;
     c->next_sid   = SERVER_ID_BASE;
+    c->active_threads = 2;
     c->active     = true;
     pthread_mutex_unlock(&clients_mu);
-
-    struct RelayArgs *a1 = malloc(sizeof(*a1));
-    struct RelayArgs *a2 = malloc(sizeof(*a2));
-    if (!a1 || !a2) { free(a1); free(a2); close(waybar_fd); close(river_fd); return; }
 
     a1->c = c; a1->src_fd = waybar_fd; a1->dst_fd = river_fd;
     a2->c = c; a2->src_fd = river_fd;  a2->dst_fd = waybar_fd;
@@ -1525,7 +1827,7 @@ static int create_server_socket(char *out_name, size_t cap) {
 		 * path can't bind correctly, and the length is index-independent. */
 		if ((size_t)snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path)
 				>= sizeof(addr.sun_path)) {
-			plog("create_server_socket: path too long for sun_path: %s", path);
+			plog_err("create_server_socket: path too long for sun_path: %s", path);
 			return -1;
 		}
 
@@ -1613,7 +1915,7 @@ static void handle_sigchld(int sig) {
 static pid_t spawn_worker(int *control_fd) {
     int pair[2];
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair) < 0) {
-        plog("Master: socketpair failed: %s", strerror(errno));
+        plog_err("Master: socketpair failed: %s", strerror(errno));
         return -1;
     }
 
@@ -1621,7 +1923,7 @@ static pid_t spawn_worker(int *control_fd) {
 
     pid_t pid = fork();
     if (pid < 0) {
-        plog("Master: fork failed: %s", strerror(errno));
+        plog_err("Master: fork failed: %s", strerror(errno));
         close(pair[0]);
         close(pair[1]);
         return -1;
@@ -1640,7 +1942,7 @@ static pid_t spawn_worker(int *control_fd) {
         execv("./build/maindeck-proxy", argv);
         execv("maindeck-proxy", argv);
         
-        plog("Child: exec failed: %s", strerror(errno));
+        plog_err("Child: exec failed: %s", strerror(errno));
         exit(1);
     }
 
@@ -1655,11 +1957,12 @@ static void run_worker(int control_fd) {
     plog("Worker: starting (control_fd=%d)", control_fd);
     
     wl_list_init(&toplevels);
+    wl_list_init(&ext_toplevels);
     memset(clients, 0, sizeof(clients));
 
     proxy_display = wl_display_connect(NULL);
     if (!proxy_display) {
-        plog("Worker: cannot connect to Wayland (errno=%d %s)", errno, strerror(errno));
+        plog_err("Worker: cannot connect to Wayland (errno=%d %s)", errno, strerror(errno));
         exit(1);
     }
     plog("Worker: connected to River display, doing first roundtrip");
@@ -1668,7 +1971,7 @@ static void run_worker(int control_fd) {
     wl_registry_add_listener(reg, &reg_listener, NULL);
     wl_display_roundtrip(proxy_display);
     if (!proxy_manager) {
-        plog("Worker: zwlr_foreign_toplevel_manager_v1 not available");
+        plog_err("Worker: zwlr_foreign_toplevel_manager_v1 not available");
         exit(1);
     }
     plog("Worker: foreign_toplevel_manager bound, doing second roundtrip for initial toplevels");
@@ -1682,7 +1985,7 @@ static void run_worker(int control_fd) {
     while (1) {
         int cfd = recv_fd(control_fd);
         if (cfd < 0) {
-            plog("Worker: recv_fd returned error (control socket closed), exiting");
+            plog_err("Worker: recv_fd returned error (control socket closed), exiting");
             break;
         }
         plog("Worker: received accepted client connection fd=%d", cfd);
@@ -1705,7 +2008,7 @@ static void run_master(int srv) {
     int control_fd = -1;
     pid_t worker_pid = spawn_worker(&control_fd);
     if (worker_pid < 0) {
-        plog("Master: failed to spawn initial worker, exiting");
+        plog_err("Master: failed to spawn initial worker, exiting");
         return;
     }
 
@@ -1722,20 +2025,20 @@ static void run_master(int srv) {
                         close(control_fd);
                         worker_pid = spawn_worker(&control_fd);
                         if (worker_pid < 0) {
-                            plog("Master: failed to restart worker, exiting");
+                            plog_err("Master: failed to restart worker, exiting");
                             break;
                         }
                     }
                 }
                 continue;
             }
-            plog("Master: accept failed: %s", strerror(errno));
+            plog_err("Master: accept failed: %s", strerror(errno));
             break;
         }
 
         plog("Master: accepted new client connection cfd=%d, handing off to Worker", cfd);
         if (send_fd(control_fd, cfd) < 0) {
-            plog("Master: failed to send fd to Worker, closing cfd");
+            plog_err("Master: failed to send fd to Worker, closing cfd");
         }
         close(cfd);
     }
@@ -1767,7 +2070,7 @@ int main(int argc, char *argv[]) {
     char name[64];
     int srv = create_server_socket(name, sizeof(name));
     if (srv < 0) {
-        plog("Master: cannot create server socket");
+        plog_err("Master: cannot create server socket");
         return 1;
     }
 

@@ -12,7 +12,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 #include <wayland-client-core.h>
@@ -49,12 +51,37 @@ static void log_init(void) {
 	}
 }
 
+// Nível de log: WARN/erros sempre; verboso (INFO/EVENT/STATE) só com
+// MAINDECK_LOG=debug. Lido uma vez (cache). O gate fica no TOPO de md_log,
+// antes de qualquer formatação, então linha suprimida custa ~0.
+static int md_verbose(void) {
+	static int v = -1;
+	if (v < 0) {
+		const char *e = getenv("MAINDECK_LOG");
+		v = (e && (e[0] == 'd' || e[0] == 'D')) ? 1 : 0; // "debug"
+	}
+	return v;
+}
+
 static void md_log(const char *level, const char *fmt, ...) {
+	// WARN (level[0]=='W') sempre passa; o resto só em verboso.
+	bool is_warn = (level[0] == 'W');
+	if (!is_warn && !md_verbose()) return;
+	// Destino único: maindeck.log (stderr vira session.log via init do River —
+	// escrita dupla evitada gravando só aqui). Mas se o log_file não abriu, um
+	// WARN não pode sumir: cai pro stderr como rede de segurança.
+	FILE *out = log_file;
+	if (out == NULL) {
+		if (!is_warn) return;
+		out = stderr;
+	}
+
 	struct timespec ts;
 	clock_gettime(CLOCK_REALTIME, &ts);
-	struct tm *t = localtime(&ts.tv_sec);
-	char tbuf[32];
-	strftime(tbuf, sizeof(tbuf), "%H:%M:%S", t);
+	struct tm tmv;
+	localtime_r(&ts.tv_sec, &tmv); // _r: sem estado global / reentrante
+	char tbuf[16];
+	strftime(tbuf, sizeof(tbuf), "%H:%M:%S", &tmv);
 
 	char msg[512];
 	va_list ap;
@@ -62,10 +89,7 @@ static void md_log(const char *level, const char *fmt, ...) {
 	vsnprintf(msg, sizeof(msg), fmt, ap);
 	va_end(ap);
 
-	fprintf(stderr, "[%s.%03ld] [%s] %s\n", tbuf, ts.tv_nsec / 1000000, level, msg);
-	if (log_file != NULL) {
-		fprintf(log_file, "[%s.%03ld] [%s] %s\n", tbuf, ts.tv_nsec / 1000000, level, msg);
-	}
+	fprintf(out, "[%s.%03ld] [%s] %s\n", tbuf, ts.tv_nsec / 1000000, level, msg);
 }
 
 #define LOG_INFO(...)  md_log("INFO ", __VA_ARGS__)
@@ -94,6 +118,7 @@ struct Window {
 	int32_t width, height;
 	char *app_id;
 	char *title;
+	char *identifier; /* river_window.identifier — único por janela, usado para taskbar activate */
 
 	// Client-requested fullscreen (e.g. a game). Separate from wm.maximized
 	// (Super+Up), which only fills the usable area. Fullscreen covers the whole
@@ -167,6 +192,11 @@ static struct WindowManager wm;
 static struct river_window_manager_v1 *window_manager_v1;
 static struct river_xkb_bindings_v1 *xkb_bindings_v1;
 static struct river_layer_shell_v1 *layer_shell_v1;
+
+/* IPC: socket DGRAM que recebe "activate <identifier>" do proxy */
+static int  ipc_fd = -1;
+static char ipc_path[108]; /* sizeof(sockaddr_un.sun_path) */
+static char pending_activate_identifier[33];
 
 static uint32_t chan(uint8_t value) {
 	return (uint32_t)value * 0x01010101u;
@@ -335,6 +365,58 @@ static void close_launcher(void) {
 static void window_set_string(char **field, const char *value) {
 	free(*field);
 	*field = value == NULL ? NULL : strdup(value);
+}
+
+static bool valid_identifier(const char *id) {
+	if (id == NULL || id[0] == '\0') return false;
+	size_t len = strlen(id);
+	if (len > 32) return false;
+	for (size_t i = 0; i < len; i++) {
+		unsigned char c = (unsigned char)id[i];
+		if (c < 0x21 || c > 0x7e) return false;
+	}
+	return true;
+}
+
+static struct Window *window_by_identifier(const char *id) {
+	if (!valid_identifier(id)) return NULL;
+	struct Window *w;
+	wl_list_for_each(w, &wm.windows, link) {
+		if (w->closed || w->identifier == NULL) continue;
+		if (strcmp(w->identifier, id) == 0) return w;
+	}
+	return NULL;
+}
+
+static void activate_window_from_taskbar(struct Window *window) {
+	int32_t idx = window_index(window);
+	if (idx < 0) return;
+	if (idx == 0 || idx == 1) {
+		/* Janela visível: só muda o ALVO (foco), sem mover */
+		wm.target_index = (uint32_t)idx;
+	} else {
+		/* Janela oculta: promove para MAIN */
+		move_first(window);
+		wm.target_index = 0;
+	}
+	wm.maximized = false;
+	LOG_EVENT("taskbar activate: idx=%d app_id=%s identifier=%s",
+		idx,
+		window->app_id ? window->app_id : "",
+		window->identifier ? window->identifier : "");
+}
+
+static void apply_pending_taskbar_activation(void) {
+	if (pending_activate_identifier[0] == '\0') return;
+	char id[33];
+	snprintf(id, sizeof(id), "%s", pending_activate_identifier);
+	pending_activate_identifier[0] = '\0';
+	struct Window *window = window_by_identifier(id);
+	if (window == NULL) {
+		LOG_WARN("taskbar activate: identifier desconhecido=%s (no-op)", id);
+		return;
+	}
+	activate_window_from_taskbar(window);
 }
 
 static void osd(const char *message) {
@@ -608,7 +690,15 @@ static void window_handle_exit_fullscreen_requested(void *data, struct river_win
 static void window_handle_minimize_requested(void *data, struct river_window_v1 *obj) {}
 static void window_handle_unreliable_pid(void *data, struct river_window_v1 *obj, int32_t unreliable_pid) {}
 static void window_handle_presentation_hint(void *data, struct river_window_v1 *obj, uint32_t hint) {}
-static void window_handle_identifier(void *data, struct river_window_v1 *obj, const char *identifier) {}
+static void window_handle_identifier(void *data, struct river_window_v1 *obj, const char *identifier) {
+	struct Window *window = data;
+	(void)obj;
+	if (!valid_identifier(identifier)) {
+		LOG_WARN("window_handle_identifier: identifier inválido ou nulo, ignorando");
+		return;
+	}
+	window_set_string(&window->identifier, identifier);
+}
 
 static const struct river_window_v1_listener river_window_listener = {
 	.closed = window_handle_closed,
@@ -641,6 +731,7 @@ static void window_maybe_destroy(struct Window *window) {
 	wl_list_remove(&window->link);
 	free(window->app_id);
 	free(window->title);
+	free(window->identifier);
 	free(window);
 }
 
@@ -1168,6 +1259,7 @@ static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *o
 	wl_list_for_each(seat, &wm.seats, link) {
 		seat_manage(seat);
 	}
+	apply_pending_taskbar_activation();
 	clamp_target();
 
 	// Set default layer-shell output (must be done inside manage sequence)
@@ -1330,6 +1422,75 @@ static const struct wl_registry_listener registry_listener = {
 	.global_remove = handle_global_remove,
 };
 
+static int ipc_init(void) {
+	const char *dir = getenv("XDG_RUNTIME_DIR");
+	if (dir == NULL || dir[0] == '\0') {
+		LOG_WARN("ipc_init: XDG_RUNTIME_DIR não definido");
+		return -1;
+	}
+	if ((size_t)snprintf(ipc_path, sizeof(ipc_path), "%s/maindeck-wm.sock", dir)
+			>= sizeof(ipc_path)) {
+		LOG_WARN("ipc_init: path muito longo");
+		return -1;
+	}
+	int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+	if (fd < 0) {
+		LOG_WARN("ipc_init: socket() falhou: %s", strerror(errno));
+		return -1;
+	}
+	struct sockaddr_un addr = { .sun_family = AF_UNIX };
+	if ((size_t)snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", ipc_path)
+			>= sizeof(addr.sun_path)) {
+		LOG_WARN("ipc_init: path não cabe em sun_path");
+		close(fd);
+		return -1;
+	}
+	unlink(ipc_path); /* limpa socket antigo */
+	if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+		LOG_WARN("ipc_init: bind(%s) falhou: %s", ipc_path, strerror(errno));
+		close(fd);
+		return -1;
+	}
+	LOG_INFO("IPC socket escutando em %s", ipc_path);
+	return fd;
+}
+
+static void ipc_handle_message(const char *msg) {
+	const char prefix[] = "activate ";
+	const size_t prefix_len = sizeof(prefix) - 1;
+	if (strncmp(msg, prefix, prefix_len) != 0) {
+		LOG_WARN("IPC: comando desconhecido ignorado: %s", msg);
+		return;
+	}
+	const char *id = msg + prefix_len;
+	if (!valid_identifier(id)) {
+		LOG_WARN("IPC: identifier inválido ignorado: %s", id);
+		return;
+	}
+	LOG_EVENT("IPC recebeu activate identifier=%s", id);
+	snprintf(pending_activate_identifier, sizeof(pending_activate_identifier), "%s", id);
+	/* Acorda o manage cycle para aplicar o activate imediatamente */
+	river_window_manager_v1_manage_dirty(window_manager_v1);
+}
+
+static void ipc_drain(void) {
+	if (ipc_fd < 0) return;
+	for (;;) {
+		char buf[128];
+		ssize_t n = recv(ipc_fd, buf, sizeof(buf) - 1, MSG_DONTWAIT);
+		if (n < 0) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+			LOG_WARN("IPC recv falhou: %s", strerror(errno));
+			return;
+		}
+		if (n == 0) return;
+		buf[n] = '\0';
+		char *nl = strchr(buf, '\n');
+		if (nl != NULL) *nl = '\0';
+		ipc_handle_message(buf);
+	}
+}
+
 int main(void) {
 	struct wl_display *display = wl_display_connect(NULL);
 	if (display == NULL) {
@@ -1362,6 +1523,8 @@ int main(void) {
 	wm_init();
 	river_window_manager_v1_add_listener(window_manager_v1, &wm_listener, NULL);
 
+	ipc_fd = ipc_init();
+
 	// Poll-based event loop with hold-timer support
 	while (true) {
 		// Drain any queued events before sleeping
@@ -1375,16 +1538,28 @@ int main(void) {
 		}
 
 		int timeout_ms = compute_poll_timeout();
-		struct pollfd pfd = { .fd = wl_display_get_fd(display), .events = POLLIN };
-		int ret = poll(&pfd, 1, timeout_ms);
+		struct pollfd pfd[2] = {
+			{ .fd = wl_display_get_fd(display), .events = POLLIN },
+			{ .fd = ipc_fd, .events = ipc_fd >= 0 ? POLLIN : 0 },
+		};
+		nfds_t nfds = ipc_fd >= 0 ? 2 : 1;
+		int ret = poll(pfd, nfds, timeout_ms);
 
 		if (ret < 0) {
 			wl_display_cancel_read(display);
 			break;
 		}
 
-		if (pfd.revents & POLLIN) {
+		if (pfd[0].revents & POLLIN) {
 			wl_display_read_events(display);
+			if (wl_display_dispatch_pending(display) < 0) break;
+			if (ipc_fd >= 0 && (pfd[1].revents & POLLIN)) {
+				ipc_drain();
+			}
+		} else if (ipc_fd >= 0 && (pfd[1].revents & POLLIN)) {
+			/* Só IPC acordou: cancela o read Wayland e drena o IPC */
+			wl_display_cancel_read(display);
+			ipc_drain();
 			if (wl_display_dispatch_pending(display) < 0) break;
 		} else {
 			// Timeout: a hold threshold was reached
@@ -1395,5 +1570,7 @@ int main(void) {
 	}
 
 done:
+	if (ipc_fd >= 0) close(ipc_fd);
+	if (ipc_path[0] != '\0') unlink(ipc_path);
 	return 0;
 }

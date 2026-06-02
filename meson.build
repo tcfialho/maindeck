@@ -52,6 +52,7 @@ exe = executable(
 
 proxy_generated = wl_mod.scan_xml(
   'protocol/wlr-foreign-toplevel-management-unstable-v1.xml',
+  '/usr/share/wayland-protocols/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml',
 )
 
 executable(
