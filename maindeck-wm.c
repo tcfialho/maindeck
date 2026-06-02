@@ -1086,6 +1086,17 @@ static void wm_handle_finished(void *data, struct river_window_manager_v1 *obj) 
 // layout+foco (que reenviaria propose_dimensions/set_borders/focus idênticos).
 // Inclui tudo que de fato muda o layout — e exclui título/app_id de propósito.
 // Janela `new` força recálculo (hash muda) pois precisa do primeiro layout.
+//
+// Hand-off manage→render: a assinatura só depende de estado que (pelo protocolo)
+// muda exclusivamente dentro de uma manage sequence — dimensões de OUTPUT são
+// sempre seguidas de manage_start; target/maximized/ordem/seats só mudam em
+// ações do manage. Render-only loops só mudam dimensão de JANELA, que não entra
+// na assinatura. Então entre um manage e o render que o segue a assinatura é
+// idêntica: o manage calcula e marca "fresca"; o render reúsa e consome o flag.
+// Num render avulso (sem manage antes) o flag está falso e o render recalcula.
+static uint64_t g_layout_sig = 0;
+static bool g_layout_sig_fresh = false;
+
 static uint64_t compute_layout_signature(void) {
 	// FNV-1a 64, misturando uma palavra de 64 bits por campo (não byte-a-byte:
 	// os campos já cabem em 64 bits, então um mix por valor basta e é mais
@@ -1179,6 +1190,9 @@ static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *o
 	static uint64_t last_layout_sig = 0;
 	static bool have_last_sig = false;
 	uint64_t sig = compute_layout_signature();
+	g_layout_sig = sig;
+	g_layout_sig_fresh = true;
+
 	if (!have_last_sig || sig != last_layout_sig) {
 		size_t index = 0;
 		wl_list_for_each(window, &wm.windows, link) {
@@ -1201,7 +1215,14 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 	// então pulamos o re-render. render_finish sempre roda.
 	static uint64_t last_render_sig = 0;
 	static bool have_last_render_sig = false;
-	uint64_t sig = compute_layout_signature();
+	uint64_t sig;
+	if (g_layout_sig_fresh) {
+		sig = g_layout_sig;
+		g_layout_sig_fresh = false;
+	} else {
+		sig = compute_layout_signature();
+	}
+
 	if (!have_last_render_sig || sig != last_render_sig) {
 		size_t index = 0;
 		struct Window *window;

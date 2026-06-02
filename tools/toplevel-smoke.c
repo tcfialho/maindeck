@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <unistd.h>
 #include <wayland-client.h>
 
@@ -28,8 +29,11 @@ struct State {
 	struct wl_registry *registry;
 	struct zwlr_foreign_toplevel_manager_v1 *manager;
 	struct wl_output *first_output;
+	struct wl_seat *first_seat;
 	uint32_t first_output_name;
+	uint32_t first_seat_name;
 	int outputs;
+	int seats;
 	int foreign_globals;
 	struct wl_list tops;
 };
@@ -147,6 +151,13 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
 				&zwlr_foreign_toplevel_manager_v1_interface, version < 3 ? version : 3);
 			zwlr_foreign_toplevel_manager_v1_add_listener(state->manager, &manager_listener, state);
 		}
+	} else if (strcmp(interface, wl_seat_interface.name) == 0) {
+		state->seats++;
+		if (!state->first_seat) {
+			state->first_seat_name = name;
+			state->first_seat = wl_registry_bind(registry, name, &wl_seat_interface,
+				version < 5 ? version : 5);
+		}
 	}
 }
 
@@ -187,9 +198,42 @@ static void dispatch_for(struct wl_display *display, int ms) {
 	}
 }
 
-int main(void) {
+static bool parse_int(const char *s, int *out) {
+	char *end = NULL;
+	errno = 0;
+	long value = strtol(s, &end, 10);
+	if (errno != 0 || end == s || *end != '\0' || value < 0 || value > INT32_MAX) {
+		return false;
+	}
+	*out = (int)value;
+	return true;
+}
+
+static void usage(const char *argv0) {
+	fprintf(stderr,
+		"usage: %s [--activate-index=N | --activate-app=APP_ID]\n",
+		argv0);
+}
+
+int main(int argc, char **argv) {
 	signal(SIGALRM, die_alarm);
 	alarm(5);
+
+	int activate_index = -1;
+	const char *activate_app = NULL;
+	for (int i = 1; i < argc; i++) {
+		if (strncmp(argv[i], "--activate-index=", 17) == 0) {
+			if (!parse_int(argv[i] + 17, &activate_index)) {
+				usage(argv[0]);
+				return 64;
+			}
+		} else if (strncmp(argv[i], "--activate-app=", 15) == 0) {
+			activate_app = argv[i] + 15;
+		} else {
+			usage(argv[0]);
+			return 64;
+		}
+	}
 
 	struct State state = {0};
 	wl_list_init(&state.tops);
@@ -212,6 +256,38 @@ int main(void) {
 	wl_display_roundtrip(state.display);
 	dispatch_for(state.display, 500);
 
+	if (activate_index >= 0 || activate_app != NULL) {
+		if (!state.first_seat) {
+			fprintf(stderr, "cannot activate: no wl_seat advertised\n");
+			return 4;
+		}
+		int index = 0;
+		struct Top *chosen = NULL;
+		struct Top *top;
+		wl_list_for_each(top, &state.tops, link) {
+			if (top->closed) continue;
+			if ((activate_index >= 0 && index == activate_index) ||
+					(activate_app != NULL && top->app_id != NULL &&
+					 strcmp(top->app_id, activate_app) == 0)) {
+				chosen = top;
+				break;
+			}
+			index++;
+		}
+		if (!chosen) {
+			fprintf(stderr, "cannot activate: no matching toplevel\n");
+			return 5;
+		}
+		printf("activating index=%d title=\"%s\" app_id=\"%s\" seat_name=%u\n",
+			index,
+			chosen->title ? chosen->title : "",
+			chosen->app_id ? chosen->app_id : "",
+			state.first_seat_name);
+		zwlr_foreign_toplevel_handle_v1_activate(chosen->handle, state.first_seat);
+		wl_display_flush(state.display);
+		dispatch_for(state.display, 500);
+	}
+
 	int count = 0;
 	int with_output = 0;
 	struct Top *top;
@@ -227,7 +303,8 @@ int main(void) {
 			top->done_count);
 	}
 
-	printf("summary outputs=%d first_output_name=%u foreign_globals=%d toplevels=%d with_output=%d\n",
-		state.outputs, state.first_output_name, state.foreign_globals, count, with_output);
+	printf("summary outputs=%d first_output_name=%u seats=%d first_seat_name=%u foreign_globals=%d toplevels=%d with_output=%d\n",
+		state.outputs, state.first_output_name, state.seats, state.first_seat_name,
+		state.foreign_globals, count, with_output);
 	return count > 0 ? 0 : 3;
 }
