@@ -150,15 +150,19 @@ leftmeta = overload(meta, f19)
 
 [meta]
 # Tap/Hold do MainDeck via timeout(tap, 360ms, hold).
-# Só F23/F24 chegam ao niri como keysym real neste layout (br,us-intl) — as demais
-# F-keys viram XF86* (mídia/launch). Por isso as 3 teclas compartilham F23/F24 com
-# modificadores distintos: Tab usa Alt+F23, ← usa F23, → usa F24.
+# F19/F23/F24 são as F-keys que sobrevivem como keysym REAL até o compositor neste
+# layout (br,us-intl); as demais (ex.: F14) viram XF86* ou não casam o keysym esperado.
+# Por isso as 3 teclas de navegação compartilham F23/F24 com modificadores distintos:
 #   tab  TAP=Alt+F23      HOLD=Alt+Ctrl+F23
 #   ←    TAP=F23          HOLD=Ctrl+F23
 #   →    TAP=F24          HOLD=Ctrl+F24
 tab   = timeout(A-f23, 360, A-C-f23)
 left  = timeout(f23,   360, C-f23)
 right = timeout(f24,   360, C-f24)
+# Win+Shift tocado (solta rápido, SEM outra tecla) = Ctrl+F19 → toggle maximize no WM.
+# Win+Shift SEGURADO + outra tecla (ex.: Escape) → Shift age como modificador →
+# Super+Shift+<tecla> chega ao compositor (assim Super+Shift+Escape = exit sobrevive).
+leftshift = overload(shift, C-f19)
 ```
 
 ### What keyd does, and why
@@ -171,17 +175,39 @@ right = timeout(f24,   360, C-f24)
   via `timeout(tap, 360ms, hold)` and emits **F-keys**, *not* the raw key —
   and it does **not** pass `Super` through. So the compositor never sees
   `Super+Tab`/`Super+Left`/`Super+Right`; it sees the F-key combos below.
-- Only `F23`/`F24` survive as real keysyms in the `br,us-intl` layout (other
-  F-keys become `XF86*` media keys), which is why the three keys share `F23`/
-  `F24` distinguished by modifiers.
+- `leftshift = overload(shift, C-f19)` (inside `[meta]`, so it only applies
+  while Win is held): a **modifiers-only chord** (`Win+Shift` with no other key)
+  has no keysym to bind, so — exactly like the lone-Win→`F19` trick — keyd
+  **mints a keysym** on the Shift *tap*: `Ctrl+F19`. On *hold* (Win+Shift then
+  another key) Shift stays a plain modifier, so `Super+Shift+Escape` (exit)
+  still reaches the compositor. This is the general recipe for binding a
+  pure-modifier shortcut under this stack: mint a distinct keysym in keyd, bind
+  that keysym in the WM.
 
-| Physical keys | keyd emits (tap) | keyd emits (hold) |
-| --- | --- | --- |
-| `Win`              | `F19`         | acts as `Super`/`Mod` |
-| `Win` + `Tab`      | `Alt+F23`     | `Alt+Ctrl+F23` |
-| `Win` + `←`        | `F23`         | `Ctrl+F23` |
-| `Win` + `→`        | `F24`         | `Ctrl+F24` |
-| `Win` + `↑` / `↓`  | (passthrough — real `Super+Up/Down`) | — |
+#### Which keysyms actually survive — verify, don't assume
+
+A `[meta]`-emitted F-key is only useful if it round-trips to the compositor as
+that **same XKB keysym**. In the `br,us-intl` layout many F-keys' *keycodes*
+resolve to `XF86*` media keysyms instead, so a WM binding on `XKB_KEY_F<n>`
+silently never fires. **`F19`, `F23` and `F24` are empirically confirmed to
+round-trip** (F19 = launcher, F23/F24 = the nav keys, and now `Ctrl+F19` =
+toggle maximize). Do **not** trust the XKB symbols files to predict which others
+survive — they are misleading here (e.g. F14 emits fine at the evdev layer but
+does **not** arrive as `XKB_KEY_F14`). The trap: **`keyd monitor` shows the
+evdev *keycode*, not the XKB *keysym* the compositor sees** — they differ. The
+only reliable test is pressing the key and checking for the `key pressed` line
+in the WM log (see [Useful checks](#useful-checks)); no log line = the keysym
+did not match, pick a proven one (reuse `F19`/`F23`/`F24` with a distinguishing
+modifier) rather than guessing a new F-key.
+
+| Physical keys        | keyd emits (tap) | keyd emits (hold) |
+| ---                  | ---              | ---               |
+| `Win`                | `F19`            | acts as `Super`/`Mod` |
+| `Win` + `Tab`        | `Alt+F23`        | `Alt+Ctrl+F23` |
+| `Win` + `←`          | `F23`            | `Ctrl+F23` |
+| `Win` + `→`          | `F24`            | `Ctrl+F24` |
+| `Win` + `Shift`      | `Ctrl+F19`       | Shift = plain modifier (→ `Super+Shift+<key>`) |
+| `Win` + `↑` / `↓`    | (passthrough — real `Super+Up/Down`) | — |
 
 ### How `maindeck-wm` consumes this (the linkage)
 
@@ -193,11 +219,14 @@ only place they are connected. All of this is in committed source
 - `Alt+F23` → toggle ALVO · `Alt+Ctrl+F23` → swap MAIN/DECK
 - `F23` → DECK prev · `Ctrl+F23` → promote ALVO to MAIN
 - `F24` → DECK next · `Ctrl+F24` → send ALVO to DECK bottom
-- `F19` → launcher (fuzzel)
+- `F19` → launcher (fuzzel) · `Ctrl+F19` → toggle maximize (the `Win+Shift` chord)
+
+`F19` (bare) and `Ctrl+F19` are distinct bindings that coexist because the WM
+matches **modifiers exactly** — same as `F23` (DECK prev) vs `Ctrl+F23` (promote).
 
 Keys that keyd does **not** remap reach the compositor directly, so the WM binds
 them with the real modifier: `Super+Return` (kitty), `Super+Up`/`Super+Down`
-(maximize/restore), `Super+Delete` (close), `Alt+F4` (close),
+(maximize/restore), `Super+Delete` (close), `Alt+F4` **and** `Super+F4` (close),
 `Super+Shift+Escape` (exit).
 
 The raw `Super+Tab`/`Super+Left`/`Super+Right` are also bound as a fallback for
@@ -212,8 +241,9 @@ XKB_DEFAULT_VARIANT=,intl
 XKB_DEFAULT_OPTIONS=grp:win_space_toggle   # Super+Space toggles br/us
 ```
 
-The `br,us-intl` choice is why only `F23`/`F24` are usable F-keys (see the keyd
-comment).
+The `br,us-intl` choice is why only some F-keys round-trip as real keysyms
+(`F19`, `F23`, `F24` are the confirmed ones; others resolve to `XF86*` media
+keys) — see [Which keysyms actually survive](#which-keysyms-actually-survive--verify-dont-assume).
 
 ## Launcher (fuzzel)
 
@@ -628,9 +658,11 @@ ps -eo pid,comm,args | rg -i 'waybar|maindeck|river|sunshine|keyd'
 # keyboard (keyd)
 systemctl status keyd --no-pager          # must be enabled + active
 sudo keyd monitor                          # live: shows what keyd emits per key
-#   tap Win → f19 ; hold Win + Tab → A-f23 / A-C-f23 ; etc.
+#   tap Win → f19 ; hold Win+Tab → A-f23 / A-C-f23 ; tap Win+Shift → C-f19 ; etc.
+#   NOTE: this shows the evdev KEYCODE, NOT the XKB keysym the compositor sees.
 
-# what maindeck-wm actually receives (after keyd) — it logs each bound key:
+# what maindeck-wm actually receives (after keyd) — it logs each bound key. THIS,
+# not `keyd monitor`, is the proof a binding matched (no line = keysym mismatch):
 tail -f ~/.local/state/maindeck/maindeck.log   # "[EVENT] key pressed: tap=N hold=M"
 
 # sunshine
