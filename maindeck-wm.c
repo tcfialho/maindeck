@@ -21,10 +21,13 @@
 #include <wayland-client-protocol.h>
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
+#include <ctype.h>
 
 #include <river-window-management-v1-client-protocol.h>
 #include <river-xkb-bindings-v1-client-protocol.h>
 #include <river-layer-shell-v1-client-protocol.h>
+#include <river-libinput-config-v1-client-protocol.h>
+#include <river-input-management-v1-client-protocol.h>
 
 #define DEFAULT_WIDTH 1280
 #define DEFAULT_HEIGHT 720
@@ -192,6 +195,7 @@ static struct WindowManager wm;
 static struct river_window_manager_v1 *window_manager_v1;
 static struct river_xkb_bindings_v1 *xkb_bindings_v1;
 static struct river_layer_shell_v1 *layer_shell_v1;
+static struct river_libinput_config_v1 *libinput_config_v1;
 
 /* IPC: socket DGRAM que recebe "activate <identifier>" do proxy */
 static int  ipc_fd = -1;
@@ -1399,6 +1403,167 @@ static void wm_init(void) {
 	wm.maximized = false;
 }
 
+// --- Libinput config handlers ---
+
+struct DeviceState {
+	struct river_libinput_device_v1 *libinput_dev;
+	struct river_input_device_v1 *input_dev;
+	char *name;
+	uint32_t type;
+	bool is_touchpad;
+	bool has_tap_support;
+};
+
+static void result_handle_success(void *data, struct river_libinput_result_v1 *obj) {
+	LOG_INFO("libinput config applied successfully");
+}
+
+static void result_handle_unsupported(void *data, struct river_libinput_result_v1 *obj) {
+	LOG_WARN("libinput config unsupported by device");
+}
+
+static void result_handle_invalid(void *data, struct river_libinput_result_v1 *obj) {
+	LOG_WARN("libinput config invalid");
+}
+
+static const struct river_libinput_result_v1_listener result_listener = {
+	.success = result_handle_success,
+	.unsupported = result_handle_unsupported,
+	.invalid = result_handle_invalid,
+};
+
+static void set_device_accel_speed(struct river_libinput_device_v1 *device, double speed) {
+	struct wl_array arr;
+	wl_array_init(&arr);
+	double *p = wl_array_add(&arr, sizeof(double));
+	if (p) {
+		*p = speed;
+		struct river_libinput_result_v1 *res = river_libinput_device_v1_set_accel_speed(device, &arr);
+		river_libinput_result_v1_add_listener(res, &result_listener, NULL);
+		LOG_INFO("Sent set_accel_speed request with value: %f", speed);
+	}
+	wl_array_release(&arr);
+}
+
+static void input_device_handle_removed(void *data, struct river_input_device_v1 *obj) {
+	// no-op, handled by libinput device removed event
+}
+
+static void input_device_handle_type(void *data, struct river_input_device_v1 *obj, uint32_t type) {
+	struct DeviceState *state = data;
+	state->type = type;
+}
+
+static void input_device_handle_name(void *data, struct river_input_device_v1 *obj, const char *name) {
+	struct DeviceState *state = data;
+	state->name = strdup(name);
+	LOG_INFO("Input device name: %s, type: %u", name, state->type);
+	
+	char *lower = strdup(name);
+	if (lower) {
+		for (int i = 0; lower[i]; i++) {
+			lower[i] = tolower((unsigned char)lower[i]);
+		}
+		if (strstr(lower, "touchpad") != NULL) {
+			state->is_touchpad = true;
+			LOG_INFO("Identified touchpad by name: %s", name);
+			if (state->libinput_dev) {
+				// Increase speed to 0.7 for higher sensitivity
+				set_device_accel_speed(state->libinput_dev, 0.7);
+			}
+		}
+		free(lower);
+	}
+}
+
+static const struct river_input_device_v1_listener input_device_listener = {
+	.removed = input_device_handle_removed,
+	.type = input_device_handle_type,
+	.name = input_device_handle_name,
+};
+
+static void libinput_device_handle_removed(void *data, struct river_libinput_device_v1 *obj) {
+	struct DeviceState *state = data;
+	LOG_INFO("libinput device removed: %s", state->name ? state->name : "unknown");
+	if (state->input_dev) {
+		river_input_device_v1_destroy(state->input_dev);
+	}
+	river_libinput_device_v1_destroy(state->libinput_dev);
+	free(state->name);
+	free(state);
+}
+
+static void libinput_device_handle_input_device(void *data, struct river_libinput_device_v1 *obj, struct river_input_device_v1 *device) {
+	struct DeviceState *state = data;
+	state->input_dev = device;
+	river_input_device_v1_add_listener(device, &input_device_listener, state);
+}
+
+static void libinput_device_handle_tap_support(void *data, struct river_libinput_device_v1 *obj, int32_t finger_count) {
+	struct DeviceState *state = data;
+	LOG_INFO("Device %s tap support finger count: %d", state->name ? state->name : "unknown", finger_count);
+	if (finger_count > 0) {
+		state->has_tap_support = true;
+		state->is_touchpad = true;
+		LOG_INFO("Enabling tap-to-click, drag, and increasing speed on touchpad");
+		
+		// Enable tap-to-click
+		struct river_libinput_result_v1 *res_tap = river_libinput_device_v1_set_tap(obj, 1);
+		river_libinput_result_v1_add_listener(res_tap, &result_listener, NULL);
+		
+		// Enable tap-and-drag
+		struct river_libinput_result_v1 *res_drag = river_libinput_device_v1_set_drag(obj, 1);
+		river_libinput_result_v1_add_listener(res_drag, &result_listener, NULL);
+		
+		// Increase speed to 0.7 for higher sensitivity
+		set_device_accel_speed(obj, 0.7);
+	}
+}
+
+static void libinput_device_handle_dwt_support(void *data, struct river_libinput_device_v1 *obj, int32_t supported) {
+	(void)data;
+	if (supported) {
+		LOG_INFO("Enabling disable-while-typing on touchpad");
+		struct river_libinput_result_v1 *res_dwt = river_libinput_device_v1_set_dwt(obj, 1);
+		river_libinput_result_v1_add_listener(res_dwt, &result_listener, NULL);
+	}
+}
+
+static struct river_libinput_device_v1_listener libinput_device_listener;
+
+static void dummy_callback(void *data, struct river_libinput_device_v1 *obj) {
+	// no-op
+}
+
+static void init_libinput_listeners(void) {
+	void (**arr)(void) = (void (**)(void))&libinput_device_listener;
+	size_t count = sizeof(struct river_libinput_device_v1_listener) / sizeof(void (*)(void));
+	for (size_t i = 0; i < count; i++) {
+		arr[i] = (void (*)(void))dummy_callback;
+	}
+	libinput_device_listener.removed = libinput_device_handle_removed;
+	libinput_device_listener.input_device = libinput_device_handle_input_device;
+	libinput_device_listener.tap_support = libinput_device_handle_tap_support;
+	libinput_device_listener.dwt_support = libinput_device_handle_dwt_support;
+}
+
+static void libinput_config_handle_finished(void *data, struct river_libinput_config_v1 *obj) {
+	// no-op
+}
+
+static void libinput_config_handle_device(void *data, struct river_libinput_config_v1 *obj, struct river_libinput_device_v1 *device) {
+	struct DeviceState *state = calloc(1, sizeof(struct DeviceState));
+	if (state) {
+		state->libinput_dev = device;
+		river_libinput_device_v1_add_listener(device, &libinput_device_listener, state);
+	}
+}
+
+static const struct river_libinput_config_v1_listener libinput_config_listener = {
+	.finished = libinput_config_handle_finished,
+	.libinput_device = libinput_config_handle_device,
+};
+
 static void handle_global(void *data, struct wl_registry *registry, uint32_t name,
 		const char *interface, uint32_t version) {
 	if (strcmp(interface, river_window_manager_v1_interface.name) == 0) {
@@ -1412,6 +1577,8 @@ static void handle_global(void *data, struct wl_registry *registry, uint32_t nam
 		// (waybar, wofi, etc). Without this, River closes their layer surfaces
 		// immediately. See river-layer-shell-v1.xml.
 		layer_shell_v1 = wl_registry_bind(registry, name, &river_layer_shell_v1_interface, 1);
+	} else if (strcmp(interface, river_libinput_config_v1_interface.name) == 0) {
+		libinput_config_v1 = wl_registry_bind(registry, name, &river_libinput_config_v1_interface, 1);
 	}
 }
 
@@ -1514,12 +1681,18 @@ int main(void) {
 		LOG_WARN("river_window_manager_v1 or river_xkb_bindings_v1 not supported");
 		return 1;
 	}
-	LOG_INFO("globals bound: window_manager=%p xkb_bindings=%p layer_shell=%p",
-		(void *)window_manager_v1, (void *)xkb_bindings_v1, (void *)layer_shell_v1);
+	LOG_INFO("globals bound: window_manager=%p xkb_bindings=%p layer_shell=%p libinput_config=%p",
+		(void *)window_manager_v1, (void *)xkb_bindings_v1, (void *)layer_shell_v1, (void *)libinput_config_v1);
 	if (layer_shell_v1 == NULL) {
 		LOG_WARN("river_layer_shell_v1 not advertised — layer-shell clients (waybar) will be closed by the compositor");
 	}
 
+	if (libinput_config_v1 != NULL) {
+		LOG_INFO("libinput_config_v1 bound: adding listener");
+		river_libinput_config_v1_add_listener(libinput_config_v1, &libinput_config_listener, NULL);
+	}
+
+	init_libinput_listeners();
 	wm_init();
 	river_window_manager_v1_add_listener(window_manager_v1, &wm_listener, NULL);
 

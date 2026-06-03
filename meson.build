@@ -37,6 +37,8 @@ generated = wl_mod.scan_xml(
   'protocol/river-window-management-v1.xml',
   'protocol/river-xkb-bindings-v1.xml',
   'protocol/river-layer-shell-v1.xml',
+  'protocol/river-libinput-config-v1.xml',
+  'protocol/river-input-management-v1.xml',
 )
 
 exe = executable(
