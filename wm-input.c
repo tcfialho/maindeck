@@ -295,6 +295,15 @@ static void seat_action(struct Seat *seat, enum Action action) {
 			wm.maximized = false;
 		}
 		break;
+	case ACTION_TOGGLE_MAXIMIZE: {
+		struct Window *target = target_window();
+		if (wm.maximized) {
+			wm.maximized = false;
+		} else if (target != NULL) {
+			wm.maximized = true;
+		}
+		break;
+	}
 	case ACTION_EXIT:
 		spawn_sh("sudo -n systemctl restart sddm 2>/dev/null || loginctl terminate-session \"$XDG_SESSION_ID\"");
 		break;
@@ -321,11 +330,15 @@ void seat_manage(struct Seat *seat) {
 		xkb_binding_create(seat, super, XKB_KEY_Left,  ACTION_DECK_PREV,     ACTION_PROMOTE_TARGET_TO_MAIN);
 
 		xkb_binding_create(seat, 0, XKB_KEY_F19, ACTION_SPAWN_LAUNCHER, ACTION_NONE);
+		// Win+Shift (tap, sem outra tecla) → keyd emite Ctrl+F19: toggle maximize.
+		// (F14 não faz round-trip neste keymap; F19 sim — é o keysym do launcher.)
+		xkb_binding_create(seat, ctrl, XKB_KEY_F19, ACTION_TOGGLE_MAXIMIZE, ACTION_NONE);
 		xkb_binding_create(seat, super, XKB_KEY_Return, ACTION_SPAWN_TERMINAL, ACTION_NONE);
 		xkb_binding_create(seat, super, XKB_KEY_Delete, ACTION_CLOSE_TARGET, ACTION_NONE);
-		xkb_binding_create(seat, alt, XKB_KEY_F4, ACTION_CLOSE_TARGET, ACTION_NONE);
+		xkb_binding_create(seat, alt,   XKB_KEY_F4, ACTION_CLOSE_TARGET,   ACTION_NONE);
+		xkb_binding_create(seat, super, XKB_KEY_F4, ACTION_CLOSE_TARGET,   ACTION_NONE);
 		xkb_binding_create(seat, super, XKB_KEY_Up, ACTION_MAXIMIZE_TARGET, ACTION_NONE);
-		xkb_binding_create(seat, super, XKB_KEY_Down, ACTION_RESTORE, ACTION_NONE);
+		xkb_binding_create(seat, super, XKB_KEY_Down, ACTION_RESTORE,      ACTION_NONE);
 		xkb_binding_create(seat, super | RIVER_SEAT_V1_MODIFIERS_SHIFT, XKB_KEY_Escape, ACTION_EXIT, ACTION_NONE);
 
 		pointer_binding_create(seat, super, BTN_LEFT, ACTION_TOGGLE_TARGET);
