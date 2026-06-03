@@ -40,6 +40,7 @@ struct Window {
 	// (Super+Up), which only fills the usable area. Fullscreen covers the whole
 	// output, including waybar.
 	bool fullscreen;
+	bool minimized; // force-hidden independente do índice; excluído da contagem visível; agrupado na cauda de wm.windows
 	bool applied_fullscreen; // what we last told the server, to act only on edges
 	struct river_output_v1 *fs_output;
 

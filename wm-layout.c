@@ -32,6 +32,23 @@ size_t window_count(void) {
 	return count;
 }
 
+size_t visible_window_count(void) {
+	size_t count = 0;
+	struct Window *window;
+	wl_list_for_each(window, &wm.windows, link) {
+		if (!window->minimized) count++;
+	}
+	return count;
+}
+
+static struct wl_list *visible_region_end(void) {
+	struct Window *window;
+	wl_list_for_each(window, &wm.windows, link) {
+		if (window->minimized) return &window->link;
+	}
+	return &wm.windows;
+}
+
 struct Window *window_at(size_t index) {
 	size_t i = 0;
 	struct Window *window;
@@ -53,11 +70,12 @@ int32_t window_index(struct Window *needle) {
 }
 
 struct Window *target_window(void) {
+	if (wm.target_index >= visible_window_count()) return NULL;
 	return window_at(wm.target_index);
 }
 
 void clamp_target(void) {
-	size_t count = window_count();
+	size_t count = visible_window_count();
 	if (count == 0) {
 		wm.target_index = 0;
 		wm.maximized = false;
@@ -95,7 +113,7 @@ struct Box output_box(void) {
 
 static struct Box layout_box_for_index(size_t index) {
 	struct Box out = output_box();
-	size_t count = window_count();
+	size_t count = visible_window_count();
 	if (count <= 1 || wm.maximized) {
 		return out;
 	}
@@ -113,7 +131,7 @@ static struct Box layout_box_for_index(size_t index) {
 
 static bool window_is_visible_index(size_t index) {
 	if (wm.maximized) return index == wm.target_index;
-	return index < 2;
+	return index < 2 && index < visible_window_count();
 }
 
 static void move_after(struct Window *window, struct wl_list *position) {
@@ -125,7 +143,8 @@ void move_first(struct Window *window) {
 	move_after(window, &wm.windows);
 }
 
-static void move_last(struct Window *window) {
+void move_last(struct Window *window) {
+	if (wm.windows.prev == &window->link) return; // já é a cauda
 	move_after(window, wm.windows.prev);
 }
 
@@ -172,11 +191,13 @@ static struct Window *window_by_identifier(const char *id) {
 static void activate_window_from_taskbar(struct Window *window) {
 	int32_t idx = window_index(window);
 	if (idx < 0) return;
-	if (idx == 0 || idx == 1) {
-		/* Janela visível: só muda o ALVO (foco), sem mover */
+	if (window->minimized) {
+		window->minimized = false;
+		move_first(window);
+		wm.target_index = 0;
+	} else if (idx == 0 || idx == 1) {
 		wm.target_index = (uint32_t)idx;
 	} else {
-		/* Janela oculta: promove para MAIN */
 		move_first(window);
 		wm.target_index = 0;
 	}
@@ -248,6 +269,7 @@ void log_state(void) {
 }
 
 void md_swap_main_deck(void) {
+	if (visible_window_count() < 2) return;
 	struct Window *main = window_at(0);
 	struct Window *deck = window_at(1);
 	if (main == NULL || deck == NULL) return;
@@ -258,33 +280,34 @@ void md_swap_main_deck(void) {
 }
 
 void md_deck_next(void) {
-	if (window_count() <= 2) {
+	if (visible_window_count() <= 2) {
 		osd("sem janela invis\xc3\xadvel \xc3\xa0 direita");
 		return;
 	}
 	struct Window *deck = window_at(1);
-	move_last(deck);
+	wl_list_remove(&deck->link);
+	wl_list_insert(visible_region_end()->prev, &deck->link);
 	wm.target_index = 1;
 	wm.maximized = false;
 	log_state();
 }
 
 void md_deck_prev(void) {
-	size_t count = window_count();
-	if (count <= 2) {
+	size_t vis = visible_window_count();
+	if (vis <= 2) {
 		osd("sem janela invis\xc3\xadvel \xc3\xa0 esquerda");
 		return;
 	}
-	struct Window *last = window_at(count - 1);
+	struct Window *last_visible = window_at(vis - 1);
 	struct Window *main = window_at(0);
-	move_after(last, &main->link);
+	move_after(last_visible, &main->link);
 	wm.target_index = 1;
 	wm.maximized = false;
 	log_state();
 }
 
 void md_send_target_to_deck_bottom(void) {
-	size_t count = window_count();
+	size_t count = visible_window_count();
 	if (count <= 1) return;
 	struct Window *target = target_window();
 	if (target == NULL) return;
@@ -299,7 +322,8 @@ void md_send_target_to_deck_bottom(void) {
 		wm.target_index = 1;
 	} else {
 		// DECK → send to hidden bottom as before; next hidden window surfaces to DECK.
-		move_last(target);
+		wl_list_remove(&target->link);
+		wl_list_insert(visible_region_end()->prev, &target->link);
 		clamp_target();
 	}
 
@@ -339,7 +363,10 @@ void window_manage_layout(struct Window *window, size_t index) {
 	// Client-requested fullscreen: the compositor owns position/dimensions, so
 	// we must NOT propose_dimensions/set_tiled. Issue fullscreen()/exit on the
 	// transition edge (both are manage-sequence-only requests).
-	if (window->fullscreen) {
+	// NOTE: a minimized window must NOT enter fullscreen (it's force-hidden in
+	// render); the !minimized guard lets a minimize-from-fullscreen fall through
+	// to the exit-reconcile block below so the compositor is told exit_fullscreen.
+	if (window->fullscreen && !window->minimized) {
 		if (!window->applied_fullscreen) {
 			struct river_output_v1 *out = window->fs_output;
 			if (out == NULL) {
@@ -357,10 +384,17 @@ void window_manage_layout(struct Window *window, size_t index) {
 	}
 	if (window->applied_fullscreen) {
 		// Leaving fullscreen: exit + re-propose dimensions this same sequence.
+		// This also runs when a fullscreen window was just minimized (above guard
+		// skipped the apply block), so the compositor is told to exit fullscreen
+		// instead of leaving applied_fullscreen orphaned while hidden.
 		river_window_v1_exit_fullscreen(window->obj);
 		river_window_v1_inform_not_fullscreen(window->obj);
 		window->applied_fullscreen = false;
 	}
+
+	// Minimized: force-hidden in render; nothing to size/tile here. Checked AFTER
+	// the fullscreen exit-reconcile so minimize-from-fullscreen still issues exit.
+	if (window->minimized) { window->new = false; return; }
 
 	if (!window_is_visible_index(index)) return;
 	struct Box box = layout_box_for_index(index);
@@ -373,6 +407,11 @@ void window_manage_layout(struct Window *window, size_t index) {
 }
 
 void window_render_layout(struct Window *window, size_t index) {
+	if (window->minimized) {
+		river_window_v1_hide(window->obj);
+		river_window_v1_set_borders(window->obj, RIVER_WINDOW_V1_EDGES_NONE, 0, 0, 0, 0, 0);
+		return;
+	}
 	// Fullscreen window: compositor owns geometry; just show it, no borders,
 	// node on top (so it's the top fullscreen window — anything above it in the
 	// render order, like waybar, keeps drawing; see place_top handling).

@@ -263,7 +263,7 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		break;
 	}
 	case ACTION_TOGGLE_TARGET:
-		if (window_count() >= 2) {
+		if (visible_window_count() >= 2) {
 			wm.target_index = wm.target_index == 0 ? 1 : 0;
 			wm.maximized = false;
 		}

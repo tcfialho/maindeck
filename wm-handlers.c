@@ -148,7 +148,23 @@ static void window_handle_exit_fullscreen_requested(void *data, struct river_win
 	window->fs_output = NULL;
 	LOG_EVENT("exit fullscreen requested: \"%s\" app_id=%s", window->title ? window->title : "", window->app_id ? window->app_id : "");
 }
-static void window_handle_minimize_requested(void *data, struct river_window_v1 *obj) {}
+static void window_handle_minimize_requested(void *data, struct river_window_v1 *obj) {
+	(void)obj;
+	struct Window *window = data;
+	if (window->closed) return;
+	if (window->minimized) return;
+	if (window->fullscreen) {
+		window->fullscreen = false;
+		window->fs_output = NULL;
+	}
+	window->minimized = true;
+	move_last(window);
+	wm.target_index = 0;
+	wm.maximized = false;
+	LOG_EVENT("minimize requested: \"%s\" app_id=%s",
+		window->title ? window->title : "",
+		window->app_id ? window->app_id : "");
+}
 static void window_handle_unreliable_pid(void *data, struct river_window_v1 *obj, int32_t unreliable_pid) {}
 static void window_handle_presentation_hint(void *data, struct river_window_v1 *obj, uint32_t hint) {}
 static void window_handle_identifier(void *data, struct river_window_v1 *obj, const char *identifier) {
@@ -223,6 +239,7 @@ static uint64_t compute_layout_signature(void) {
 		SIG_MIX(w->fullscreen);
 		SIG_MIX(w->applied_fullscreen);
 		SIG_MIX(w->new);
+		SIG_MIX(w->minimized);
 	}
 
 	struct Output *o;

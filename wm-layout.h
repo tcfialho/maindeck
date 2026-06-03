@@ -6,6 +6,7 @@
 #include "types.h"
 
 size_t window_count(void);
+size_t visible_window_count(void);
 struct Window *window_at(size_t index);
 int32_t window_index(struct Window *needle);
 struct Window *target_window(void);
@@ -28,5 +29,6 @@ void md_insert_new_window(struct Window *window);
 void window_manage_layout(struct Window *window, size_t index);
 void window_render_layout(struct Window *window, size_t index);
 void move_first(struct Window *window);
+void move_last(struct Window *window);
 
 #endif /* WM_LAYOUT_H */
