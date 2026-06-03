@@ -1,0 +1,420 @@
+#include <errno.h>
+#include <fcntl.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <time.h>
+#include <unistd.h>
+#include <wayland-client-core.h>
+#include <wayland-client-protocol.h>
+#include <xkbcommon/xkbcommon.h>
+#include <ctype.h>
+
+#include <river-window-management-v1-client-protocol.h>
+#include <river-xkb-bindings-v1-client-protocol.h>
+#include <river-layer-shell-v1-client-protocol.h>
+#include <river-libinput-config-v1-client-protocol.h>
+#include <river-input-management-v1-client-protocol.h>
+
+#include "types.h"
+#include "wm-log.h"
+#include "wm-state.h"
+#include "wm-layout.h"
+#include "wm-input.h"
+#include "wm-libinput.h"
+#include "wm-handlers.h"
+
+static void clear_loading_notification(void) {
+	if (fork() == 0) {
+		execlp("sh", "sh", "-c",
+			"f=\"${XDG_RUNTIME_DIR:-/tmp}/maindeck-loading.id\"; "
+			"[ -f \"$f\" ] || exit 0; "
+			"id=$(cat \"$f\" 2>/dev/null); rm -f \"$f\"; "
+			"[ -n \"$id\" ] && makoctl dismiss -n \"$id\" 2>/dev/null; "
+			"exit 0",
+			(char *)0);
+		_exit(127);
+	}
+}
+
+static void output_handle_removed(void *data, struct river_output_v1 *obj) {
+	struct Output *output = data;
+	output->removed = true;
+}
+
+static void output_handle_position(void *data, struct river_output_v1 *obj, int32_t x, int32_t y) {
+	struct Output *output = data;
+	output->x = x;
+	output->y = y;
+}
+
+static void output_handle_dimensions(void *data, struct river_output_v1 *obj, int32_t width, int32_t height) {
+	struct Output *output = data;
+	output->width = width;
+	output->height = height;
+}
+
+static void output_handle_wl_output(void *data, struct river_output_v1 *obj, uint32_t name) {}
+
+static const struct river_output_v1_listener river_output_listener = {
+	.removed = output_handle_removed,
+	.wl_output = output_handle_wl_output,
+	.position = output_handle_position,
+	.dimensions = output_handle_dimensions,
+};
+
+static void layer_shell_output_handle_non_exclusive_area(
+		void *data, struct river_layer_shell_output_v1 *obj,
+		int32_t x, int32_t y, int32_t width, int32_t height) {
+	struct Output *output = data;
+	output->usable_x = x;
+	output->usable_y = y;
+	output->usable_width = width;
+	output->usable_height = height;
+	LOG_INFO("non_exclusive_area: x=%d y=%d w=%d h=%d (output %dx%d)",
+		x, y, width, height, output->width, output->height);
+}
+
+static const struct river_layer_shell_output_v1_listener layer_shell_output_listener = {
+	.non_exclusive_area = layer_shell_output_handle_non_exclusive_area,
+};
+
+void output_maybe_destroy(struct Output *output) {
+	if (!output->removed) return;
+	if (output->shell_output != NULL) {
+		river_layer_shell_output_v1_destroy(output->shell_output);
+		output->shell_output = NULL;
+	}
+	river_output_v1_destroy(output->obj);
+	wl_list_remove(&output->link);
+	free(output);
+}
+
+static void window_handle_closed(void *data, struct river_window_v1 *obj) {
+	struct Window *window = data;
+	LOG_EVENT("window closed: \"%s\" app_id=%s index=%d",
+		window->title ? window->title : "",
+		window->app_id ? window->app_id : "",
+		window_index(window));
+	window->closed = true;
+}
+
+static void window_handle_dimensions(void *data, struct river_window_v1 *obj, int32_t width, int32_t height) {
+	struct Window *window = data;
+	window->width = width;
+	window->height = height;
+}
+
+static void window_handle_app_id(void *data, struct river_window_v1 *obj, const char *app_id) {
+	struct Window *window = data;
+	window_set_string(&window->app_id, app_id);
+}
+
+static void window_handle_title(void *data, struct river_window_v1 *obj, const char *title) {
+	struct Window *window = data;
+	window_set_string(&window->title, title);
+}
+
+static void window_handle_dimensions_hint(void *data, struct river_window_v1 *obj, int32_t min_width, int32_t min_height, int32_t max_width, int32_t max_height) {}
+static void window_handle_parent(void *data, struct river_window_v1 *obj, struct river_window_v1 *parent) {}
+static void window_handle_decoration_hint(void *data, struct river_window_v1 *obj, uint32_t hint) {}
+static void window_handle_pointer_move_requested(void *data, struct river_window_v1 *obj, struct river_seat_v1 *river_seat) {}
+static void window_handle_pointer_resize_requested(void *data, struct river_window_v1 *obj, struct river_seat_v1 *river_seat, uint32_t edges) {}
+static void window_handle_show_window_menu_requested(void *data, struct river_window_v1 *obj, int32_t x, int32_t y) {}
+static void window_handle_maximize_requested(void *data, struct river_window_v1 *obj) {}
+static void window_handle_unmaximize_requested(void *data, struct river_window_v1 *obj) {}
+static void window_handle_fullscreen_requested(void *data, struct river_window_v1 *obj, struct river_output_v1 *river_output) {
+	struct Window *window = data;
+	window->fullscreen = true;
+	window->fs_output = river_output;
+	int32_t idx = window_index(window);
+	if (idx == 0 || idx == 1) {
+		wm.target_index = idx;
+	} else if (idx >= 2) {
+		move_first(window);
+		wm.target_index = 0;
+	}
+	wm.maximized = false;
+	LOG_EVENT("fullscreen requested: \"%s\" app_id=%s", window->title ? window->title : "", window->app_id ? window->app_id : "");
+}
+static void window_handle_exit_fullscreen_requested(void *data, struct river_window_v1 *obj) {
+	struct Window *window = data;
+	window->fullscreen = false;
+	window->fs_output = NULL;
+	LOG_EVENT("exit fullscreen requested: \"%s\" app_id=%s", window->title ? window->title : "", window->app_id ? window->app_id : "");
+}
+static void window_handle_minimize_requested(void *data, struct river_window_v1 *obj) {}
+static void window_handle_unreliable_pid(void *data, struct river_window_v1 *obj, int32_t unreliable_pid) {}
+static void window_handle_presentation_hint(void *data, struct river_window_v1 *obj, uint32_t hint) {}
+static void window_handle_identifier(void *data, struct river_window_v1 *obj, const char *identifier) {
+	struct Window *window = data;
+	(void)obj;
+	if (!valid_identifier(identifier)) {
+		LOG_WARN("window_handle_identifier: identifier inválido ou nulo, ignorando");
+		return;
+	}
+	window_set_string(&window->identifier, identifier);
+}
+
+static const struct river_window_v1_listener river_window_listener = {
+	.closed = window_handle_closed,
+	.dimensions_hint = window_handle_dimensions_hint,
+	.dimensions = window_handle_dimensions,
+	.app_id = window_handle_app_id,
+	.title = window_handle_title,
+	.parent = window_handle_parent,
+	.decoration_hint = window_handle_decoration_hint,
+	.pointer_move_requested = window_handle_pointer_move_requested,
+	.pointer_resize_requested = window_handle_pointer_resize_requested,
+	.show_window_menu_requested = window_handle_show_window_menu_requested,
+	.maximize_requested = window_handle_maximize_requested,
+	.unmaximize_requested = window_handle_unmaximize_requested,
+	.fullscreen_requested = window_handle_fullscreen_requested,
+	.exit_fullscreen_requested = window_handle_exit_fullscreen_requested,
+	.minimize_requested = window_handle_minimize_requested,
+	.unreliable_pid = window_handle_unreliable_pid,
+	.presentation_hint = window_handle_presentation_hint,
+	.identifier = window_handle_identifier,
+};
+
+void window_maybe_destroy(struct Window *window) {
+	if (!window->closed) return;
+	struct Seat *seat;
+	wl_list_for_each(seat, &wm.seats, link) {
+		if (seat->focused == window) seat->focused = NULL;
+	}
+	river_window_v1_destroy(window->obj);
+	wl_list_remove(&window->link);
+	free(window->app_id);
+	free(window->title);
+	free(window->identifier);
+	free(window);
+}
+
+static void wm_handle_unavailable(void *data, struct river_window_manager_v1 *obj) {
+	LOG_WARN("another window manager is already running");
+	exit(1);
+}
+
+static void wm_handle_finished(void *data, struct river_window_manager_v1 *obj) {
+	LOG_INFO("session finished");
+	exit(0);
+}
+
+static uint64_t g_layout_sig = 0;
+static bool g_layout_sig_fresh = false;
+
+static uint64_t compute_layout_signature(void) {
+	uint64_t h = 1469598103934665603ULL;
+	#define SIG_MIX(val) do { h = (h ^ (uint64_t)(val)) * 1099511628211ULL; } while (0)
+
+	SIG_MIX(wm.target_index);
+	SIG_MIX(wm.maximized);
+	SIG_MIX(window_count());
+
+	struct Window *w;
+	wl_list_for_each(w, &wm.windows, link) {
+		SIG_MIX((uintptr_t)w->obj);
+		SIG_MIX(w->fullscreen);
+		SIG_MIX(w->applied_fullscreen);
+		SIG_MIX(w->new);
+	}
+
+	struct Output *o;
+	wl_list_for_each(o, &wm.outputs, link) {
+		SIG_MIX(o->removed);
+		SIG_MIX((uint32_t)o->x);
+		SIG_MIX((uint32_t)o->y);
+		SIG_MIX((uint32_t)o->width);
+		SIG_MIX((uint32_t)o->height);
+		SIG_MIX((uint32_t)o->usable_x);
+		SIG_MIX((uint32_t)o->usable_y);
+		SIG_MIX((uint32_t)o->usable_width);
+		SIG_MIX((uint32_t)o->usable_height);
+	}
+
+	struct Seat *s;
+	wl_list_for_each(s, &wm.seats, link) {
+		if (s->removed) continue;
+		SIG_MIX((uintptr_t)s->obj);
+	}
+
+	#undef SIG_MIX
+	return h;
+}
+
+static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *obj) {
+	struct Output *output, *output_tmp;
+	wl_list_for_each_safe(output, output_tmp, &wm.outputs, link) {
+		output_maybe_destroy(output);
+	}
+	struct Window *window, *window_tmp;
+	wl_list_for_each_safe(window, window_tmp, &wm.windows, link) {
+		window_maybe_destroy(window);
+	}
+	struct Seat *seat, *seat_tmp;
+	wl_list_for_each_safe(seat, seat_tmp, &wm.seats, link) {
+		seat_maybe_destroy(seat);
+	}
+
+	process_hold_timers();
+
+	wl_list_for_each(seat, &wm.seats, link) {
+		seat_manage(seat);
+	}
+	apply_pending_taskbar_activation();
+	clamp_target();
+
+	struct Output *primary = NULL;
+	wl_list_for_each(output, &wm.outputs, link) {
+		if (!output->removed && output->shell_output != NULL) {
+			primary = output;
+			break;
+		}
+	}
+	if (primary != NULL && !primary->default_set) {
+		river_layer_shell_output_v1_set_default(primary->shell_output);
+		primary->default_set = true;
+	}
+
+	static uint64_t last_layout_sig = 0;
+	static bool have_last_sig = false;
+	uint64_t sig = compute_layout_signature();
+	g_layout_sig = sig;
+	g_layout_sig_fresh = true;
+
+	if (!have_last_sig || sig != last_layout_sig) {
+		size_t index = 0;
+		wl_list_for_each(window, &wm.windows, link) {
+			window_manage_layout(window, index);
+			index++;
+		}
+		focus_target_on_seats();
+		log_state();
+		last_layout_sig = sig;
+		have_last_sig = true;
+	}
+
+	river_window_manager_v1_manage_finish(window_manager_v1);
+}
+
+static void wm_handle_render_start(void *data, struct river_window_manager_v1 *obj) {
+	static uint64_t last_render_sig = 0;
+	static bool have_last_render_sig = false;
+	uint64_t sig;
+	if (g_layout_sig_fresh) {
+		sig = g_layout_sig;
+		g_layout_sig_fresh = false;
+	} else {
+		sig = compute_layout_signature();
+	}
+
+	if (!have_last_render_sig || sig != last_render_sig) {
+		size_t index = 0;
+		struct Window *window;
+		wl_list_for_each(window, &wm.windows, link) {
+			window_render_layout(window, index);
+			index++;
+		}
+		if (target_window() != NULL) {
+			river_node_v1_place_top(target_window()->node);
+		}
+		last_render_sig = sig;
+		have_last_render_sig = true;
+	}
+	river_window_manager_v1_render_finish(window_manager_v1);
+}
+
+static void wm_handle_window(void *data, struct river_window_manager_v1 *obj, struct river_window_v1 *river_window) {
+	struct Window *window = calloc(1, sizeof(struct Window));
+	if (window == NULL) {
+		LOG_WARN("calloc(Window) failed; dropping window (OOM)");
+		return;
+	}
+	window->obj = river_window;
+	window->node = river_window_v1_get_node(window->obj);
+	window->new = true;
+	river_window_v1_add_listener(window->obj, &river_window_listener, window);
+	md_insert_new_window(window);
+	clear_loading_notification();
+}
+
+static void wm_handle_output(void *data, struct river_window_manager_v1 *obj, struct river_output_v1 *river_output) {
+	struct Output *output = calloc(1, sizeof(struct Output));
+	if (output == NULL) {
+		LOG_WARN("calloc(Output) failed; dropping output (OOM)");
+		return;
+	}
+	output->obj = river_output;
+	river_output_v1_add_listener(output->obj, &river_output_listener, output);
+	wl_list_insert(wm.outputs.prev, &output->link);
+
+	if (layer_shell_v1 != NULL) {
+		output->shell_output = river_layer_shell_v1_get_output(layer_shell_v1, river_output);
+		river_layer_shell_output_v1_add_listener(output->shell_output, &layer_shell_output_listener, output);
+	}
+}
+
+static void wm_handle_seat(void *data, struct river_window_manager_v1 *obj, struct river_seat_v1 *river_seat) {
+	struct Seat *seat = calloc(1, sizeof(struct Seat));
+	if (seat == NULL) {
+		LOG_WARN("calloc(Seat) failed; dropping seat (OOM)");
+		return;
+	}
+	seat->obj = river_seat;
+	seat->new = true;
+	wl_list_init(&seat->xkb_bindings);
+	wl_list_init(&seat->pointer_bindings);
+	river_seat_v1_add_listener(seat->obj, &river_seat_listener, seat);
+	wl_list_insert(wm.seats.prev, &seat->link);
+}
+
+static void wm_handle_session_locked(void *data, struct river_window_manager_v1 *obj) {}
+static void wm_handle_session_unlocked(void *data, struct river_window_manager_v1 *obj) {}
+
+const struct river_window_manager_v1_listener wm_listener = {
+	.unavailable = wm_handle_unavailable,
+	.finished = wm_handle_finished,
+	.manage_start = wm_handle_manage_start,
+	.render_start = wm_handle_render_start,
+	.session_locked = wm_handle_session_locked,
+	.session_unlocked = wm_handle_session_unlocked,
+	.window = wm_handle_window,
+	.output = wm_handle_output,
+	.seat = wm_handle_seat,
+};
+
+void wm_init(void) {
+	wl_list_init(&wm.outputs);
+	wl_list_init(&wm.windows);
+	wl_list_init(&wm.seats);
+	wm.target_index = 0;
+	wm.maximized = false;
+}
+
+static void handle_global(void *data, struct wl_registry *registry, uint32_t name,
+		const char *interface, uint32_t version) {
+	if (strcmp(interface, river_window_manager_v1_interface.name) == 0) {
+		if (version >= 4) {
+			window_manager_v1 = wl_registry_bind(registry, name, &river_window_manager_v1_interface, 4);
+		}
+	} else if (strcmp(interface, river_xkb_bindings_v1_interface.name) == 0) {
+		xkb_bindings_v1 = wl_registry_bind(registry, name, &river_xkb_bindings_v1_interface, 1);
+	} else if (strcmp(interface, river_layer_shell_v1_interface.name) == 0) {
+		layer_shell_v1 = wl_registry_bind(registry, name, &river_layer_shell_v1_interface, 1);
+	} else if (strcmp(interface, river_libinput_config_v1_interface.name) == 0) {
+		libinput_config_v1 = wl_registry_bind(registry, name, &river_libinput_config_v1_interface, 1);
+	}
+}
+
+static void handle_global_remove(void *data, struct wl_registry *registry, uint32_t name) {}
+
+const struct wl_registry_listener registry_listener = {
+	.global = handle_global,
+	.global_remove = handle_global_remove,
+};

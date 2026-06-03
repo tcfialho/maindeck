@@ -43,7 +43,12 @@ generated = wl_mod.scan_xml(
 
 exe = executable(
   'maindeck-wm',
-  'maindeck-wm.c',
+  'wm-ipc.c',
+  'wm-log.c',
+  'wm-layout.c',
+  'wm-input.c',
+  'wm-libinput.c',
+  'wm-handlers.c',
   generated,
   dependencies: [
     wayland_client,
@@ -59,7 +64,11 @@ proxy_generated = wl_mod.scan_xml(
 
 executable(
   'maindeck-proxy',
-  'maindeck-proxy.c',
+  'proxy-process.c',
+  'proxy-wire.c',
+  'proxy-emit.c',
+  'proxy-toplevel.c',
+  'proxy-relay.c',
   proxy_generated,
   dependencies: [
     wayland_client,
