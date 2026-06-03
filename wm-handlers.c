@@ -132,6 +132,7 @@ static void window_handle_fullscreen_requested(void *data, struct river_window_v
 	struct Window *window = data;
 	window->fullscreen = true;
 	window->fs_output = river_output;
+	if (window->minimized) return; // fullscreen honrado no restore; não move na lista
 	int32_t idx = window_index(window);
 	if (idx == 0 || idx == 1) {
 		wm.target_index = idx;
