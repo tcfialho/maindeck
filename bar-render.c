@@ -190,10 +190,20 @@ static void draw_taskbar(cairo_t *cr, PangoLayout *lay, int x_start, int x_end, 
             && (bar->hit_areas[bar->hover_hit].type == HIT_TASKBAR)
             && (bar->hit_areas[bar->hover_hit].index == i);
 
-        /* Button background: flat unless active or hovered */
-        if (tl->activated || hovered) {
-            set_col(cr, tl->activated ? COL_ACTIVE : COL_BTN_HOVER);
+        /* Hover: subtle background fill */
+        if (hovered && !tl->activated) {
+            set_col(cr, COL_BTN_HOVER);
             rounded_rect(cr, x, btn_y, btn_w - 2, btn_h, BTN_RADIUS);
+            cairo_fill(cr);
+        }
+
+        /* Active: underline at the bottom of the button */
+        if (tl->activated) {
+            set_col(cr, 0.30, 0.57, 1.0, 1.0);  /* #4D92FF — accent blue */
+            double lx = x + 2;
+            double lw = btn_w - 6;
+            double ly = btn_y + btn_h - 2;
+            cairo_rectangle(cr, lx, ly, lw, 2);
             cairo_fill(cr);
         }
 
