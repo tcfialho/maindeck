@@ -333,17 +333,17 @@ void bar_render(void) {
     /* Separator */
     draw_sep(cr, ql_end + 2, h);
 
-    /* Tray (rightmost) */
-    int tray_start  = draw_tray(cr, h, w - 4);
+    /* Status modules (rightmost: power, clock, bat, vol) */
+    int status_start = draw_status(cr, lay, h, w - 4);
 
-    /* Status modules (left of tray) */
-    int status_start = draw_status(cr, lay, h, tray_start);
+    /* Tray (left of status modules) */
+    int tray_start = draw_tray(cr, h, status_start - 4);
 
     /* Separator */
-    draw_sep(cr, status_start - 4, h);
+    draw_sep(cr, tray_start - 4, h);
 
     /* Taskbar (center, fills remaining space) */
-    draw_taskbar(cr, lay, ql_end + 8, status_start - 8, h);
+    draw_taskbar(cr, lay, ql_end + 8, tray_start - 8, h);
 
     g_object_unref(lay);
     cairo_destroy(cr);
