@@ -115,7 +115,6 @@ static int draw_quicklaunch(cairo_t *cr, PangoLayout *lay, int h) {
 
         int btn_w;
         if (glyph) {
-            /* NF glyph — measure text */
             pango_layout_set_text(lay, glyph, -1);
             int tw, th; (void)th;
             pango_layout_get_pixel_size(lay, &tw, &th);
@@ -123,6 +122,8 @@ static int draw_quicklaunch(cairo_t *cr, PangoLayout *lay, int h) {
         } else {
             btn_w = ICON_SIZE + BTN_PAD * 2;
         }
+        if (btn->width >= 2)
+            btn_w = btn_w * btn->width;
 
         /* Button background */
         if (hovered) {

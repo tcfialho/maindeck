@@ -130,6 +130,10 @@ int bar_config_load(const char *path, struct BarConfig *cfg) {
                         tok_str(json, &toks[i+1], btn->exec, sizeof(btn->exec));
                     else if (tok_eq(json, &toks[i], "tooltip"))
                         tok_str(json, &toks[i+1], btn->tooltip, sizeof(btn->tooltip));
+                    else if (tok_eq(json, &toks[i], "width")) {
+                        char tmp[8]; tok_str(json, &toks[i+1], tmp, sizeof(tmp));
+                        btn->width = atoi(tmp);
+                    }
                     i += 2;
                 }
                 cfg->ql_count++;

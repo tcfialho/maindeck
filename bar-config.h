@@ -8,6 +8,7 @@ struct BarQLButton {
     char icon[128];
     char exec[512];
     char tooltip[128];
+    int  width;   /* width multiplier: 0 or 1 = normal, 2 = double, etc. */
 };
 
 struct BarConfig {
