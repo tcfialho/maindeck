@@ -133,6 +133,8 @@ int bar_config_load(const char *path, struct BarConfig *cfg) {
                     else if (tok_eq(json, &toks[i], "width")) {
                         char tmp[8]; tok_str(json, &toks[i+1], tmp, sizeof(tmp));
                         btn->width = atoi(tmp);
+                    } else if (tok_eq(json, &toks[i], "bg")) {
+                        tok_str(json, &toks[i+1], btn->bg, sizeof(btn->bg));
                     }
                     i += 2;
                 }

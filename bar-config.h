@@ -5,10 +5,11 @@
 #define BAR_MAX_STATUS 8
 
 struct BarQLButton {
-    char icon[128];
-    char exec[512];
-    char tooltip[128];
-    int  width;   /* width multiplier: 0 or 1 = normal, 2 = double, etc. */
+    char  icon[128];
+    char  exec[512];
+    char  tooltip[128];
+    int   width;          /* width multiplier: 0/1 = normal, 2 = double, etc. */
+    char  bg[10];         /* optional background color: "#RRGGBB" or "#RRGGBBAA" */
 };
 
 struct BarConfig {

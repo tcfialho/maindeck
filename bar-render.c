@@ -39,6 +39,22 @@ static void set_col(cairo_t *cr, double r, double g, double b, double a) {
     cairo_set_source_rgba(cr, r, g, b, a);
 }
 
+/* Parse "#RRGGBB" or "#RRGGBBAA" into r,g,b,a in [0,1]. Returns false if invalid. */
+static bool parse_hex_color(const char *hex, double *r, double *g, double *b, double *a) {
+    if (!hex || hex[0] != '#') return false;
+    size_t len = strlen(hex);
+    unsigned int ri, gi, bi, ai = 255;
+    if (len == 7) {
+        if (sscanf(hex + 1, "%2x%2x%2x", &ri, &gi, &bi) != 3) return false;
+    } else if (len == 9) {
+        if (sscanf(hex + 1, "%2x%2x%2x%2x", &ri, &gi, &bi, &ai) != 4) return false;
+    } else {
+        return false;
+    }
+    *r = ri / 255.0; *g = gi / 255.0; *b = bi / 255.0; *a = ai / 255.0;
+    return true;
+}
+
 static void rounded_rect(cairo_t *cr, double x, double y, double w, double h, double r) {
     cairo_new_sub_path(cr);
     cairo_arc(cr, x+w-r, y+r,   r, -M_PI/2, 0);
@@ -125,11 +141,18 @@ static int draw_quicklaunch(cairo_t *cr, PangoLayout *lay, int h) {
         if (btn->width >= 2)
             btn_w = btn_w * btn->width;
 
-        /* Button background: only show on hover (flat by default) */
-        if (hovered) {
-            set_col(cr, COL_BTN_HOVER);
-            rounded_rect(cr, x, btn_y, btn_w, btn_h, BTN_RADIUS);
-            cairo_fill(cr);
+        /* Button background: custom color if set, hover otherwise */
+        {
+            double r, g, b, a;
+            bool has_bg = parse_hex_color(btn->bg, &r, &g, &b, &a);
+            if (has_bg || hovered) {
+                if (has_bg)
+                    cairo_set_source_rgba(cr, r, g, b, hovered ? (a * 1.15 > 1.0 ? 1.0 : a * 1.15) : a);
+                else
+                    set_col(cr, COL_BTN_HOVER);
+                rounded_rect(cr, x, btn_y, btn_w, btn_h, BTN_RADIUS);
+                cairo_fill(cr);
+            }
         }
 
         /* Draw icon or glyph */
