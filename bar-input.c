@@ -9,6 +9,7 @@
 #include "bar-input.h"
 #include "bar-taskbar.h"
 #include "bar-quicklaunch.h"
+#include "bar-tray.h"
 #include "bar-render.h"
 #include "bar-log.h"
 
@@ -99,6 +100,10 @@ static void ptr_button(void *data, struct wl_pointer *ptr,
         }
         break;
     }
+    case HIT_TRAY:
+        bar_tray_click(ha->index, left ? 1 : 3,
+                       (int)bar->ptr_x, (int)bar->ptr_y);
+        break;
     case HIT_NONE:
         break;
     }

@@ -83,6 +83,7 @@ gdk_pixbuf = dependency('gdk-pixbuf-2.0')
 librsvg    = dependency('librsvg-2.0', required: false)
 pulse      = dependency('libpulse')
 gio        = dependency('gio-2.0')
+dbus       = dependency('dbus-1')
 
 bar_protocols = wl_mod.scan_xml(
   'protocol/wlr-layer-shell-unstable-v1.xml',
@@ -101,6 +102,7 @@ executable(
   'bar-input.c',
   'bar-config.c',
   'bar-icons.c',
+  'bar-tray.c',
   bar_protocols,
   proxy_generated,
   dependencies: [
@@ -111,6 +113,7 @@ executable(
     librsvg,
     pulse,
     gio,
+    dbus,
   ],
   include_directories: include_directories('vendor'),
   install: true,

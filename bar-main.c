@@ -22,6 +22,7 @@
 #include "bar-taskbar.h"
 #include "bar-input.h"
 #include "bar-status.h"
+#include "bar-tray.h"
 #include "bar-config.h"
 #include "bar-icons.h"
 #include "bar-log.h"
@@ -229,14 +230,17 @@ int main(void) {
     /* Status modules */
     bar_status_init();
 
+    /* System tray */
+    int tray_fd = bar_tray_init();
+
     /* Initial render */
     bar_status_tick();
     if (g_bar.dirty) bar_render();
 
-    int wl_fd  = wl_display_get_fd(g_bar.display);
+    int wl_fd    = wl_display_get_fd(g_bar.display);
     int timer_ms = ms_until_next_minute();
 
-    LOG_INFO("main: entering event loop");
+    LOG_INFO("main: entering event loop (tray_fd=%d)", tray_fd);
 
     while (g_running) {
         while (wl_display_prepare_read(g_bar.display) != 0)
@@ -247,11 +251,13 @@ int main(void) {
             break;
         }
 
-        struct pollfd pfds[1] = {
-            { .fd = wl_fd, .events = POLLIN },
+        struct pollfd pfds[2] = {
+            { .fd = wl_fd,   .events = POLLIN },
+            { .fd = tray_fd, .events = tray_fd >= 0 ? POLLIN : 0 },
         };
+        nfds_t nfds = (tray_fd >= 0) ? 2 : 1;
 
-        int ret = poll(pfds, 1, timer_ms);
+        int ret = poll(pfds, nfds, timer_ms);
 
         if (ret < 0) {
             if (errno == EINTR) {
@@ -268,9 +274,14 @@ int main(void) {
             bar_status_tick();
             timer_ms = ms_until_next_minute();
         } else {
-            /* Wayland events */
-            wl_display_read_events(g_bar.display);
-            wl_display_dispatch_pending(g_bar.display);
+            if (pfds[0].revents & POLLIN) {
+                wl_display_read_events(g_bar.display);
+                wl_display_dispatch_pending(g_bar.display);
+            } else {
+                wl_display_cancel_read(g_bar.display);
+            }
+            if (tray_fd >= 0 && (pfds[1].revents & POLLIN))
+                bar_tray_dispatch();
             timer_ms = ms_until_next_minute();
         }
 
@@ -283,6 +294,7 @@ int main(void) {
     }
 
     LOG_INFO("main: shutting down");
+    bar_tray_cleanup();
     bar_status_cleanup();
     bar_icons_cleanup();
     if (g_bar.ipc_sock >= 0) close(g_bar.ipc_sock);

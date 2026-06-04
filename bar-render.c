@@ -12,6 +12,7 @@
 #include "bar-render.h"
 #include "bar-surface.h"
 #include "bar-icons.h"
+#include "bar-tray.h"
 #include "bar-log.h"
 
 /* ------------------------------------------------------------------ */
@@ -226,6 +227,23 @@ static void draw_taskbar(cairo_t *cr, PangoLayout *lay, int x_start, int x_end, 
 /* Draw status section                                                   */
 /* ------------------------------------------------------------------ */
 
+static int draw_tray(cairo_t *cr, int h, int x_end) {
+    int n    = bar_tray_count();
+    int x    = x_end;
+    int sz   = ICON_SIZE;
+    int pad  = 4;
+    int btn_y = (h - sz) / 2;
+
+    for (int i = n - 1; i >= 0; i--) {
+        x -= sz + pad;
+        cairo_surface_t *icon = bar_tray_icon(i);
+        bar_icon_draw(cr, icon, x, btn_y, sz);
+        push_hit(HIT_TRAY, i, x - 2, 0, sz + 4, h);
+    }
+    if (n > 0) x -= 4; /* gap before status modules */
+    return x;
+}
+
 static int draw_status(cairo_t *cr, PangoLayout *lay, int h, int x_end) {
     struct BarState *bar = &g_bar;
     int x = x_end;
@@ -315,8 +333,11 @@ void bar_render(void) {
     /* Separator */
     draw_sep(cr, ql_end + 2, h);
 
-    /* Status (right) */
-    int status_start = draw_status(cr, lay, h, w - 4);
+    /* Tray (rightmost) */
+    int tray_start  = draw_tray(cr, h, w - 4);
+
+    /* Status modules (left of tray) */
+    int status_start = draw_status(cr, lay, h, tray_start);
 
     /* Separator */
     draw_sep(cr, status_start - 4, h);

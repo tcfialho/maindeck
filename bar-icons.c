@@ -64,7 +64,7 @@ static int find_icon_path(const char *icon_name, int size, char *path_out, size_
     static const int sizes[] = { 32, 24, 48, 16, 64, 128, 256, 0 };
 
     /* Directories to search */
-    const char *themes[] = { "hicolor", "breeze", "Papirus", NULL };
+    const char *themes[] = { "hicolor", "breeze", "breeze-dark", "Papirus", NULL };
     const char *base_dirs[] = {
         "/usr/share/icons",
         NULL
@@ -76,18 +76,25 @@ static int find_icon_path(const char *icon_name, int size, char *path_out, size_
         return 0;
     }
 
+    static const char *categories[] = { "apps", "places", "actions", NULL };
+
     for (int b = 0; base_dirs[b]; b++) {
         for (int th = 0; themes[th]; th++) {
-            /* Try preferred size first */
-            for (int si = 0; sizes[si]; si++) {
-                int sz = (si == 0) ? size : sizes[si];
-                /* PNG */
-                snprintf(path_out, cap, "%s/%s/%dx%d/apps/%s.png",
-                         base_dirs[b], themes[th], sz, sz, icon_name);
-                if (access(path_out, R_OK) == 0) return 0;
-                /* SVG */
-                snprintf(path_out, cap, "%s/%s/scalable/apps/%s.svg",
-                         base_dirs[b], themes[th], icon_name);
+            for (int cat = 0; categories[cat]; cat++) {
+                for (int si = 0; sizes[si]; si++) {
+                    int sz = (si == 0) ? size : sizes[si];
+                    /* PNG: theme/NxN/cat/icon.png */
+                    snprintf(path_out, cap, "%s/%s/%dx%d/%s/%s.png",
+                             base_dirs[b], themes[th], sz, sz, categories[cat], icon_name);
+                    if (access(path_out, R_OK) == 0) return 0;
+                    /* SVG: theme/cat/N/icon.svg  (breeze layout) */
+                    snprintf(path_out, cap, "%s/%s/%s/%d/%s.svg",
+                             base_dirs[b], themes[th], categories[cat], sz, icon_name);
+                    if (access(path_out, R_OK) == 0) return 0;
+                }
+                /* SVG: theme/scalable/cat/icon.svg */
+                snprintf(path_out, cap, "%s/%s/scalable/%s/%s.svg",
+                         base_dirs[b], themes[th], categories[cat], icon_name);
                 if (access(path_out, R_OK) == 0) return 0;
             }
         }
@@ -96,6 +103,16 @@ static int find_icon_path(const char *icon_name, int size, char *path_out, size_
     snprintf(path_out, cap, "/usr/share/pixmaps/%s.png", icon_name);
     if (access(path_out, R_OK) == 0) return 0;
     snprintf(path_out, cap, "/usr/share/pixmaps/%s.xpm", icon_name);
+    if (access(path_out, R_OK) == 0) return 0;
+
+    /* App-specific fallback paths */
+    snprintf(path_out, cap, "/usr/share/sunshine/web/images/%s-45.png", icon_name);
+    if (access(path_out, R_OK) == 0) return 0;
+    snprintf(path_out, cap, "/usr/share/sunshine/web/images/%s-16.png", icon_name);
+    if (access(path_out, R_OK) == 0) return 0;
+    snprintf(path_out, cap, "/usr/share/sunshine/web/images/%s.png", icon_name);
+    if (access(path_out, R_OK) == 0) return 0;
+    snprintf(path_out, cap, "/usr/share/sunshine/web/images/%s.svg", icon_name);
     if (access(path_out, R_OK) == 0) return 0;
 
     return -1;
@@ -193,6 +210,38 @@ cairo_surface_t *bar_icon_get(const char *name, int size) {
         if (read_desktop_icon(name, desktop_icon, sizeof(desktop_icon)) == 0) {
             if (find_icon_path(desktop_icon, size, path, sizeof(path)) == 0)
                 surf = pixbuf_to_cairo(path, size);
+        }
+    }
+
+    /* Last resort: if name looks like reverse-DNS (contains dots), try the
+     * last component as a plain icon name.
+     * "dev.lizardbyte.app.Sunshine-playing" → try "Sunshine-playing",
+     * "sunshine-playing", then "sunshine". */
+    if (!surf && strchr(name, '.')) {
+        const char *last_dot = strrchr(name, '.');
+        char short_name[128];
+        snprintf(short_name, sizeof(short_name), "%s", last_dot + 1);
+
+        /* Try original case first */
+        if (find_icon_path(short_name, size, path, sizeof(path)) == 0)
+            surf = pixbuf_to_cairo(path, size);
+
+        /* lowercase */
+        for (char *p = short_name; *p; p++)
+            if (*p >= 'A' && *p <= 'Z') *p += 32;
+
+        if (!surf && find_icon_path(short_name, size, path, sizeof(path)) == 0)
+            surf = pixbuf_to_cairo(path, size);
+
+        /* strip trailing -state suffix */
+        if (!surf) {
+            char *dash = strchr(short_name, '-');
+            if (dash) {
+                char base[128];
+                snprintf(base, sizeof(base), "%.*s", (int)(dash - short_name), short_name);
+                if (find_icon_path(base, size, path, sizeof(path)) == 0)
+                    surf = pixbuf_to_cairo(path, size);
+            }
         }
     }
 

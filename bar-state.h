@@ -43,6 +43,7 @@ typedef enum {
     HIT_QL,        /* quick-launch button */
     HIT_TASKBAR,   /* taskbar window */
     HIT_STATUS,    /* status module (vol, bat, clock, power) */
+    HIT_TRAY,      /* system tray item */
 } HitType;
 
 struct HitArea {
