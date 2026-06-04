@@ -125,14 +125,12 @@ static int draw_quicklaunch(cairo_t *cr, PangoLayout *lay, int h) {
         if (btn->width >= 2)
             btn_w = btn_w * btn->width;
 
-        /* Button background */
+        /* Button background: only show on hover (flat by default) */
         if (hovered) {
             set_col(cr, COL_BTN_HOVER);
-        } else {
-            set_col(cr, COL_BTN_NORMAL);
+            rounded_rect(cr, x, btn_y, btn_w, btn_h, BTN_RADIUS);
+            cairo_fill(cr);
         }
-        rounded_rect(cr, x, btn_y, btn_w, btn_h, BTN_RADIUS);
-        cairo_fill(cr);
 
         /* Draw icon or glyph */
         if (glyph) {
@@ -192,16 +190,12 @@ static void draw_taskbar(cairo_t *cr, PangoLayout *lay, int x_start, int x_end, 
             && (bar->hit_areas[bar->hover_hit].type == HIT_TASKBAR)
             && (bar->hit_areas[bar->hover_hit].index == i);
 
-        /* Button background */
-        if (tl->activated) {
-            set_col(cr, COL_ACTIVE);
-        } else if (hovered) {
-            set_col(cr, COL_BTN_HOVER);
-        } else {
-            set_col(cr, COL_BTN_NORMAL);
+        /* Button background: flat unless active or hovered */
+        if (tl->activated || hovered) {
+            set_col(cr, tl->activated ? COL_ACTIVE : COL_BTN_HOVER);
+            rounded_rect(cr, x, btn_y, btn_w - 2, btn_h, BTN_RADIUS);
+            cairo_fill(cr);
         }
-        rounded_rect(cr, x, btn_y, btn_w - 2, btn_h, BTN_RADIUS);
-        cairo_fill(cr);
 
         /* Icon */
         int text_x = x + BTN_PAD;
