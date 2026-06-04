@@ -190,18 +190,37 @@ static void draw_taskbar(cairo_t *cr, PangoLayout *lay, int x_start, int x_end, 
             && (bar->hit_areas[bar->hover_hit].type == HIT_TASKBAR)
             && (bar->hit_areas[bar->hover_hit].index == i);
 
-        /* Hover: subtle background fill */
-        if (hovered && !tl->activated) {
-            set_col(cr, COL_BTN_HOVER);
-            rounded_rect(cr, x, btn_y, btn_w - 2, btn_h, BTN_RADIUS);
+        /* Always: gradient fill + 1px border (3D glass effect) */
+        {
+            double bx = x, by = btn_y;
+            double bw = btn_w - 2, bh = btn_h;
+
+            /* Gradient: top slightly lighter → bottom = background */
+            cairo_pattern_t *grad = cairo_pattern_create_linear(bx, by, bx, by + bh);
+            if (hovered) {
+                cairo_pattern_add_color_stop_rgba(grad, 0.0, 0.32, 0.32, 0.42, 1.0);
+                cairo_pattern_add_color_stop_rgba(grad, 1.0, 0.18, 0.18, 0.24, 1.0);
+            } else {
+                cairo_pattern_add_color_stop_rgba(grad, 0.0, 0.22, 0.22, 0.30, 0.9);
+                cairo_pattern_add_color_stop_rgba(grad, 1.0, 0.13, 0.13, 0.17, 0.9);
+            }
+            rounded_rect(cr, bx, by, bw, bh, BTN_RADIUS);
+            cairo_set_source(cr, grad);
             cairo_fill(cr);
+            cairo_pattern_destroy(grad);
+
+            /* 1px border: top-left lighter, bottom-right darker */
+            rounded_rect(cr, bx + 0.5, by + 0.5, bw - 1, bh - 1, BTN_RADIUS);
+            cairo_set_source_rgba(cr, 0.55, 0.55, 0.65, 0.5);
+            cairo_set_line_width(cr, 1.0);
+            cairo_stroke(cr);
         }
 
-        /* Active: underline at the bottom of the button */
+        /* Active: underline at the bottom */
         if (tl->activated) {
-            set_col(cr, 0.30, 0.57, 1.0, 1.0);  /* #4D92FF — accent blue */
-            double lx = x + 2;
-            double lw = btn_w - 6;
+            cairo_set_source_rgba(cr, 0.30, 0.57, 1.0, 1.0);
+            double lx = x + 3;
+            double lw = btn_w - 7;
             double ly = btn_y + btn_h - 2;
             cairo_rectangle(cr, lx, ly, lw, 2);
             cairo_fill(cr);
