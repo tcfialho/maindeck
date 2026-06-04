@@ -55,6 +55,7 @@ struct Client {
     uint32_t       zxdg_output_manager_id;
     uint32_t       zxdg_output_manager_version;
     uint32_t       zwlr_layer_shell_id;
+    uint32_t       data_device_manager_id;
     bool           fake_output_global_sent;
     uint32_t       fake_output_registry_id;
 

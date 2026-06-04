@@ -230,6 +230,8 @@ static void *relay_c2s(void *arg) {
                                 c->zxdg_output_manager_version = gver;
                             } else if (!strcmp(iface, "zwlr_layer_shell_v1")) {
                                 c->zwlr_layer_shell_id = new_id;
+                            } else if (!strcmp(iface, "wl_data_device_manager")) {
+                                c->data_device_manager_id = new_id;
                             } else if (!strcmp(iface, "wl_output") && !c->output_id) {
                                 c->output_id = new_id;
                                 c->output_version = gver;
@@ -313,7 +315,8 @@ static void *relay_c2s(void *arg) {
                     mh.msg_iov = &oiov;
                     mh.msg_iovlen = 1;
                     mh.msg_flags = 0;
-                    if (sendmsg(dst, &mh, MSG_NOSIGNAL) < 0) goto done;
+                    if (sendmsg(dst, &mh, MSG_NOSIGNAL) < 0) { close_received_fds(&mh); goto done; }
+                    close_received_fds(&mh);
                     if (c->output_is_fake) emit_fake_output_events(c);
                     if (flush_after_send) {
                         pthread_mutex_lock(&clients_mu);
@@ -333,7 +336,8 @@ static void *relay_c2s(void *arg) {
             iov.iov_base = buf + pending;
             iov.iov_len  = (size_t)n;
             mh.msg_flags = 0;
-            if (sendmsg(dst, &mh, MSG_NOSIGNAL) < 0) goto done;
+            if (sendmsg(dst, &mh, MSG_NOSIGNAL) < 0) { close_received_fds(&mh); goto done; }
+            close_received_fds(&mh);
             continue;
         }
 
@@ -374,6 +378,8 @@ static void *relay_c2s(void *arg) {
                         c->zxdg_output_manager_version = gver;
                     } else if (!strcmp(iface, "zwlr_layer_shell_v1")) {
                         c->zwlr_layer_shell_id = new_id;
+                    } else if (!strcmp(iface, "wl_data_device_manager")) {
+                        c->data_device_manager_id = new_id;
                     } else if (!strcmp(iface, "wl_output") && !c->output_id) {
                         c->output_id = new_id;
                         c->output_version = gver;
@@ -521,8 +527,10 @@ static void *relay_s2c(void *arg) {
             if (sendmsg(dst, &mh, MSG_NOSIGNAL) < 0) {
                 pthread_mutex_unlock(&c->write_mu);
                 plog_err("relay_s2c: sendmsg(anc) failed errno=%d", errno);
+                close_received_fds(&mh);
                 break;
             }
+            close_received_fds(&mh);
             pending = 0;
             pthread_mutex_unlock(&c->write_mu);
             continue;
@@ -682,6 +690,7 @@ static void client_thread_exit(struct Client *c) {
         c->unhandled_n = 0;
         c->real_handle_n = 0;
         c->output_id = 0;
+        c->data_device_manager_id = 0;
         c->output_done_received = false;
     }
     pthread_mutex_unlock(&clients_mu);

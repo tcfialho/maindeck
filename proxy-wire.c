@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stdbool.h>
+#include <unistd.h>
 #include <sys/socket.h>
 #include <pthread.h>
 #include <string.h>
@@ -28,6 +29,22 @@ bool message_has_fds(struct msghdr *mh) {
     return false;
 }
 
+/* Close all FDs received via SCM_RIGHTS in a recvmsg cmsgbuf.
+ * Must be called after sendmsg() to release the kernel-duplicated copies. */
+void close_received_fds(struct msghdr *mh) {
+    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(mh);
+         cmsg != NULL;
+         cmsg = CMSG_NXTHDR(mh, cmsg)) {
+        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
+            size_t nfds = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+            int *fds = (int *)CMSG_DATA(cmsg);
+            for (size_t i = 0; i < nfds; i++) {
+                if (fds[i] >= 0) close(fds[i]);
+            }
+        }
+    }
+}
+
 /* Relay one chunk of data + ancillary fds from src to dst. */
 ssize_t relay_chunk(int src, int dst) {
     uint8_t buf[BUF_SZ];
@@ -49,7 +66,11 @@ ssize_t relay_chunk(int src, int dst) {
     /* forward data + ancillary (fds) verbatim */
     iov.iov_len = (size_t)n;
     mh.msg_flags = 0;
-    if (sendmsg(dst, &mh, MSG_NOSIGNAL) < 0) return -1;
+    if (sendmsg(dst, &mh, MSG_NOSIGNAL) < 0) {
+        close_received_fds(&mh);
+        return -1;
+    }
+    close_received_fds(&mh);
     return n;
 }
 
