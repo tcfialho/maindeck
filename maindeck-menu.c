@@ -575,6 +575,40 @@ static void draw_rounded_rect(cairo_t *cr, double x, double y, double w, double 
     cairo_close_path(cr);
 }
 
+static cairo_surface_t *s_cs[2]   = { NULL, NULL };
+static cairo_t         *s_cr[2]   = { NULL, NULL };
+static PangoLayout     *s_lay[2]  = { NULL, NULL };
+static PangoFontDescription *s_font_desc = NULL;
+static int s_cs_w = 0, s_cs_h = 0;
+
+static void ensure_cairo_menu(AppState *app, unsigned char *data) {
+    int b = app->cur_buf;
+    if (s_cs[b] && s_cs_w == app->menu_w && s_cs_h == app->menu_h)
+        return;
+
+    if (s_cs_w != app->menu_w || s_cs_h != app->menu_h) {
+        for (int i = 0; i < 2; i++) {
+            if (s_lay[i]) { g_object_unref(s_lay[i]); s_lay[i] = NULL; }
+            if (s_cr[i])  { cairo_destroy(s_cr[i]); s_cr[i] = NULL; }
+            if (s_cs[i])  { cairo_surface_destroy(s_cs[i]); s_cs[i] = NULL; }
+        }
+    }
+
+    s_cs[b] = cairo_image_surface_create_for_data(
+        data, CAIRO_FORMAT_ARGB32,
+        app->menu_w, app->menu_h, app->menu_w * 4);
+    s_cr[b]  = cairo_create(s_cs[b]);
+
+    s_lay[b] = pango_cairo_create_layout(s_cr[b]);
+    pango_layout_set_width(s_lay[b], (app->menu_w - 40) * PANGO_SCALE);
+    pango_layout_set_ellipsize(s_lay[b], PANGO_ELLIPSIZE_END);
+
+    if (!s_font_desc) s_font_desc = pango_font_description_from_string("sans 10");
+    pango_layout_set_font_description(s_lay[b], s_font_desc);
+
+    s_cs_w = app->menu_w; s_cs_h = app->menu_h;
+}
+
 static void render(void) {
     AppState *app = &g_app;
     if (!app->configured) return;
@@ -606,8 +640,11 @@ static void render(void) {
     unsigned char *data = (unsigned char *)app->shm_data + b * app->buf_size;
     memset(data, 0, app->buf_size);
 
-    cairo_surface_t *surf = cairo_image_surface_create_for_data(data, CAIRO_FORMAT_ARGB32, app->menu_w, app->menu_h, app->menu_w * 4);
-    cairo_t *cr = cairo_create(surf);
+    ensure_cairo_menu(app, data);
+    cairo_t *cr = s_cr[b];
+    PangoLayout *layout = s_lay[b];
+
+    cairo_save(cr);
 
     // 1. Fundo do Menu (sólido combinando com a barra #1C1C24)
     draw_rounded_rect(cr, 1, 1, app->menu_w - 2, app->menu_h - 2, 10);
@@ -630,15 +667,6 @@ static void render(void) {
     }
     cairo_set_line_width(cr, 1.0);
     cairo_stroke(cr);
-
-    // Desenha texto de busca ou placeholder
-    PangoLayout *layout = pango_cairo_create_layout(cr);
-    pango_layout_set_width(layout, (app->menu_w - 40) * PANGO_SCALE);
-    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
-
-    PangoFontDescription *desc = pango_font_description_from_string("sans 10");
-    pango_layout_set_font_description(layout, desc);
-    pango_font_description_free(desc);
 
     if (app->query_len > 0) {
         pango_layout_set_text(layout, app->query, -1);
@@ -691,9 +719,7 @@ static void render(void) {
         list_y += ITEM_HEIGHT;
     }
 
-    g_object_unref(layout);
-    cairo_destroy(cr);
-    cairo_surface_destroy(surf);
+    cairo_restore(cr);
 
     wl_surface_attach(app->menu_surf, app->buffers[b], 0, 0);
     wl_surface_damage_buffer(app->menu_surf, 0, 0, app->menu_w, app->menu_h);
@@ -1361,6 +1387,16 @@ int main(int argc, char **argv) {
     free(g_app.apps);
     free(g_app.filtered);
     free(g_app.scores);
+
+    for (int i = 0; i < 2; i++) {
+        if (s_lay[i]) { g_object_unref(s_lay[i]); s_lay[i] = NULL; }
+        if (s_cr[i])  { cairo_destroy(s_cr[i]); s_cr[i] = NULL; }
+        if (s_cs[i])  { cairo_surface_destroy(s_cs[i]); s_cs[i] = NULL; }
+    }
+    if (s_font_desc) {
+        pango_font_description_free(s_font_desc);
+        s_font_desc = NULL;
+    }
 
     return 0;
 }

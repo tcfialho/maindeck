@@ -34,6 +34,42 @@
 static PangoFontDescription *s_font_bar = NULL;    /* parseada de bar->config.font */
 static PangoFontDescription *s_font_power = NULL;  /* "sans bold 18" */
 
+static cairo_surface_t *s_cs[2]   = { NULL, NULL };
+static cairo_t         *s_cr[2]   = { NULL, NULL };
+static PangoLayout     *s_lay[2]  = { NULL, NULL };
+static PangoLayout     *s_lay_power[2] = { NULL, NULL };
+static int s_cs_w = 0, s_cs_h = 0;
+
+static void ensure_cairo(struct BarState *bar, void *data) {
+    int b = bar->cur_buf;
+    if (s_cs[b] && s_cs_w == bar->buf_width && s_cs_h == bar->buf_height)
+        return;
+
+    if (s_cs_w != bar->buf_width || s_cs_h != bar->buf_height) {
+        for (int i = 0; i < 2; i++) {
+            if (s_lay[i]) { g_object_unref(s_lay[i]); s_lay[i] = NULL; }
+            if (s_lay_power[i]) { g_object_unref(s_lay_power[i]); s_lay_power[i] = NULL; }
+            if (s_cr[i])  { cairo_destroy(s_cr[i]); s_cr[i] = NULL; }
+            if (s_cs[i])  { cairo_surface_destroy(s_cs[i]); s_cs[i] = NULL; }
+        }
+    }
+
+    s_cs[b] = cairo_image_surface_create_for_data(
+        (unsigned char *)data, CAIRO_FORMAT_ARGB32,
+        bar->buf_width, bar->buf_height, bar->buf_stride);
+    s_cr[b]  = cairo_create(s_cs[b]);
+
+    s_lay[b] = pango_cairo_create_layout(s_cr[b]);
+    if (!s_font_bar) s_font_bar = pango_font_description_from_string(bar->config.font);
+    pango_layout_set_font_description(s_lay[b], s_font_bar);
+
+    s_lay_power[b] = pango_cairo_create_layout(s_cr[b]);
+    if (!s_font_power) s_font_power = pango_font_description_from_string("sans bold 18");
+    pango_layout_set_font_description(s_lay_power[b], s_font_power);
+
+    s_cs_w = bar->buf_width; s_cs_h = bar->buf_height;
+}
+
 /* ------------------------------------------------------------------ */
 /* Helpers                                                              */
 /* ------------------------------------------------------------------ */
@@ -145,10 +181,8 @@ static int draw_quicklaunch(cairo_t *cr, PangoLayout *lay, int h) {
 
         /* Button background: custom color if set, flat hover highlight otherwise */
         {
-            double r, g, b, a;
-            bool has_bg = parse_hex_color(btn->bg, &r, &g, &b, &a);
-            if (has_bg) {
-                cairo_set_source_rgba(cr, r, g, b, a);
+            if (btn->has_bg) {
+                cairo_set_source_rgba(cr, btn->bg_r, btn->bg_g, btn->bg_b, btn->bg_a);
                 rounded_rect(cr, x, btn_y, btn_w, btn_h, BTN_RADIUS);
                 cairo_fill(cr);
                 if (hovered) {
@@ -419,20 +453,14 @@ static int draw_status(cairo_t *cr, PangoLayout *lay, int h, int x_end) {
                 rounded_rect(cr, x, btn_y, pw, btn_h, BTN_RADIUS);
                 cairo_fill(cr);
             }
-            pango_layout_set_text(lay, "⏻", -1);
-            if (!s_font_power) {
-                s_font_power = pango_font_description_from_string("sans bold 18");
-            }
-            pango_layout_set_font_description(lay, s_font_power);
+            int b = bar->cur_buf;
+            PangoLayout *pw_lay = s_lay_power[b] ? s_lay_power[b] : lay;
+            pango_layout_set_text(pw_lay, "⏻", -1);
             int tw, th;
-            pango_layout_get_pixel_size(lay, &tw, &th);
+            pango_layout_get_pixel_size(pw_lay, &tw, &th);
             cairo_set_source_rgba(cr, 1.0, 0.35, 0.35, 1.0);
             cairo_move_to(cr, x + (pw - tw) / 2.0, btn_y + (btn_h - th) / 2.0);
-            pango_cairo_show_layout(cr, lay);
-            if (!s_font_bar) {
-                s_font_bar = pango_font_description_from_string(bar->config.font);
-            }
-            pango_layout_set_font_description(lay, s_font_bar);
+            pango_cairo_show_layout(cr, pw_lay);
             push_hit(HIT_STATUS, i, x, 0, pw, h);
 
         } else if (strcmp(mod, "battery") == 0 && bar->bat_level >= 0) {
@@ -454,13 +482,8 @@ static int draw_status(cairo_t *cr, PangoLayout *lay, int h, int x_end) {
                 rounded_rect(cr, x, btn_y, icon_slot, btn_h, BTN_RADIUS);
                 cairo_fill(cr);
             }
-            bool muted = (strstr(bar->vol_text, "🔇") != NULL ||
-                          strcmp(bar->vol_text, "🔈") == 0);
-            /* parse vol level from text like "🔊 75%" or "🔉 40%" */
-            int vol = 0;
-            const char *pct = strrchr(bar->vol_text, ' ');
-            if (pct) vol = atoi(pct + 1);
-            else if (!muted) vol = 50;
+            bool muted = bar->vol_muted;
+            int vol = bar->vol_level;
             double cx = x + icon_slot / 2.0;
             double cy = btn_y + btn_h / 2.0;
             draw_volume_icon(cr, cx, cy, vol, muted);
@@ -500,21 +523,16 @@ void bar_render(void) {
     int w = bar->buf_width;
     int h = bar->buf_height;
 
-    /* Create cairo surface over the SHM buffer */
-    cairo_surface_t *cs = cairo_image_surface_create_for_data(
-        (unsigned char *)data,
-        CAIRO_FORMAT_ARGB32,
-        w, h,
-        bar->buf_stride
-    );
-    cairo_t *cr = cairo_create(cs);
+    ensure_cairo(bar, data);
+    int b = bar->cur_buf;
+    cairo_t *cr = s_cr[b];
+    PangoLayout *lay = s_lay[b];
+
+    cairo_save(cr);
 
     /* Background */
     set_col(cr, COL_BG);
     cairo_paint(cr);
-
-    /* Font layout */
-    PangoLayout *lay = make_layout(cr, bar->config.font);
 
     /* Clear hit areas */
     bar->hit_n = 0;
@@ -537,16 +555,19 @@ void bar_render(void) {
     /* Taskbar (center, fills remaining space) */
     draw_taskbar(cr, lay, ql_end + 8, tray_start - 8, h);
 
-    g_object_unref(lay);
-    cairo_destroy(cr);
-    cairo_surface_finish(cs);
-    cairo_surface_destroy(cs);
+    cairo_restore(cr);
 
     bar_surface_commit();
     bar->dirty = false;
 }
 
 void bar_render_cleanup(void) {
+    for (int i = 0; i < 2; i++) {
+        if (s_lay[i]) { g_object_unref(s_lay[i]); s_lay[i] = NULL; }
+        if (s_lay_power[i]) { g_object_unref(s_lay_power[i]); s_lay_power[i] = NULL; }
+        if (s_cr[i])  { cairo_destroy(s_cr[i]); s_cr[i] = NULL; }
+        if (s_cs[i])  { cairo_surface_destroy(s_cs[i]); s_cs[i] = NULL; }
+    }
     if (s_font_bar) {
         pango_font_description_free(s_font_bar);
         s_font_bar = NULL;

@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -65,11 +66,21 @@ static void update_battery(void) {
 /* Public API                                                           */
 /* ------------------------------------------------------------------ */
 
+void bar_update_volume(const char *text) {
+    struct BarState *bar = &g_bar;
+    snprintf(bar->vol_text, sizeof(bar->vol_text), "%s", text);
+    bar->vol_muted = (strstr(bar->vol_text, "🔇") != NULL ||
+                      strcmp(bar->vol_text, "🔈") == 0);
+    bar->vol_level = 0;
+    const char *pct = strrchr(bar->vol_text, ' ');
+    if (pct) bar->vol_level = atoi(pct + 1);
+}
+
 int bar_status_init(void) {
     update_clock();
     update_battery();
     /* Static volume icon — clicking opens pavucontrol */
-    snprintf(g_bar.vol_text, sizeof(g_bar.vol_text), "vol");
+    bar_update_volume("vol");
     return -1;
 }
 

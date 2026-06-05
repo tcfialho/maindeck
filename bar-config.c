@@ -135,6 +135,22 @@ int bar_config_load(const char *path, struct BarConfig *cfg) {
                         btn->width = atoi(tmp);
                     } else if (tok_eq(json, &toks[i], "bg")) {
                         tok_str(json, &toks[i+1], btn->bg, sizeof(btn->bg));
+                        btn->has_bg = false;
+                        if (btn->bg[0] == '#') {
+                            unsigned int ri, gi, bi, ai = 255;
+                            size_t blen = strlen(btn->bg);
+                            if (blen == 7) {
+                                if (sscanf(btn->bg + 1, "%2x%2x%2x", &ri, &gi, &bi) == 3) {
+                                    btn->bg_r = ri / 255.0; btn->bg_g = gi / 255.0; btn->bg_b = bi / 255.0; btn->bg_a = ai / 255.0;
+                                    btn->has_bg = true;
+                                }
+                            } else if (blen == 9) {
+                                if (sscanf(btn->bg + 1, "%2x%2x%2x%2x", &ri, &gi, &bi, &ai) == 4) {
+                                    btn->bg_r = ri / 255.0; btn->bg_g = gi / 255.0; btn->bg_b = bi / 255.0; btn->bg_a = ai / 255.0;
+                                    btn->has_bg = true;
+                                }
+                            }
+                        }
                     }
                     i += 2;
                 }

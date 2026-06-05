@@ -9,5 +9,6 @@ int  bar_status_init(void);
 void bar_status_tick(void);
 
 void bar_status_cleanup(void);
+void bar_update_volume(const char *text);
 
 #endif /* BAR_STATUS_H */
