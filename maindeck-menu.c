@@ -12,6 +12,8 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/timerfd.h>
+#include <sys/resource.h>
+#include <malloc.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <poll.h>
@@ -1200,6 +1202,12 @@ static void create_menu_surface(void) {
 // --- Main ---
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
+#ifdef __GLIBC__
+    mallopt(M_ARENA_MAX, 1);
+#endif
+    struct rlimit stk = { 2 * 1024 * 1024, 2 * 1024 * 1024 };
+    setrlimit(RLIMIT_STACK, &stk);
+
     srand((unsigned int)time(NULL));
 
     memset(&g_app, 0, sizeof(AppState));

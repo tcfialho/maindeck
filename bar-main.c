@@ -7,6 +7,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/resource.h>
+#include <malloc.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <time.h>
@@ -177,10 +178,13 @@ static int ms_until_next_minute(void) {
 /* ------------------------------------------------------------------ */
 
 int main(void) {
+#ifdef __GLIBC__
+    mallopt(M_ARENA_MAX, 1);
+#endif
     /* Cap stack hard limit so glibc doesn't reserve terabytes of virtual address
      * space for the main-stack guard and heap arenas. Without this, inheriting
      * RLIM_INFINITY from the parent shell causes ~20TB VmSize at startup. */
-    struct rlimit stk = { 8 * 1024 * 1024, 8 * 1024 * 1024 };
+    struct rlimit stk = { 2 * 1024 * 1024, 2 * 1024 * 1024 };
     setrlimit(RLIMIT_STACK, &stk);
 
     signal(SIGINT,  on_signal);
