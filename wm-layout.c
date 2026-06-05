@@ -434,17 +434,9 @@ void window_render_layout(struct Window *window, size_t index) {
 	river_node_v1_set_position(window->node, box.x + BORDER_WIDTH, box.y + BORDER_WIDTH);
 	river_node_v1_place_top(window->node);
 
-	if (index == wm.target_index) {
-		// ALVO (focado): borda azul (alinhado com o sublinhado ativo da barra).
-		river_window_v1_set_borders(window->obj, all_edges(), BORDER_WIDTH,
-			chan(76), chan(145), chan(255), 0xffffffffu);
-	} else {
-		// Sem foco (MAIN ou DECK): borda transparente. Mantemos a MESMA largura
-		// (BORDER_WIDTH) com alpha 0 em vez de largura 0, pois a geometria das
-		// janelas já é insetada por BORDER_WIDTH (window_apply_dimensions e o
-		// set_position com +BORDER_WIDTH). Largura 0 deixaria um buraco de 3px;
-		// alpha 0 some com a borda sem mexer em posição/tamanho.
-		river_window_v1_set_borders(window->obj, all_edges(), BORDER_WIDTH,
-			0, 0, 0, 0x00000000u);
-	}
+	// Borda transparente para todas as janelas (focado e desfocado).
+	// Mantemos a largura (BORDER_WIDTH) com alpha 0 para que a geometria e
+	// o posicionamento das janelas permaneçam idênticos.
+	river_window_v1_set_borders(window->obj, all_edges(), BORDER_WIDTH,
+		0, 0, 0, 0x00000000u);
 }

@@ -3,6 +3,10 @@
 #include <string.h>
 #include <strings.h>
 #include <stdbool.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <unistd.h>
 
 #include <librsvg/rsvg.h>
 #include <cairo/cairo.h>
@@ -57,6 +61,51 @@ static int read_desktop_icon(const char *app_id, char *icon_out, size_t cap) {
     return -1;
 }
 
+static bool scan_dir_recursive(const char *dir_path, const char *icon_name, char *path_out, size_t cap) {
+    DIR *dir = opendir(dir_path);
+    if (!dir) return false;
+
+    struct dirent *entry;
+    bool found = false;
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        char full_path[1024];
+        snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, entry->d_name);
+
+        struct stat st;
+        if (lstat(full_path, &st) == 0) {
+            if (S_ISLNK(st.st_mode)) {
+                continue; // Pula links simbólicos para evitar loops infinitos
+            }
+            if (S_ISDIR(st.st_mode)) {
+                if (scan_dir_recursive(full_path, icon_name, path_out, cap)) {
+                    found = true;
+                    break;
+                }
+            } else if (S_ISREG(st.st_mode)) {
+                const char *filename = entry->d_name;
+                size_t len = strlen(filename);
+                size_t name_len = strlen(icon_name);
+                if (len > name_len && strncmp(filename, icon_name, name_len) == 0) {
+                    const char *ext = filename + name_len;
+                    if (strcmp(ext, ".png") == 0 || strcmp(ext, ".svg") == 0 || strcmp(ext, ".xpm") == 0) {
+                        snprintf(path_out, cap, "%s", full_path);
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    closedir(dir);
+    return found;
+}
+
 /* ------------------------------------------------------------------ */
 /* PNG search in icon theme                                             */
 /* ------------------------------------------------------------------ */
@@ -67,10 +116,24 @@ static int find_icon_path(const char *icon_name, int size, char *path_out, size_
 
     /* Directories to search */
     const char *themes[] = { "hicolor", "breeze", "breeze-dark", "Papirus", NULL };
-    const char *base_dirs[] = {
-        "/usr/share/icons",
-        NULL
-    };
+    
+    char local_icons_dir[512] = "";
+    char local_pixmaps_dir[512] = "";
+    const char *home = getenv("HOME");
+    if (home) {
+        snprintf(local_icons_dir, sizeof(local_icons_dir), "%s/.local/share/icons", home);
+        snprintf(local_pixmaps_dir, sizeof(local_pixmaps_dir), "%s/.local/share/pixmaps", home);
+    }
+
+    const char *base_dirs[5];
+    int base_dirs_n = 0;
+    if (local_icons_dir[0]) {
+        base_dirs[base_dirs_n++] = local_icons_dir;
+    }
+    base_dirs[base_dirs_n++] = "/usr/share/icons";
+    base_dirs[base_dirs_n++] = "/usr/local/share/icons";
+    base_dirs[base_dirs_n++] = "/var/lib/flatpak/exports/share/icons";
+    base_dirs[base_dirs_n++] = NULL;
 
     /* If icon_name is an absolute path */
     if (icon_name[0] == '/') {
@@ -102,6 +165,12 @@ static int find_icon_path(const char *icon_name, int size, char *path_out, size_
         }
     }
     /* Pixmaps fallback */
+    if (local_pixmaps_dir[0]) {
+        snprintf(path_out, cap, "%s/%s.png", local_pixmaps_dir, icon_name);
+        if (access(path_out, R_OK) == 0) return 0;
+        snprintf(path_out, cap, "%s/%s.xpm", local_pixmaps_dir, icon_name);
+        if (access(path_out, R_OK) == 0) return 0;
+    }
     snprintf(path_out, cap, "/usr/share/pixmaps/%s.png", icon_name);
     if (access(path_out, R_OK) == 0) return 0;
     snprintf(path_out, cap, "/usr/share/pixmaps/%s.xpm", icon_name);
@@ -112,10 +181,15 @@ static int find_icon_path(const char *icon_name, int size, char *path_out, size_
     if (access(path_out, R_OK) == 0) return 0;
     snprintf(path_out, cap, "/usr/share/sunshine/web/images/%s-16.png", icon_name);
     if (access(path_out, R_OK) == 0) return 0;
-    snprintf(path_out, cap, "/usr/share/sunshine/web/images/%s.png", icon_name);
-    if (access(path_out, R_OK) == 0) return 0;
     snprintf(path_out, cap, "/usr/share/sunshine/web/images/%s.svg", icon_name);
     if (access(path_out, R_OK) == 0) return 0;
+
+    /* Varredura recursiva robusta nos caminhos de icones como ultimo recurso */
+    for (int b = 0; base_dirs[b]; b++) {
+        if (scan_dir_recursive(base_dirs[b], icon_name, path_out, cap)) {
+            return 0;
+        }
+    }
 
     return -1;
 }

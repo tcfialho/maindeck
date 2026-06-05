@@ -102,6 +102,21 @@ executable(
 )
 
 executable(
+  'maindeck-menu',
+  'maindeck-menu.c',
+  'bar-icons.c',
+  bar_protocols,
+  dependencies: [
+    wayland_client,
+    xkbcommon,
+    cairo_dep,
+    pangocairo,
+    librsvg_dep,
+  ],
+  install: true,
+)
+
+executable(
   'maindeck-toplevel-smoke',
   'tools/toplevel-smoke.c',
   toplevel_protocols,

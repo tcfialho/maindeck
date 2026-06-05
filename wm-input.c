@@ -26,7 +26,7 @@ void close_launcher(void) {
 		if (since_ms < 250) return; // ignore the open's own focus settling
 	}
 	if (fork() == 0) {
-		execlp("pkill", "pkill", "-x", "fuzzel", (char *)0);
+		execlp("pkill", "pkill", "-x", "maindeck-menu", (char *)0);
 		_exit(127);
 	}
 }
@@ -253,7 +253,7 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		spawn_command("kitty");
 		break;
 	case ACTION_SPAWN_LAUNCHER:
-		spawn_sh("bash /home/tcfialho/.config/niri/fuzzel-toggle.sh");
+		spawn_command("maindeck-menu");
 		clock_gettime(CLOCK_MONOTONIC, &last_launcher_spawn);
 		last_launcher_spawn_valid = true;
 		break;
