@@ -36,6 +36,7 @@
 #define ITEM_HEIGHT 34
 #define MAX_ITEMS 12
 #define SOCKET_NAME "maindeck-menu.sock"
+#define FOCUS_DELAY_MS 80
 
 #define LOG_INFO(...) do { fprintf(stdout, "[menu:info] "); fprintf(stdout, __VA_ARGS__); fprintf(stdout, "\n"); } while(0)
 #define LOG_ERR(...) do { fprintf(stderr, "[menu:err] "); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } while(0)
@@ -113,6 +114,8 @@ typedef struct {
     bool dirty;
     bool configured;
     bool menu_has_kbd_focus;
+    bool close_pending;
+    struct timespec close_deadline;
 } AppState;
 
 static AppState g_app;
@@ -469,7 +472,7 @@ static void spawn_app(App *app) {
 }
 
 // --- IPC: Instância única e Toggle ---
-static bool setup_ipc(void) {
+static bool setup_ipc(bool is_mouse) {
     const char *dir = getenv("XDG_RUNTIME_DIR");
     if (!dir) {
         LOG_ERR("XDG_RUNTIME_DIR not set");
@@ -496,14 +499,15 @@ static bool setup_ipc(void) {
         int temp_fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
         bool sent = false;
         if (temp_fd >= 0) {
-            if (sendto(temp_fd, "C", 1, 0, (struct sockaddr *)&addr, sizeof(addr)) >= 0) {
+            const char *cmd = is_mouse ? "M" : "C";
+            if (sendto(temp_fd, cmd, 1, 0, (struct sockaddr *)&addr, sizeof(addr)) >= 0) {
                 sent = true;
             }
             close(temp_fd);
         }
         if (sent) {
             close(g_app.sock_fd);
-            LOG_INFO("IPC: Enviado sinal CLOSE para instância ativa. Encerrando.");
+            LOG_INFO("IPC: Enviado sinal %s para instância ativa. Encerrando.", is_mouse ? "MOUSE" : "CLOSE");
             exit(0); // toggle close bem-sucedido
         }
     }
@@ -888,8 +892,15 @@ static void keyboard_leave(void *data, struct wl_keyboard *kbd, uint32_t serial,
     (void)data; (void)kbd; (void)serial;
     AppState *app = &g_app;
     if (surf == app->menu_surf && app->menu_has_kbd_focus) {
-        LOG_INFO("Teclado: foco perdido. Fechando.");
-        app->running = false;
+        LOG_INFO("Teclado: foco perdido. Agendando fechamento em %dms.", FOCUS_DELAY_MS);
+        app->close_pending = true;
+        clock_gettime(CLOCK_MONOTONIC, &app->close_deadline);
+        app->close_deadline.tv_nsec += FOCUS_DELAY_MS * 1000000;
+        if (app->close_deadline.tv_nsec >= 1000000000) {
+            app->close_deadline.tv_sec += 1;
+            app->close_deadline.tv_nsec -= 1000000000;
+        }
+        app->menu_has_kbd_focus = false;
     }
 }
 
@@ -1227,7 +1238,6 @@ static void create_menu_surface(void) {
 
 // --- Main ---
 int main(int argc, char **argv) {
-    (void)argc; (void)argv;
 #ifdef __GLIBC__
     mallopt(M_ARENA_MAX, 1);
 #endif
@@ -1235,6 +1245,13 @@ int main(int argc, char **argv) {
     setrlimit(RLIMIT_STACK, &stk);
 
     srand((unsigned int)time(NULL));
+
+    bool is_mouse = false;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--mouse") == 0 || strcmp(argv[i], "-m") == 0) {
+            is_mouse = true;
+        }
+    }
 
     memset(&g_app, 0, sizeof(AppState));
     g_app.focus_timer_fd = -1;
@@ -1244,7 +1261,7 @@ int main(int argc, char **argv) {
     g_app.focus_zone = ZONE_SEARCH;
 
     // 1. IPC / Instância única
-    if (!setup_ipc()) {
+    if (!setup_ipc(is_mouse)) {
         return 1;
     }
 
@@ -1315,16 +1332,40 @@ int main(int argc, char **argv) {
             break;
         }
 
+        int timeout = -1;
+        if (g_app.close_pending) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            long diff_ms = (g_app.close_deadline.tv_sec - now.tv_sec) * 1000L
+                         + (g_app.close_deadline.tv_nsec - now.tv_nsec) / 1000000L;
+            if (diff_ms <= 0) {
+                LOG_INFO("Timer de fechamento expirou. Fechando.");
+                g_app.running = false;
+                wl_display_cancel_read(g_app.display);
+                break;
+            }
+            timeout = (int)diff_ms;
+        }
+
         struct pollfd fds[2] = {
             { .fd = wl_fd, .events = POLLIN },
             { .fd = g_app.sock_fd, .events = POLLIN }
         };
 
-        int ret = poll(fds, 2, -1);
+        int ret = poll(fds, 2, timeout);
         if (ret < 0) {
             wl_display_cancel_read(g_app.display);
             if (errno == EINTR) continue;
             break;
+        }
+
+        if (ret == 0) {
+            wl_display_cancel_read(g_app.display);
+            if (g_app.close_pending) {
+                LOG_INFO("Timer de fechamento expirou no poll. Fechando.");
+                g_app.running = false;
+            }
+            continue;
         }
 
         // Drena eventos Wayland se houver
@@ -1335,15 +1376,24 @@ int main(int argc, char **argv) {
             wl_display_cancel_read(g_app.display);
         }
 
-        // Recebeu datagrama no Socket IPC -> Toggle Close
+        // Recebeu datagrama no Socket IPC
         if (fds[1].revents & POLLIN) {
             char buf[16];
-            recv(g_app.sock_fd, buf, sizeof(buf), 0);
-            LOG_INFO("IPC: Comando CLOSE recebido no socket");
-            g_app.running = false;
+            ssize_t r = recv(g_app.sock_fd, buf, sizeof(buf) - 1, 0);
+            if (r > 0) {
+                buf[r] = '\0';
+                LOG_INFO("IPC: Comando %s recebido no socket", buf);
+                if (buf[0] == 'M') {
+                    if (g_app.close_pending) {
+                        LOG_INFO("Cancelando fechamento pendente devido a clique no Iniciar.");
+                        g_app.close_pending = false;
+                        g_app.dirty = true;
+                    }
+                } else {
+                    g_app.running = false;
+                }
+            }
         }
-
-
 
         // Desenha se mudou algo
         if (g_app.dirty && g_app.configured) {
