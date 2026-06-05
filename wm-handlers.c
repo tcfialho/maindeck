@@ -383,6 +383,25 @@ static void wm_handle_output(void *data, struct river_window_manager_v1 *obj, st
 	}
 }
 
+static void layer_shell_seat_handle_focus_exclusive(void *data, struct river_layer_shell_seat_v1 *obj) {
+	LOG_EVENT("layer_shell_seat: focus_exclusive");
+}
+
+static void layer_shell_seat_handle_focus_non_exclusive(void *data, struct river_layer_shell_seat_v1 *obj) {
+	LOG_EVENT("layer_shell_seat: focus_non_exclusive");
+}
+
+static void layer_shell_seat_handle_focus_none(void *data, struct river_layer_shell_seat_v1 *obj) {
+	LOG_EVENT("layer_shell_seat: focus_none -> setting focus_dirty");
+	wm.focus_dirty = true;
+}
+
+static const struct river_layer_shell_seat_v1_listener layer_shell_seat_listener = {
+	.focus_exclusive = layer_shell_seat_handle_focus_exclusive,
+	.focus_non_exclusive = layer_shell_seat_handle_focus_non_exclusive,
+	.focus_none = layer_shell_seat_handle_focus_none,
+};
+
 static void wm_handle_seat(void *data, struct river_window_manager_v1 *obj, struct river_seat_v1 *river_seat) {
 	struct Seat *seat = calloc(1, sizeof(struct Seat));
 	if (seat == NULL) {
@@ -395,6 +414,11 @@ static void wm_handle_seat(void *data, struct river_window_manager_v1 *obj, stru
 	wl_list_init(&seat->pointer_bindings);
 	river_seat_v1_add_listener(seat->obj, &river_seat_listener, seat);
 	wl_list_insert(wm.seats.prev, &seat->link);
+
+	if (layer_shell_v1 != NULL) {
+		seat->layer_shell_seat = river_layer_shell_v1_get_seat(layer_shell_v1, seat->obj);
+		river_layer_shell_seat_v1_add_listener(seat->layer_shell_seat, &layer_shell_seat_listener, seat);
+	}
 }
 
 static void wm_handle_session_locked(void *data, struct river_window_manager_v1 *obj) {}

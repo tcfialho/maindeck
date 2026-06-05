@@ -83,6 +83,7 @@ struct PointerBinding {
 
 struct Seat {
 	struct river_seat_v1 *obj;
+	struct river_layer_shell_seat_v1 *layer_shell_seat;
 	bool new;
 	bool removed;
 

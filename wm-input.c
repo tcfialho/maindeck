@@ -237,6 +237,9 @@ void seat_maybe_destroy(struct Seat *seat) {
 	wl_list_for_each_safe(pointer_binding, pointer_binding_tmp, &seat->pointer_bindings, link) {
 		pointer_binding_destroy(pointer_binding);
 	}
+	if (seat->layer_shell_seat != NULL) {
+		river_layer_shell_seat_v1_destroy(seat->layer_shell_seat);
+	}
 	river_seat_v1_destroy(seat->obj);
 	wl_list_remove(&seat->link);
 	free(seat);
