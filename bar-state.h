@@ -101,8 +101,6 @@ struct BarState {
 
     /* Status */
     char vol_text[32];
-    int  vol_level;
-    bool vol_muted;
     char bat_text[32];
     char clock_text[32];
     int  bat_level;    /* 0-100, -1 = unknown */

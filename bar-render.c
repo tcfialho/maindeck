@@ -482,11 +482,9 @@ static int draw_status(cairo_t *cr, PangoLayout *lay, int h, int x_end) {
                 rounded_rect(cr, x, btn_y, icon_slot, btn_h, BTN_RADIUS);
                 cairo_fill(cr);
             }
-            bool muted = bar->vol_muted;
-            int vol = bar->vol_level;
             double cx = x + icon_slot / 2.0;
             double cy = btn_y + btn_h / 2.0;
-            draw_volume_icon(cr, cx, cy, vol, muted);
+            draw_volume_icon(cr, cx, cy, 50, false);
             push_hit(HIT_STATUS, i, x, 0, icon_slot, h);
 
         } else if (strcmp(mod, "clock") == 0 && bar->clock_text[0]) {
