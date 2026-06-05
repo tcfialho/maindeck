@@ -28,9 +28,9 @@
 #include "viewporter-client-protocol.h"
 #include "bar-icons.h"
 
-#define MENU_WIDTH 300
-#define MENU_HEIGHT 420
-#define ITEM_HEIGHT 28
+#define MENU_WIDTH 320
+#define MENU_HEIGHT 480
+#define ITEM_HEIGHT 34
 #define MAX_ITEMS 12
 #define SOCKET_NAME "maindeck-menu.sock"
 
@@ -676,7 +676,7 @@ static void render(void) {
         if (a->icon) {
             icon_surf = bar_icon_get(a->icon, 16);
         }
-        bar_icon_draw(cr, icon_surf, 20, list_y + 6, 16);
+        bar_icon_draw(cr, icon_surf, 20, list_y + 9, 16);
 
         pango_layout_set_text(layout, a->name, -1);
         if (is_selected) {
@@ -684,7 +684,7 @@ static void render(void) {
         } else {
             cairo_set_source_rgba(cr, 0.55, 0.55, 0.60, 1.0); // COL_TEXT normal
         }
-        cairo_move_to(cr, 44, list_y + 5);
+        cairo_move_to(cr, 44, list_y + 8);
         pango_cairo_show_layout(cr, layout);
 
         list_y += ITEM_HEIGHT;
