@@ -89,7 +89,7 @@ void bar_surface_create(void) {
         bar->layer_shell,
         bar->wl_surface,
         NULL,   /* output = NULL → compositor picks */
-        ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM,
+        ZWLR_LAYER_SHELL_V1_LAYER_TOP,
         "maindeck-bar"
     );
     if (!bar->layer_surface) { LOG_ERR("surface: get_layer_surface failed"); exit(1); }
@@ -101,6 +101,8 @@ void bar_surface_create(void) {
 
     zwlr_layer_surface_v1_set_exclusive_zone(bar->layer_surface, bar->height);
     zwlr_layer_surface_v1_set_size(bar->layer_surface, 0, (uint32_t)bar->height);
+    zwlr_layer_surface_v1_set_keyboard_interactivity(bar->layer_surface,
+        ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND);
 
     zwlr_layer_surface_v1_add_listener(bar->layer_surface,
         &layer_surface_listener, NULL);
