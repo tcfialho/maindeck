@@ -103,6 +103,7 @@ struct WindowManager {
 	struct wl_list seats;
 	uint32_t target_index; // 0 or 1
 	bool maximized;
+	bool focus_dirty;
 };
 
 struct DeviceState {

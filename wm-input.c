@@ -331,14 +331,14 @@ void seat_manage(struct Seat *seat) {
 		pointer_binding_create(seat, super, BTN_LEFT, ACTION_TOGGLE_TARGET);
 	}
 
-	if (seat->interacted != NULL && seat->interacted != seat->focused) {
+	if (seat->interacted != NULL) {
 		int32_t idx = window_index(seat->interacted);
-		if (idx == 1) {
-			wm.target_index = 1;
-			wm.maximized = false;
-		} else if (idx == 0) {
-			wm.target_index = 0;
-			wm.maximized = false;
+		if (idx == 0 || idx == 1) {
+			if (idx != (int32_t)wm.target_index) {
+				wm.target_index = (uint32_t)idx;
+				wm.maximized = false;
+			}
+			wm.focus_dirty = true;
 		}
 	}
 	seat->interacted = NULL;

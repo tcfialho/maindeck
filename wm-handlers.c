@@ -306,16 +306,21 @@ static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *o
 	g_layout_sig = sig;
 	g_layout_sig_fresh = true;
 
-	if (!have_last_sig || sig != last_layout_sig) {
+	bool layout_changed = (!have_last_sig || sig != last_layout_sig);
+	if (layout_changed) {
 		size_t index = 0;
 		wl_list_for_each(window, &wm.windows, link) {
 			window_manage_layout(window, index);
 			index++;
 		}
-		focus_target_on_seats();
-		log_state();
 		last_layout_sig = sig;
 		have_last_sig = true;
+	}
+
+	if (layout_changed || wm.focus_dirty) {
+		focus_target_on_seats();
+		log_state();
+		wm.focus_dirty = false;
 	}
 
 	river_window_manager_v1_manage_finish(window_manager_v1);
