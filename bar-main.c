@@ -321,7 +321,7 @@ int main(void) {
         }
 
         /* Redraw if needed */
-        if (g_bar.dirty && g_bar.configured)
+        if (g_bar.dirty && g_bar.configured && !g_bar.render_suppressed)
             bar_render();
     }
 

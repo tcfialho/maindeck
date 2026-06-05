@@ -106,6 +106,7 @@ struct WindowManager {
 	uint32_t target_index; // 0 or 1
 	bool maximized;
 	bool focus_dirty;
+	struct river_node_v1 *last_placed_top_node;
 };
 
 struct DeviceState {

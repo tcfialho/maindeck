@@ -2,6 +2,7 @@
 #define WM_LOG_H
 
 void log_init(void);
+void log_close(void);
 int md_verbose(void);
 void md_log(const char *level, const char *fmt, ...);
 

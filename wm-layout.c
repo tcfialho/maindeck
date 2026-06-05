@@ -342,6 +342,7 @@ void md_promote_target_to_main(void) {
 }
 
 void md_insert_new_window(struct Window *window) {
+	wm.last_placed_top_node = NULL;
 	size_t count = window_count();
 	LOG_EVENT("new window: count_before=%zu", count);
 	if (count == 0) {
@@ -419,7 +420,7 @@ void window_render_layout(struct Window *window, size_t index) {
 	if (window->fullscreen) {
 		river_window_v1_show(window->obj);
 		river_window_v1_set_borders(window->obj, RIVER_WINDOW_V1_EDGES_NONE, 0, 0, 0, 0, 0);
-		river_node_v1_place_top(window->node);
+		wm_place_top(window->node);
 		return;
 	}
 
@@ -432,11 +433,18 @@ void window_render_layout(struct Window *window, size_t index) {
 	struct Box box = layout_box_for_index(index);
 	river_window_v1_show(window->obj);
 	river_node_v1_set_position(window->node, box.x + BORDER_WIDTH, box.y + BORDER_WIDTH);
-	river_node_v1_place_top(window->node);
+	wm_place_top(window->node);
 
 	// Borda transparente para todas as janelas (focado e desfocado).
 	// Mantemos a largura (BORDER_WIDTH) com alpha 0 para que a geometria e
 	// o posicionamento das janelas permaneçam idênticos.
 	river_window_v1_set_borders(window->obj, all_edges(), BORDER_WIDTH,
 		0, 0, 0, 0x00000000u);
+}
+
+void wm_place_top(struct river_node_v1 *node) {
+	if (wm.last_placed_top_node != node) {
+		river_node_v1_place_top(node);
+		wm.last_placed_top_node = node;
+	}
 }

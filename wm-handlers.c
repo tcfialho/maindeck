@@ -205,6 +205,9 @@ void window_maybe_destroy(struct Window *window) {
 	wl_list_for_each(seat, &wm.seats, link) {
 		if (seat->focused == window) seat->focused = NULL;
 	}
+	if (wm.last_placed_top_node == window->node) {
+		wm.last_placed_top_node = NULL;
+	}
 	river_window_v1_destroy(window->obj);
 	wl_list_remove(&window->link);
 	free(window->app_id);
@@ -345,7 +348,7 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 			index++;
 		}
 		if (target_window() != NULL) {
-			river_node_v1_place_top(target_window()->node);
+			wm_place_top(target_window()->node);
 		}
 		last_render_sig = sig;
 		have_last_render_sig = true;

@@ -1,0 +1,269 @@
+diff --git a/bar-log.h b/bar-log.h
+index 1f0381d..8aa3102 100644
+--- a/bar-log.h
++++ b/bar-log.h
+@@ -18,9 +18,20 @@ static inline void bar_log_write(const char *level, const char *fmt, va_list ap)
+     fputc('\n', stderr);
+ }
+ 
++static inline int bar_verbose(void) {
++    static int v = -1;
++    if (v < 0) {
++        const char *e = getenv("MAINDECK_LOG");
++        v = (e && (e[0] == 'd' || e[0] == 'D')) ? 1 : 0;
++    }
++    return v;
++}
++
+ #define LOG_INFO(...) do { \
+-    fprintf(stderr, "[bar] [INFO] " __VA_ARGS__); \
+-    fputc('\n', stderr); \
++    if (bar_verbose()) { \
++        fprintf(stderr, "[bar] [INFO] " __VA_ARGS__); \
++        fputc('\n', stderr); \
++    } \
+ } while(0)
+ 
+ #define LOG_WARN(...) do { \
+diff --git a/bar-main.c b/bar-main.c
+index 78e72c3..6a84fd1 100644
+--- a/bar-main.c
++++ b/bar-main.c
+@@ -270,7 +270,7 @@ int main(void) {
+ 
+     /* Initial render */
+     bar_status_tick();
+-    if (g_bar.dirty) bar_render();
++    if (g_bar.dirty && !g_bar.render_suppressed) bar_render();
+ 
+     int wl_fd    = wl_display_get_fd(g_bar.display);
+     int timer_ms = ms_until_next_minute();
+@@ -321,7 +321,7 @@ int main(void) {
+         }
+ 
+         /* Redraw if needed */
+-        if (g_bar.dirty && g_bar.configured)
++        if (g_bar.dirty && g_bar.configured && !g_bar.render_suppressed)
+             bar_render();
+     }
+ 
+diff --git a/bar-state.h b/bar-state.h
+index c640740..8f5fcc0 100644
+--- a/bar-state.h
++++ b/bar-state.h
+@@ -30,6 +30,7 @@ struct BarToplevel {
+     char   app_id[128];
+     bool   activated;
+     bool   minimized;
++    bool   fullscreen;
+     bool   closed;
+     cairo_surface_t *icon_surface; /* cached, owned by bar-icons */
+ };
+@@ -98,6 +99,8 @@ struct BarState {
+     int width, height;
+     bool configured;
+     bool dirty;        /* needs redraw */
++    bool render_suppressed;
++    bool render_dirty;
+ 
+     /* Status */
+     char vol_text[32];
+diff --git a/bar-taskbar.c b/bar-taskbar.c
+index efef927..591300d 100644
+--- a/bar-taskbar.c
++++ b/bar-taskbar.c
+@@ -12,6 +12,26 @@
+ #include "bar-render.h"
+ #include "bar-log.h"
+ 
++void bar_update_render_suppressed(void) {
++    struct BarState *bar = &g_bar;
++    bool any_active_fullscreen = false;
++    for (int i = 0; i < bar->toplevel_n; i++) {
++        struct BarToplevel *tl = &bar->toplevels[i];
++        if (tl->activated && tl->fullscreen && !tl->minimized) {
++            any_active_fullscreen = true;
++            break;
++        }
++    }
++
++    if (any_active_fullscreen != bar->render_suppressed) {
++        LOG_INFO("bar: render_suppressed changed from %d to %d", bar->render_suppressed, any_active_fullscreen);
++        bar->render_suppressed = any_active_fullscreen;
++        if (!bar->render_suppressed) {
++            bar->dirty = true;
++        }
++    }
++}
++
+ /* ------------------------------------------------------------------ */
+ /* zwlr handlers                                                        */
+ /* ------------------------------------------------------------------ */
+@@ -46,15 +66,18 @@ static void tl_state(void *data,
+     struct zwlr_foreign_toplevel_handle_v1 *h, struct wl_array *st) {
+     (void)h;
+     struct BarToplevel *tl = data;
+-    bool act = false, min = false;
++    bool act = false, min = false, fs = false;
+     uint32_t *s;
+     wl_array_for_each(s, st) {
+         if (*s == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED) act = true;
+         if (*s == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED)  min = true;
++        if (*s == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_FULLSCREEN) fs = true;
+     }
+     tl->activated = act;
+     tl->minimized  = min;
++    tl->fullscreen = fs;
+     g_bar.dirty = true;
++    bar_update_render_suppressed();
+ }
+ 
+ static void tl_done(void *data,
+@@ -83,6 +106,7 @@ static void tl_closed(void *data,
+ 
+     zwlr_foreign_toplevel_handle_v1_destroy(h);
+     g_bar.dirty = true;
++    bar_update_render_suppressed();
+     (void)data;
+     LOG_INFO("taskbar: toplevel closed, remaining=%d", g_bar.toplevel_n);
+ }
+@@ -132,6 +156,7 @@ static void mgr_toplevel(void *data,
+     bar->toplevel_n++;
+     bar->dirty = true;
+     zwlr_foreign_toplevel_handle_v1_add_listener(h, &tl_listener, tl);
++    bar_update_render_suppressed();
+ 
+     LOG_INFO("taskbar: new toplevel idx=%d (total=%d)", idx, bar->toplevel_n);
+ }
+diff --git a/types.h b/types.h
+index db4cb6a..85cf1e9 100644
+--- a/types.h
++++ b/types.h
+@@ -106,6 +106,7 @@ struct WindowManager {
+ 	uint32_t target_index; // 0 or 1
+ 	bool maximized;
+ 	bool focus_dirty;
++	struct river_node_v1 *last_placed_top_node;
+ };
+ 
+ struct DeviceState {
+diff --git a/wm-handlers.c b/wm-handlers.c
+index 75d795a..349fb26 100644
+--- a/wm-handlers.c
++++ b/wm-handlers.c
+@@ -205,6 +205,9 @@ void window_maybe_destroy(struct Window *window) {
+ 	wl_list_for_each(seat, &wm.seats, link) {
+ 		if (seat->focused == window) seat->focused = NULL;
+ 	}
++	if (wm.last_placed_top_node == window->node) {
++		wm.last_placed_top_node = NULL;
++	}
+ 	river_window_v1_destroy(window->obj);
+ 	wl_list_remove(&window->link);
+ 	free(window->app_id);
+@@ -345,7 +348,7 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
+ 			index++;
+ 		}
+ 		if (target_window() != NULL) {
+-			river_node_v1_place_top(target_window()->node);
++			wm_place_top(target_window()->node);
+ 		}
+ 		last_render_sig = sig;
+ 		have_last_render_sig = true;
+diff --git a/wm-ipc.c b/wm-ipc.c
+index d779763..b18ed59 100644
+--- a/wm-ipc.c
++++ b/wm-ipc.c
+@@ -204,6 +204,7 @@ int main(void) {
+ 	}
+ 
+ done:
++	log_close();
+ 	if (ipc_fd >= 0) close(ipc_fd);
+ 	if (ipc_path[0] != '\0') unlink(ipc_path);
+ 	return 0;
+diff --git a/wm-layout.c b/wm-layout.c
+index 8918706..1f7da5d 100644
+--- a/wm-layout.c
++++ b/wm-layout.c
+@@ -419,7 +419,7 @@ void window_render_layout(struct Window *window, size_t index) {
+ 	if (window->fullscreen) {
+ 		river_window_v1_show(window->obj);
+ 		river_window_v1_set_borders(window->obj, RIVER_WINDOW_V1_EDGES_NONE, 0, 0, 0, 0, 0);
+-		river_node_v1_place_top(window->node);
++		wm_place_top(window->node);
+ 		return;
+ 	}
+ 
+@@ -432,7 +432,7 @@ void window_render_layout(struct Window *window, size_t index) {
+ 	struct Box box = layout_box_for_index(index);
+ 	river_window_v1_show(window->obj);
+ 	river_node_v1_set_position(window->node, box.x + BORDER_WIDTH, box.y + BORDER_WIDTH);
+-	river_node_v1_place_top(window->node);
++	wm_place_top(window->node);
+ 
+ 	// Borda transparente para todas as janelas (focado e desfocado).
+ 	// Mantemos a largura (BORDER_WIDTH) com alpha 0 para que a geometria e
+@@ -440,3 +440,10 @@ void window_render_layout(struct Window *window, size_t index) {
+ 	river_window_v1_set_borders(window->obj, all_edges(), BORDER_WIDTH,
+ 		0, 0, 0, 0x00000000u);
+ }
++
++void wm_place_top(struct river_node_v1 *node) {
++	if (wm.last_placed_top_node != node) {
++		river_node_v1_place_top(node);
++		wm.last_placed_top_node = node;
++	}
++}
+diff --git a/wm-layout.h b/wm-layout.h
+index 17e9781..6467d31 100644
+--- a/wm-layout.h
++++ b/wm-layout.h
+@@ -30,5 +30,6 @@ void window_manage_layout(struct Window *window, size_t index);
+ void window_render_layout(struct Window *window, size_t index);
+ void move_first(struct Window *window);
+ void move_last(struct Window *window);
++void wm_place_top(struct river_node_v1 *node);
+ 
+ #endif /* WM_LAYOUT_H */
+diff --git a/wm-log.c b/wm-log.c
+index c5ed2e5..b37039c 100644
+--- a/wm-log.c
++++ b/wm-log.c
+@@ -18,7 +18,14 @@ void log_init(void) {
+ 	snprintf(path, sizeof(path), "%s/.local/state/maindeck/maindeck.log", home);
+ 	log_file = fopen(path, "a");
+ 	if (log_file != NULL) {
+-		setvbuf(log_file, NULL, _IOLBF, 0);
++		setvbuf(log_file, NULL, _IOFBF, BUFSIZ);
++	}
++}
++
++void log_close(void) {
++	if (log_file != NULL) {
++		fclose(log_file);
++		log_file = NULL;
+ 	}
+ }
+ 
+@@ -61,4 +68,8 @@ void md_log(const char *level, const char *fmt, ...) {
+ 	va_end(ap);
+ 
+ 	fprintf(out, "[%s.%03ld] [%s] %s\n", tbuf, ts.tv_nsec / 1000000, level, msg);
++	if (is_warn || level[0] == 'E' || level[0] == 'C') {
++		fflush(out);
++	}
+ }
++
+diff --git a/wm-log.h b/wm-log.h
+index 06b1cb8..a99d4d2 100644
+--- a/wm-log.h
++++ b/wm-log.h
+@@ -2,6 +2,7 @@
+ #define WM_LOG_H
+ 
+ void log_init(void);
++void log_close(void);
+ int md_verbose(void);
+ void md_log(const char *level, const char *fmt, ...);
+ 

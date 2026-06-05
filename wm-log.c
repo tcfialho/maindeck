@@ -18,7 +18,14 @@ void log_init(void) {
 	snprintf(path, sizeof(path), "%s/.local/state/maindeck/maindeck.log", home);
 	log_file = fopen(path, "a");
 	if (log_file != NULL) {
-		setvbuf(log_file, NULL, _IOLBF, 0);
+		setvbuf(log_file, NULL, _IOFBF, BUFSIZ);
+	}
+}
+
+void log_close(void) {
+	if (log_file != NULL) {
+		fclose(log_file);
+		log_file = NULL;
 	}
 }
 
@@ -61,4 +68,8 @@ void md_log(const char *level, const char *fmt, ...) {
 	va_end(ap);
 
 	fprintf(out, "[%s.%03ld] [%s] %s\n", tbuf, ts.tv_nsec / 1000000, level, msg);
+	if (is_warn || level[0] == 'E' || level[0] == 'C') {
+		fflush(out);
+	}
 }
+

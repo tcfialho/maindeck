@@ -12,6 +12,26 @@
 #include "bar-render.h"
 #include "bar-log.h"
 
+static void bar_update_render_suppressed(void) {
+    struct BarState *bar = &g_bar;
+    bool any_active_fullscreen = false;
+    for (int i = 0; i < bar->toplevel_n; i++) {
+        struct BarToplevel *tl = &bar->toplevels[i];
+        if (tl->activated && tl->fullscreen && !tl->minimized) {
+            any_active_fullscreen = true;
+            break;
+        }
+    }
+
+    if (any_active_fullscreen != bar->render_suppressed) {
+        LOG_INFO("bar: render_suppressed changed from %d to %d", bar->render_suppressed, any_active_fullscreen);
+        bar->render_suppressed = any_active_fullscreen;
+        if (!bar->render_suppressed) {
+            bar->dirty = true;
+        }
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* zwlr handlers                                                        */
 /* ------------------------------------------------------------------ */
@@ -46,15 +66,18 @@ static void tl_state(void *data,
     struct zwlr_foreign_toplevel_handle_v1 *h, struct wl_array *st) {
     (void)h;
     struct BarToplevel *tl = data;
-    bool act = false, min = false;
+    bool act = false, min = false, fs = false;
     uint32_t *s;
     wl_array_for_each(s, st) {
         if (*s == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED) act = true;
         if (*s == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED)  min = true;
+        if (*s == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_FULLSCREEN) fs = true;
     }
     tl->activated = act;
     tl->minimized  = min;
+    tl->fullscreen = fs;
     g_bar.dirty = true;
+    bar_update_render_suppressed();
 }
 
 static void tl_done(void *data,
@@ -83,6 +106,7 @@ static void tl_closed(void *data,
 
     zwlr_foreign_toplevel_handle_v1_destroy(h);
     g_bar.dirty = true;
+    bar_update_render_suppressed();
     (void)data;
     LOG_INFO("taskbar: toplevel closed, remaining=%d", g_bar.toplevel_n);
 }
@@ -132,6 +156,7 @@ static void mgr_toplevel(void *data,
     bar->toplevel_n++;
     bar->dirty = true;
     zwlr_foreign_toplevel_handle_v1_add_listener(h, &tl_listener, tl);
+    bar_update_render_suppressed();
 
     LOG_INFO("taskbar: new toplevel idx=%d (total=%d)", idx, bar->toplevel_n);
 }

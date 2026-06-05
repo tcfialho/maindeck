@@ -18,9 +18,20 @@ static inline void bar_log_write(const char *level, const char *fmt, va_list ap)
     fputc('\n', stderr);
 }
 
+static inline int bar_verbose(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("MAINDECK_LOG");
+        v = (e && (e[0] == 'd' || e[0] == 'D')) ? 1 : 0;
+    }
+    return v;
+}
+
 #define LOG_INFO(...) do { \
-    fprintf(stderr, "[bar] [INFO] " __VA_ARGS__); \
-    fputc('\n', stderr); \
+    if (bar_verbose()) { \
+        fprintf(stderr, "[bar] [INFO] " __VA_ARGS__); \
+        fputc('\n', stderr); \
+    } \
 } while(0)
 
 #define LOG_WARN(...) do { \

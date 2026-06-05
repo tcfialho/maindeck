@@ -204,6 +204,7 @@ int main(void) {
 	}
 
 done:
+	log_close();
 	if (ipc_fd >= 0) close(ipc_fd);
 	if (ipc_path[0] != '\0') unlink(ipc_path);
 	return 0;

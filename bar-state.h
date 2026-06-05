@@ -30,6 +30,7 @@ struct BarToplevel {
     char   app_id[128];
     bool   activated;
     bool   minimized;
+    bool   fullscreen;
     bool   closed;
     cairo_surface_t *icon_surface; /* cached, owned by bar-icons */
 };
@@ -98,6 +99,7 @@ struct BarState {
     int width, height;
     bool configured;
     bool dirty;        /* needs redraw */
+    bool render_suppressed;
 
     /* Status */
     char vol_text[32];
