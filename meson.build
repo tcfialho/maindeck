@@ -81,7 +81,6 @@ cairo_dep  = dependency('cairo')
 pangocairo = dependency('pangocairo')
 gdk_pixbuf = dependency('gdk-pixbuf-2.0')
 librsvg    = dependency('librsvg-2.0', required: false)
-pulse      = dependency('libpulse')
 gio        = dependency('gio-2.0')
 dbus       = dependency('dbus-1')
 
@@ -111,7 +110,6 @@ executable(
     pangocairo,
     gdk_pixbuf,
     librsvg,
-    pulse,
     gio,
     dbus,
   ],

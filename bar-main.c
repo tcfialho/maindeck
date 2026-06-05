@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <signal.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <time.h>
@@ -173,6 +174,12 @@ static int ms_until_next_minute(void) {
 /* ------------------------------------------------------------------ */
 
 int main(void) {
+    /* Cap stack hard limit so glibc doesn't reserve terabytes of virtual address
+     * space for the main-stack guard and heap arenas. Without this, inheriting
+     * RLIM_INFINITY from the parent shell causes ~20TB VmSize at startup. */
+    struct rlimit stk = { 8 * 1024 * 1024, 8 * 1024 * 1024 };
+    setrlimit(RLIMIT_STACK, &stk);
+
     signal(SIGINT,  on_signal);
     signal(SIGTERM, on_signal);
     signal(SIGCHLD, SIG_IGN);  /* reap children automatically */
@@ -302,7 +309,6 @@ int main(void) {
             }
             if (tray_fd >= 0 && (pfds[1].revents & POLLIN))
                 bar_tray_dispatch();
-            bar_status_pulse_dispatch();
             timer_ms = ms_until_next_minute();
         }
 
