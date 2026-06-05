@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+
+set -eu
+
+# Under River, Waybar runs on the proxy display (maindeck-0). If this script is
+# invoked from a Waybar button it inherits WAYLAND_DISPLAY=maindeck-0, and a
+# fuzzel mapped there does NOT get keyboard focus (the proxy doesn't grant
+# layer-shell focus) — so you can't type and "click away to dismiss" never
+# fires. Always launch fuzzel on the real River display (the one maindeck-wm
+# uses). Derived, not hardcoded, since the socket name can vary. If maindeck-wm
+# isn't running, keep the inherited WAYLAND_DISPLAY.
+wm_pid="$(pgrep -x maindeck-wm | head -n1 || true)"
+if [ -n "${wm_pid:-}" ] && [ -r "/proc/${wm_pid}/environ" ]; then
+    wm_disp="$(tr '\0' '\n' < "/proc/${wm_pid}/environ" | sed -n 's/^WAYLAND_DISPLAY=//p' | head -n1 || true)"
+    if [ -n "${wm_disp:-}" ]; then
+        export WAYLAND_DISPLAY="$wm_disp"
+    fi
+fi
+
+if pgrep -x fuzzel >/dev/null 2>&1; then
+    pkill -x fuzzel
+else
+    # --launch-prefix=maindeck-launch shows a "loading" notification when an app
+    # is picked; maindeck-wm clears it when the app's window maps. Useful for
+    # heavy apps (games) that take a while to show a window.
+    exec fuzzel \
+        --anchor=bottom-left \
+        --x-margin=2 \
+        --y-margin=34 \
+        --width=36 \
+        --lines=12 \
+        --layer=overlay \
+        --border-radius=2 \
+        --launch-prefix="$HOME/.local/bin/maindeck-launch"
+fi
