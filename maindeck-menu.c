@@ -22,6 +22,7 @@
 #include <cairo.h>
 #include <pango/pangocairo.h>
 #include <xkbcommon/xkbcommon.h>
+#include <xkbcommon/xkbcommon-compose.h>
 
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
@@ -63,6 +64,8 @@ typedef struct {
     struct xkb_context *xkb_context;
     struct xkb_keymap *xkb_keymap;
     struct xkb_state *xkb_state;
+    struct xkb_compose_table *xkb_compose_table;
+    struct xkb_compose_state *xkb_compose_state;
 
     // Superfície MENU
     struct wl_surface *menu_surf;
@@ -679,11 +682,7 @@ static void render(void) {
         bar_icon_draw(cr, icon_surf, 20, list_y + 8, 18);
 
         pango_layout_set_text(layout, a->name, -1);
-        if (is_selected) {
-            cairo_set_source_rgba(cr, 0.92, 0.92, 0.92, 1.0); // COL_TEXT destacado
-        } else {
-            cairo_set_source_rgba(cr, 0.55, 0.55, 0.60, 1.0); // COL_TEXT normal
-        }
+        cairo_set_source_rgba(cr, 0.92, 0.92, 0.92, 1.0); // COL_TEXT (mesma cor branca da barra)
         cairo_move_to(cr, 46, list_y + 7);
         pango_cairo_show_layout(cr, layout);
 
@@ -928,7 +927,35 @@ static void keyboard_key(void *data, struct wl_keyboard *kbd, uint32_t serial, u
         return;
     }
 
-    // Caractere imprimível (suporte robusto a UTF-8 multibyte)
+    // Alimentação e consulta do Compose State (dead keys / acentuação)
+    enum xkb_compose_status status = XKB_COMPOSE_NOTHING;
+    if (app->xkb_compose_state) {
+        xkb_compose_state_feed(app->xkb_compose_state, sym);
+        status = xkb_compose_state_get_status(app->xkb_compose_state);
+    }
+
+    if (status == XKB_COMPOSE_COMPOSED) {
+        char utf8[8];
+        int n = xkb_compose_state_get_utf8(app->xkb_compose_state, utf8, sizeof(utf8));
+        if (n > 0 && (unsigned char)utf8[0] >= 32 && app->query_len + (size_t)n < sizeof(app->query)) {
+            memcpy(app->query + app->query_len, utf8, n);
+            app->query_len += n;
+            app->query[app->query_len] = '\0';
+            app->focus_zone = ZONE_SEARCH;
+            app->sel = 0;
+            filter_apps();
+            app->dirty = true;
+        }
+        xkb_compose_state_reset(app->xkb_compose_state);
+        return;
+    } else if (status == XKB_COMPOSE_COMPOSING) {
+        // Aguarda a composição ser completada (ex: pressionou '´')
+        return;
+    } else if (status == XKB_COMPOSE_CANCELLED) {
+        xkb_compose_state_reset(app->xkb_compose_state);
+    }
+
+    // Caractere imprimível normal (caso não seja sequência de compose ou compose tenha sido cancelado)
     char utf8[8];
     int n = xkb_state_key_get_utf8(app->xkb_state, key + 8, utf8, sizeof(utf8));
     if (n > 0 && (unsigned char)utf8[0] >= 32 && app->query_len + (size_t)n < sizeof(app->query)) {
@@ -1199,6 +1226,19 @@ int main(int argc, char **argv) {
 
     // 3. Inicializa contexto XKB e Wayland
     g_app.xkb_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    if (g_app.xkb_context) {
+        const char *locale = getenv("LC_ALL");
+        if (!locale) locale = getenv("LC_CTYPE");
+        if (!locale) locale = getenv("LANG");
+        if (!locale) locale = "pt_BR.UTF-8";
+
+        g_app.xkb_compose_table = xkb_compose_table_new_from_locale(g_app.xkb_context, locale, XKB_COMPOSE_COMPILE_NO_FLAGS);
+        if (g_app.xkb_compose_table) {
+            g_app.xkb_compose_state = xkb_compose_state_new(g_app.xkb_compose_table, XKB_COMPOSE_STATE_NO_FLAGS);
+        } else {
+            LOG_ERR("Falha ao criar xkb_compose_table");
+        }
+    }
     g_app.display = wl_display_connect(NULL);
     if (!g_app.display) {
         LOG_ERR("cannot connect to Wayland display");
@@ -1293,6 +1333,8 @@ int main(int argc, char **argv) {
 
     if (g_app.keyboard) wl_keyboard_destroy(g_app.keyboard);
     if (g_app.pointer) wl_pointer_destroy(g_app.pointer);
+    if (g_app.xkb_compose_state) xkb_compose_state_unref(g_app.xkb_compose_state);
+    if (g_app.xkb_compose_table) xkb_compose_table_unref(g_app.xkb_compose_table);
     if (g_app.xkb_state) xkb_state_unref(g_app.xkb_state);
     if (g_app.xkb_keymap) xkb_keymap_unref(g_app.xkb_keymap);
     if (g_app.xkb_context) xkb_context_unref(g_app.xkb_context);
