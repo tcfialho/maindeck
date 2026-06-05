@@ -631,7 +631,7 @@ static void render(void) {
     pango_layout_set_width(layout, (app->menu_w - 40) * PANGO_SCALE);
     pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
 
-    PangoFontDescription *desc = pango_font_description_from_string("sans semibold 11");
+    PangoFontDescription *desc = pango_font_description_from_string("sans 10");
     pango_layout_set_font_description(layout, desc);
     pango_font_description_free(desc);
 
@@ -674,9 +674,9 @@ static void render(void) {
         // Carrega e desenha o ícone do aplicativo
         cairo_surface_t *icon_surf = NULL;
         if (a->icon) {
-            icon_surf = bar_icon_get(a->icon, 20);
+            icon_surf = bar_icon_get(a->icon, 18);
         }
-        bar_icon_draw(cr, icon_surf, 20, list_y + 7, 20);
+        bar_icon_draw(cr, icon_surf, 20, list_y + 8, 18);
 
         pango_layout_set_text(layout, a->name, -1);
         if (is_selected) {
@@ -684,7 +684,7 @@ static void render(void) {
         } else {
             cairo_set_source_rgba(cr, 0.55, 0.55, 0.60, 1.0); // COL_TEXT normal
         }
-        cairo_move_to(cr, 48, list_y + 7);
+        cairo_move_to(cr, 46, list_y + 7);
         pango_cairo_show_layout(cr, layout);
 
         list_y += ITEM_HEIGHT;
