@@ -69,6 +69,9 @@ static void registry_global(void *data, struct wl_registry *reg,
     } else if (strcmp(iface, "xdg_wm_base") == 0) {
         bar->xdg_wm_base = wl_registry_bind(reg, name,
             &xdg_wm_base_interface, 1);
+    } else if (strcmp(iface, "wp_viewporter") == 0) {
+        bar->viewporter = wl_registry_bind(reg, name,
+            &wp_viewporter_interface, 1);
     }
 }
 
@@ -249,6 +252,7 @@ int main(void) {
 
     /* Create layer surface */
     bar_surface_create();
+    bg_surface_create();
 
     /* Second roundtrip: receive configure + initial toplevels */
     wl_display_roundtrip(g_bar.display);
@@ -318,6 +322,7 @@ int main(void) {
     }
 
     LOG_INFO("main: shutting down");
+    bg_surface_cleanup();
     bar_tray_cleanup();
     bar_status_cleanup();
     bar_icons_cleanup();

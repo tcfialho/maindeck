@@ -12,6 +12,7 @@
 #include "wlr-foreign-toplevel-management-unstable-v1-client-protocol.h"
 #include "ext-foreign-toplevel-list-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
+#include "viewporter-client-protocol.h"
 
 #include "bar-config.h"
 
@@ -142,6 +143,15 @@ struct BarState {
 
     /* Config */
     struct BarConfig config;
+
+    /* Background surface (for Fuzzel empty space click-to-dismiss) */
+    struct wp_viewporter           *viewporter;
+    struct wl_surface              *bg_surface;
+    struct zwlr_layer_surface_v1   *bg_layer_surface;
+    struct wp_viewport             *bg_viewport;
+    struct wl_buffer               *bg_buffer;
+    bool                            bg_buffer_is_fullsize;
+    int                             bg_width, bg_height;
 };
 
 /* Global instance */

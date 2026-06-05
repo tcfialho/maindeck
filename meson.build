@@ -72,6 +72,7 @@ dbus       = dependency('dbus-1')
 bar_protocols = wl_mod.scan_xml(
   'protocol/wlr-layer-shell-unstable-v1.xml',
   '/usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml',
+  '/usr/share/wayland-protocols/stable/viewporter/viewporter.xml',
 )
 # reuse toplevel_protocols: wlr-foreign-toplevel + ext-foreign-toplevel already scanned above
 
