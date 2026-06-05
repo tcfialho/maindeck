@@ -10,9 +10,9 @@ project(
     'c_std=c99',
     'warning_level=3',
     # Default DISTRIBUÍVEL/genérico: -O2 + símbolos + LTO. Portável (sem
-    # -march), seguro pra pipeline. O proxy faz relay de todo o tráfego Wayland
-    # de todo app (caminho quente); o default do meson (-O0) deixava o hot path
-    # sem otimização. Override com -Dbuildtype=debug pra depurar.
+    # -march), seguro pra pipeline. A barra está no caminho quente do render
+    # Wayland; o default do meson (-O0) deixava o hot path sem otimização.
+    # Override com -Dbuildtype=debug pra depurar.
     #
     # Build local "máximo" (só esta máquina, não versionado): aplicado no build/
     # via `meson configure build -Doptimization=3 -Dc_args=-march=native
@@ -57,24 +57,11 @@ exe = executable(
   install: true,
 )
 
-proxy_generated = wl_mod.scan_xml(
+# Foreign-toplevel protocols: window list + identifier for IPC with maindeck-wm.
+# Used by the bar (taskbar) and the toplevel-smoke test tool.
+toplevel_protocols = wl_mod.scan_xml(
   'protocol/wlr-foreign-toplevel-management-unstable-v1.xml',
   '/usr/share/wayland-protocols/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml',
-)
-
-executable(
-  'maindeck-proxy',
-  'proxy-process.c',
-  'proxy-wire.c',
-  'proxy-emit.c',
-  'proxy-toplevel.c',
-  'proxy-relay.c',
-  proxy_generated,
-  dependencies: [
-    wayland_client,
-    cc.find_library('pthread'),
-  ],
-  install: true,
 )
 
 cairo_dep  = dependency('cairo')
@@ -86,7 +73,7 @@ bar_protocols = wl_mod.scan_xml(
   'protocol/wlr-layer-shell-unstable-v1.xml',
   '/usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml',
 )
-# reuse proxy_generated: wlr-foreign-toplevel + ext-foreign-toplevel already scanned above
+# reuse toplevel_protocols: wlr-foreign-toplevel + ext-foreign-toplevel already scanned above
 
 executable(
   'maindeck-bar',
@@ -101,7 +88,7 @@ executable(
   'bar-icons.c',
   'bar-tray.c',
   bar_protocols,
-  proxy_generated,
+  toplevel_protocols,
   dependencies: [
     wayland_client,
     cairo_dep,
@@ -116,7 +103,7 @@ executable(
 executable(
   'maindeck-toplevel-smoke',
   'tools/toplevel-smoke.c',
-  proxy_generated,
+  toplevel_protocols,
   dependencies: [
     wayland_client,
   ],
