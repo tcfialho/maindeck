@@ -341,7 +341,10 @@ int bar_tray_init(void) {
 
 void bar_tray_dispatch(void) {
     if (!g_conn) return;
-    dbus_connection_read_write_dispatch(g_conn, 0);
+    dbus_connection_read_write(g_conn, 0);
+    while (dbus_connection_dispatch(g_conn) == DBUS_DISPATCH_DATA_REMAINS) {
+        /* drena toda a fila de mensagens já bufferizada */
+    }
 }
 
 /* ------------------------------------------------------------------ */

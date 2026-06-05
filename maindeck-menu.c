@@ -1186,8 +1186,8 @@ static void menu_layer_configure(void *data, struct zwlr_layer_surface_v1 *surf,
 
         create_menu_buffers(new_w, new_h);
         app->configured = true;
+        app->dirty = true;
     }
-    app->dirty = true;
 }
 
 static void menu_layer_closed(void *data, struct zwlr_layer_surface_v1 *surf) {
