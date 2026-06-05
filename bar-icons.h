@@ -13,9 +13,9 @@ cairo_surface_t *bar_icon_get(const char *name, int size);
 /* Render icon into cairo context at (x, y). If icon is NULL, draws placeholder box. */
 void bar_icon_draw(cairo_t *cr, cairo_surface_t *icon, double x, double y, int size);
 
-/* Free the NF glyph string if the icon name is a nf: prefix icon.
- * Returns the glyph string (caller owns it) or NULL. */
-char *bar_icon_nf_glyph(const char *name);
+/* Returns pointer inside `name` (offset +3) for "nf:" cases.
+ * Do NOT free; valid as long as the original `name` string exists. */
+const char *bar_icon_nf_glyph(const char *name);
 
 void bar_icons_cleanup(void);
 

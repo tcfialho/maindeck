@@ -203,9 +203,9 @@ static cairo_surface_t *load_icon_to_cairo_surface(const char *path, int size) {
 /* Public API                                                           */
 /* ------------------------------------------------------------------ */
 
-char *bar_icon_nf_glyph(const char *name) {
+const char *bar_icon_nf_glyph(const char *name) {
     if (strncmp(name, "nf:", 3) == 0) {
-        return strdup(name + 3);
+        return name + 3;
     }
     return NULL;
 }

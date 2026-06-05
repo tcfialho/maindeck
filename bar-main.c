@@ -321,6 +321,7 @@ int main(void) {
     bar_tray_cleanup();
     bar_status_cleanup();
     bar_icons_cleanup();
+    bar_render_cleanup();
     if (g_bar.ipc_sock >= 0) close(g_bar.ipc_sock);
     wl_display_disconnect(g_bar.display);
     return 0;

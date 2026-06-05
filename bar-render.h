@@ -2,5 +2,6 @@
 #define BAR_RENDER_H
 
 void bar_render(void);
+void bar_render_cleanup(void);
 
 #endif /* BAR_RENDER_H */

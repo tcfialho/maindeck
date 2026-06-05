@@ -31,6 +31,9 @@
 #define BTN_PAD         8
 #define BTN_RADIUS      4.0
 
+static PangoFontDescription *s_font_bar = NULL;    /* parseada de bar->config.font */
+static PangoFontDescription *s_font_power = NULL;  /* "sans bold 18" */
+
 /* ------------------------------------------------------------------ */
 /* Helpers                                                              */
 /* ------------------------------------------------------------------ */
@@ -66,9 +69,10 @@ static void rounded_rect(cairo_t *cr, double x, double y, double w, double h, do
 
 static PangoLayout *make_layout(cairo_t *cr, const char *font_desc) {
     PangoLayout    *lay = pango_cairo_create_layout(cr);
-    PangoFontDescription *fd = pango_font_description_from_string(font_desc);
-    pango_layout_set_font_description(lay, fd);
-    pango_font_description_free(fd);
+    if (!s_font_bar) {
+        s_font_bar = pango_font_description_from_string(font_desc);
+    }
+    pango_layout_set_font_description(lay, s_font_bar);
     return lay;
 }
 
@@ -124,7 +128,7 @@ static int draw_quicklaunch(cairo_t *cr, PangoLayout *lay, int h) {
         bool hovered = (bar->hover_type == HIT_QL) && (bar->hover_index == i);
 
         /* Calculate button width */
-        char *glyph = bar_icon_nf_glyph(btn->icon);
+        const char *glyph = bar_icon_nf_glyph(btn->icon);
         cairo_surface_t *icon = glyph ? NULL : bar_icon_get(btn->icon, ICON_SIZE);
 
         int btn_w;
@@ -168,7 +172,6 @@ static int draw_quicklaunch(cairo_t *cr, PangoLayout *lay, int h) {
             pango_layout_get_pixel_size(lay, &tw, &th);
             cairo_move_to(cr, x + (btn_w - tw) / 2.0, btn_y + (btn_h - th) / 2.0);
             pango_cairo_show_layout(cr, lay);
-            free(glyph);
         } else if (icon) {
             double ix = x + (btn_w - ICON_SIZE) / 2.0;
             double iy = btn_y + (btn_h - ICON_SIZE) / 2.0;
@@ -417,17 +420,19 @@ static int draw_status(cairo_t *cr, PangoLayout *lay, int h, int x_end) {
                 cairo_fill(cr);
             }
             pango_layout_set_text(lay, "⏻", -1);
-            PangoFontDescription *fd_p = pango_font_description_from_string("sans bold 18");
-            pango_layout_set_font_description(lay, fd_p);
-            pango_font_description_free(fd_p);
+            if (!s_font_power) {
+                s_font_power = pango_font_description_from_string("sans bold 18");
+            }
+            pango_layout_set_font_description(lay, s_font_power);
             int tw, th;
             pango_layout_get_pixel_size(lay, &tw, &th);
             cairo_set_source_rgba(cr, 1.0, 0.35, 0.35, 1.0);
             cairo_move_to(cr, x + (pw - tw) / 2.0, btn_y + (btn_h - th) / 2.0);
             pango_cairo_show_layout(cr, lay);
-            PangoFontDescription *fd_n = pango_font_description_from_string(bar->config.font);
-            pango_layout_set_font_description(lay, fd_n);
-            pango_font_description_free(fd_n);
+            if (!s_font_bar) {
+                s_font_bar = pango_font_description_from_string(bar->config.font);
+            }
+            pango_layout_set_font_description(lay, s_font_bar);
             push_hit(HIT_STATUS, i, x, 0, pw, h);
 
         } else if (strcmp(mod, "battery") == 0 && bar->bat_level >= 0) {
@@ -539,4 +544,15 @@ void bar_render(void) {
 
     bar_surface_commit();
     bar->dirty = false;
+}
+
+void bar_render_cleanup(void) {
+    if (s_font_bar) {
+        pango_font_description_free(s_font_bar);
+        s_font_bar = NULL;
+    }
+    if (s_font_power) {
+        pango_font_description_free(s_font_power);
+        s_font_power = NULL;
+    }
 }
