@@ -246,6 +246,7 @@ void focus_target_on_seats(void) {
 	wl_list_for_each(seat, &wm.seats, link) {
 		if (seat->removed) continue;
 		if (target != NULL) {
+			river_seat_v1_clear_focus(seat->obj);
 			river_seat_v1_focus_window(seat->obj, target->obj);
 		} else {
 			river_seat_v1_clear_focus(seat->obj);
