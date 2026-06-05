@@ -66,6 +66,7 @@ static void ensure_cairo(struct BarState *bar, void *data) {
     s_lay_power[b] = pango_cairo_create_layout(s_cr[b]);
     if (!s_font_power) s_font_power = pango_font_description_from_string("sans bold 18");
     pango_layout_set_font_description(s_lay_power[b], s_font_power);
+    pango_layout_set_text(s_lay_power[b], "⏻", -1);
 
     s_cs_w = bar->buf_width; s_cs_h = bar->buf_height;
 }
@@ -454,13 +455,14 @@ static int draw_status(cairo_t *cr, PangoLayout *lay, int h, int x_end) {
                 cairo_fill(cr);
             }
             int b = bar->cur_buf;
-            PangoLayout *pw_lay = s_lay_power[b] ? s_lay_power[b] : lay;
-            pango_layout_set_text(pw_lay, "⏻", -1);
-            int tw, th;
-            pango_layout_get_pixel_size(pw_lay, &tw, &th);
-            cairo_set_source_rgba(cr, 1.0, 0.35, 0.35, 1.0);
-            cairo_move_to(cr, x + (pw - tw) / 2.0, btn_y + (btn_h - th) / 2.0);
-            pango_cairo_show_layout(cr, pw_lay);
+            PangoLayout *pw_lay = s_lay_power[b];
+            if (pw_lay) {
+                int tw, th;
+                pango_layout_get_pixel_size(pw_lay, &tw, &th);
+                cairo_set_source_rgba(cr, 1.0, 0.35, 0.35, 1.0);
+                cairo_move_to(cr, x + (pw - tw) / 2.0, btn_y + (btn_h - th) / 2.0);
+                pango_cairo_show_layout(cr, pw_lay);
+            }
             push_hit(HIT_STATUS, i, x, 0, pw, h);
 
         } else if (strcmp(mod, "battery") == 0 && bar->bat_level >= 0) {
