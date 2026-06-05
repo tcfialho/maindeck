@@ -11,6 +11,7 @@
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "wlr-foreign-toplevel-management-unstable-v1-client-protocol.h"
 #include "ext-foreign-toplevel-list-v1-client-protocol.h"
+#include "xdg-shell-client-protocol.h"
 
 #include "bar-config.h"
 
@@ -101,15 +102,39 @@ struct BarState {
     char vol_text[32];
     char bat_text[32];
     char clock_text[32];
+    int  bat_level;    /* 0-100, -1 = unknown */
+    bool bat_charging; /* true if Charging or Full */
 
     /* Pointer state */
     double  ptr_x, ptr_y;
     bool    ptr_inside;
-    int     hover_hit;  /* index in hit_areas, -1 if none */
+    int     hover_hit;    /* index in hit_areas, -1 if none */
+    HitType hover_type;   /* type of currently hovered element */
+    int     hover_index;  /* index within that type, -1 if none */
+    uint32_t last_btn_serial; /* serial from last ptr_button press */
+    uint32_t last_btn_time;   /* time from last ptr_button press */
 
     /* Hit areas */
     struct HitArea hit_areas[BAR_MAX_HITS];
     int            hit_n;
+
+    /* xdg_shell (for popup menus) */
+    struct xdg_wm_base *xdg_wm_base;
+
+    /* Popup menu state (tray context menu) */
+    struct wl_surface         *menu_surface;
+    struct xdg_surface        *menu_xdg_surface;
+    struct xdg_popup          *menu_popup;
+    struct wl_shm_pool        *menu_pool;
+    struct wl_buffer          *menu_buf;
+    void                      *menu_data;
+    int                        menu_fd;
+    int                        menu_width, menu_height, menu_stride;
+    bool                       menu_open;
+    int                        menu_tray_idx;  /* which tray item opened the menu */
+    bool                       ptr_on_menu;    /* pointer is over the menu surface */
+    double                     menu_ptr_x, menu_ptr_y;
+    int                        menu_hover_row; /* -1 = none */
 
     /* IPC socket */
     int ipc_sock;  /* AF_UNIX SOCK_DGRAM, -1 if not connected */

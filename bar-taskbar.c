@@ -65,14 +65,15 @@ static void tl_done(void *data,
 
 static void tl_closed(void *data,
     struct zwlr_foreign_toplevel_handle_v1 *h) {
-    (void)h;
-    struct BarToplevel *tl = data;
-    tl->closed = true;
-
-    /* Remove from array by shifting */
     struct BarState *bar = &g_bar;
-    int idx = (int)(tl - bar->toplevels);
-    if (idx >= 0 && idx < bar->toplevel_n) {
+
+    /* Find by handle pointer — data may be stale after prior shifts */
+    int idx = -1;
+    for (int i = 0; i < bar->toplevel_n; i++) {
+        if (bar->toplevels[i].zwlr_handle == h) { idx = i; break; }
+    }
+
+    if (idx >= 0) {
         int rem = bar->toplevel_n - idx - 1;
         if (rem > 0)
             memmove(&bar->toplevels[idx], &bar->toplevels[idx+1],
@@ -82,6 +83,7 @@ static void tl_closed(void *data,
 
     zwlr_foreign_toplevel_handle_v1_destroy(h);
     g_bar.dirty = true;
+    (void)data;
     LOG_INFO("taskbar: toplevel closed, remaining=%d", g_bar.toplevel_n);
 }
 
@@ -128,6 +130,7 @@ static void mgr_toplevel(void *data,
     }
 
     bar->toplevel_n++;
+    bar->dirty = true;
     zwlr_foreign_toplevel_handle_v1_add_listener(h, &tl_listener, tl);
 
     LOG_INFO("taskbar: new toplevel idx=%d (total=%d)", idx, bar->toplevel_n);

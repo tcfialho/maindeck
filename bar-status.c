@@ -26,8 +26,9 @@ static void update_clock(void) {
 
 static void update_battery(void) {
     struct BarState *bar = &g_bar;
+    bar->bat_level    = -1;
+    bar->bat_charging = false;
 
-    /* Try BAT0, BAT1 */
     static const char *bat_paths[] = {
         "/sys/class/power_supply/BAT0",
         "/sys/class/power_supply/BAT1",
@@ -45,28 +46,24 @@ static void update_battery(void) {
         fclose(f);
         if (cap < 0) continue;
 
-        /* Read status: Charging / Discharging / Full / Unknown */
         char status[32] = "Unknown";
         snprintf(path, sizeof(path), "%s/status", bat_paths[i]);
         f = fopen(path, "r");
         if (f) {
             if (!fgets(status, sizeof(status), f)) status[0] = '\0';
             fclose(f);
-            /* strip newline */
             char *nl = strchr(status, '\n');
             if (nl) *nl = '\0';
         }
 
-        const char *icon = "🔋";
-        if (strncmp(status, "Charging", 8) == 0)    icon = "⚡";
-        else if (strncmp(status, "Full", 4) == 0)   icon = "🔌";
-        else if (cap <= 15)                          icon = "🪫";
-
-        snprintf(bar->bat_text, sizeof(bar->bat_text), "%s %d%%", icon, cap);
+        bar->bat_level    = cap;
+        bar->bat_charging = (strncmp(status, "Charging", 8) == 0 ||
+                             strncmp(status, "Full", 4) == 0);
+        snprintf(bar->bat_text, sizeof(bar->bat_text), "%d%%", cap);
         return;
     }
 
-    snprintf(bar->bat_text, sizeof(bar->bat_text), "");
+    bar->bat_text[0] = '\0';
 }
 
 /* ------------------------------------------------------------------ */
@@ -171,8 +168,9 @@ int bar_status_init(void) {
         return -1;
     }
 
-    /* Return the PA mainloop fd so the caller can add it to poll */
-    return pa_mainloop_get_retval(g_pa_ml); /* placeholder — use iterate */
+    /* PA mainloop doesn't expose a single pollable fd — caller must call
+     * bar_status_pulse_dispatch() regularly (e.g. after each poll timeout). */
+    return -1;
 }
 
 void bar_status_pulse_dispatch(void) {

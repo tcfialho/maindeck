@@ -15,6 +15,7 @@
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "wlr-foreign-toplevel-management-unstable-v1-client-protocol.h"
 #include "ext-foreign-toplevel-list-v1-client-protocol.h"
+#include "xdg-shell-client-protocol.h"
 
 #include "bar-state.h"
 #include "bar-surface.h"
@@ -64,6 +65,9 @@ static void registry_global(void *data, struct wl_registry *reg,
     } else if (strcmp(iface, "ext_foreign_toplevel_list_v1") == 0) {
         bar->ext_list = wl_registry_bind(reg, name,
             &ext_foreign_toplevel_list_v1_interface, 1);
+    } else if (strcmp(iface, "xdg_wm_base") == 0) {
+        bar->xdg_wm_base = wl_registry_bind(reg, name,
+            &xdg_wm_base_interface, 1);
     }
 }
 
@@ -77,6 +81,11 @@ static const struct wl_registry_listener registry_listener = {
     .global        = registry_global,
     .global_remove = registry_global_remove,
 };
+
+static void xdg_wm_base_ping(void *data, struct xdg_wm_base *base, uint32_t serial) {
+    (void)data;
+    xdg_wm_base_pong(base, serial);
+}
 
 /* ------------------------------------------------------------------ */
 /* Seat: get pointer on capability                                      */
@@ -169,9 +178,12 @@ int main(void) {
     signal(SIGCHLD, SIG_IGN);  /* reap children automatically */
 
     memset(&g_bar, 0, sizeof(g_bar));
-    g_bar.shm_fd    = -1;
-    g_bar.ipc_sock  = -1;
-    g_bar.hover_hit = -1;
+    g_bar.shm_fd     = -1;
+    g_bar.ipc_sock   = -1;
+    g_bar.hover_hit  = -1;
+    g_bar.hover_type    = HIT_NONE;
+    g_bar.hover_index   = -1;
+    g_bar.menu_hover_row = -1;
     g_bar.height    = 32;
 
     /* Load config */
@@ -205,6 +217,14 @@ int main(void) {
     /* Seat (pointer) */
     if (g_bar.seat) {
         wl_seat_add_listener(g_bar.seat, &seat_listener, NULL);
+    }
+
+    /* xdg_wm_base ping */
+    if (g_bar.xdg_wm_base) {
+        static const struct xdg_wm_base_listener wm_base_listener = {
+            .ping = xdg_wm_base_ping,
+        };
+        xdg_wm_base_add_listener(g_bar.xdg_wm_base, &wm_base_listener, NULL);
     }
 
     /* Foreign toplevel listeners */
@@ -282,11 +302,9 @@ int main(void) {
             }
             if (tray_fd >= 0 && (pfds[1].revents & POLLIN))
                 bar_tray_dispatch();
+            bar_status_pulse_dispatch();
             timer_ms = ms_until_next_minute();
         }
-
-        /* Dispatch any pending pulse events */
-        bar_status_pulse_dispatch();
 
         /* Redraw if needed */
         if (g_bar.dirty && g_bar.configured)

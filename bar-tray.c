@@ -4,8 +4,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <time.h>
 
+#include <stdint.h>
 #include <dbus/dbus.h>
+#include <cairo/cairo.h>
+#include <pango/pangocairo.h>
+#include <wayland-client.h>
+
+#include "wlr-layer-shell-unstable-v1-client-protocol.h"
+#include "xdg-shell-client-protocol.h"
 
 #include "bar-tray.h"
 #include "bar-state.h"
@@ -331,8 +341,7 @@ int bar_tray_init(void) {
 
 void bar_tray_dispatch(void) {
     if (!g_conn) return;
-    while (dbus_connection_read_write_dispatch(g_conn, 0))
-        ;
+    dbus_connection_read_write_dispatch(g_conn, 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -355,12 +364,7 @@ const char *bar_tray_title(int idx) {
 /* Public: click                                                        */
 /* ------------------------------------------------------------------ */
 
-void bar_tray_click(int idx, int button, int x, int y) {
-    if (!g_conn || idx < 0 || idx >= g_item_n) return;
-
-    const char *method = (button == 1) ? "Activate" : "ContextMenu";
-    struct TrayItem *it = &g_items[idx];
-
+static void tray_send_method(struct TrayItem *it, const char *method, int x, int y) {
     DBusMessage *msg = dbus_message_new_method_call(
         it->service, it->obj_path, SNI_ITEM_IFACE, method);
     if (!msg) return;
@@ -372,11 +376,537 @@ void bar_tray_click(int idx, int button, int x, int y) {
         DBUS_TYPE_INT32, &iy,
         DBUS_TYPE_INVALID);
 
-    /* fire and forget */
     dbus_connection_send(g_conn, msg, NULL);
     dbus_connection_flush(g_conn);
     dbus_message_unref(msg);
-    LOG_INFO("tray: %s(%d,%d) → %s", method, x, y, it->service);
+    LOG_INFO("tray: %s(%d,%d) → %s %s", method, x, y, it->service, it->obj_path);
+}
+
+void bar_tray_click(int idx, int button, int x, int y) {
+    if (!g_conn || idx < 0 || idx >= g_item_n) return;
+    struct TrayItem *it = &g_items[idx];
+
+    if (button == 1) {
+        tray_send_method(it, "Activate", x, y);
+    } else {
+        /* Right click: open dbusmenu popup if available, else ContextMenu */
+        bar_tray_open_menu(idx, x, 0, g_bar.last_btn_serial);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* dbusmenu popup                                                       */
+/* ------------------------------------------------------------------ */
+
+#define MENU_ITEM_MAX  16
+#define MENU_PAD_X     14
+#define MENU_PAD_Y     6   /* vertical padding above/below text in each row */
+#define MENU_MIN_W     160
+#define MENU_SEP_H     9
+
+struct MenuItem {
+    int   id;
+    char  label[128];
+    bool  separator;
+    bool  enabled;
+};
+
+static struct MenuItem  g_menu_items[MENU_ITEM_MAX];
+static int              g_menu_item_n    = 0;
+static int              g_menu_hover     = -1;   /* hovered row */
+static int              g_menu_anchor_x  = 0;
+static int              g_menu_anchor_w  = 0;
+static uint32_t         g_menu_serial    = 0;
+static int              g_menu_tray_idx  = -1;
+
+static void menu_shm_create(int w, int h) {
+    struct BarState *bar = &g_bar;
+    int stride = w * 4;
+    int size   = stride * h;
+
+    char name[32];
+    snprintf(name, sizeof(name), "/maindeck-menu-%d", (int)getpid());
+    int fd = shm_open(name, O_RDWR | O_CREAT | O_TRUNC, 0600);
+    shm_unlink(name);
+    if (fd < 0) { LOG_WARN("menu: shm_open failed"); return; }
+    if (ftruncate(fd, size) < 0) { close(fd); return; }
+
+    void *data = mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (data == MAP_FAILED) { close(fd); return; }
+
+    struct wl_shm_pool *pool = wl_shm_create_pool(bar->shm, fd, size);
+    close(fd);
+
+    bar->menu_pool   = pool;
+    bar->menu_buf    = wl_shm_pool_create_buffer(pool, 0, w, h, stride,
+                           WL_SHM_FORMAT_ARGB8888);
+    bar->menu_data   = data;
+    bar->menu_fd     = -1;
+    bar->menu_width  = w;
+    bar->menu_height = h;
+    bar->menu_stride = stride;
+}
+
+/* Measure all items with Pango to get accurate row heights and max width.
+ * Fills g_menu_items[i].row_h (stored temporarily in label[127] trick — no,
+ * just use a parallel array). We store row heights in a static array. */
+static int g_menu_row_h[MENU_ITEM_MAX];  /* pixel height of each row */
+static int g_menu_text_h = 16;           /* single-line text height, measured once */
+
+static void menu_measure(void) {
+    /* Create a throw-away cairo/pango context to measure text */
+    cairo_surface_t *dummy = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+    cairo_t *cr = cairo_create(dummy);
+    PangoLayout *lay = pango_cairo_create_layout(cr);
+    PangoFontDescription *fd = pango_font_description_from_string("sans 10");
+    pango_layout_set_font_description(lay, fd);
+    pango_font_description_free(fd);
+    pango_layout_set_single_paragraph_mode(lay, TRUE);
+
+    /* measure one line height */
+    pango_layout_set_text(lay, "Ag", -1);
+    int tw, th;
+    pango_layout_get_pixel_size(lay, &tw, &th);
+    g_menu_text_h = th;
+
+    for (int i = 0; i < g_menu_item_n; i++) {
+        if (g_menu_items[i].separator) {
+            g_menu_row_h[i] = MENU_SEP_H;
+        } else {
+            g_menu_row_h[i] = g_menu_text_h + MENU_PAD_Y * 2;
+        }
+    }
+
+    g_object_unref(lay);
+    cairo_destroy(cr);
+    cairo_surface_destroy(dummy);
+}
+
+static int menu_calc_width(void) {
+    cairo_surface_t *dummy = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+    cairo_t *cr = cairo_create(dummy);
+    PangoLayout *lay = pango_cairo_create_layout(cr);
+    PangoFontDescription *fd = pango_font_description_from_string("sans 10");
+    pango_layout_set_font_description(lay, fd);
+    pango_font_description_free(fd);
+    pango_layout_set_single_paragraph_mode(lay, TRUE);
+
+    int max_w = MENU_MIN_W;
+    for (int i = 0; i < g_menu_item_n; i++) {
+        if (g_menu_items[i].separator) continue;
+        pango_layout_set_text(lay, g_menu_items[i].label, -1);
+        int tw, th; (void)th;
+        pango_layout_get_pixel_size(lay, &tw, &th);
+        int w = tw + MENU_PAD_X * 2;
+        if (w > max_w) max_w = w;
+    }
+
+    g_object_unref(lay);
+    cairo_destroy(cr);
+    cairo_surface_destroy(dummy);
+    return max_w;
+}
+
+static int menu_calc_height(void) {
+    int h = 8; /* 4px top + 4px bottom padding */
+    for (int i = 0; i < g_menu_item_n; i++)
+        h += g_menu_row_h[i];
+    return h;
+}
+
+static void menu_render(void) {
+    struct BarState *bar = &g_bar;
+    if (!bar->menu_data) return;
+
+    int w = bar->menu_width;
+    int h = bar->menu_height;
+
+    cairo_surface_t *cs = cairo_image_surface_create_for_data(
+        (unsigned char *)bar->menu_data,
+        CAIRO_FORMAT_ARGB32, w, h, bar->menu_stride);
+    cairo_t *cr = cairo_create(cs);
+
+    /* Background */
+    cairo_set_source_rgba(cr, 0.16, 0.16, 0.20, 0.97);
+    cairo_paint(cr);
+
+    /* Border */
+    cairo_set_source_rgba(cr, 0.40, 0.40, 0.50, 1.0);
+    cairo_set_line_width(cr, 1.0);
+    cairo_rectangle(cr, 0.5, 0.5, w - 1, h - 1);
+    cairo_stroke(cr);
+
+    PangoLayout *lay = pango_cairo_create_layout(cr);
+    PangoFontDescription *fd = pango_font_description_from_string("sans 10");
+    pango_layout_set_font_description(lay, fd);
+    pango_font_description_free(fd);
+    pango_layout_set_single_paragraph_mode(lay, TRUE);
+
+    int y = 4;
+    for (int i = 0; i < g_menu_item_n; i++) {
+        struct MenuItem *item = &g_menu_items[i];
+        int rh = g_menu_row_h[i];
+
+        if (item->separator) {
+            cairo_set_source_rgba(cr, 0.40, 0.40, 0.50, 0.8);
+            cairo_set_line_width(cr, 1.0);
+            cairo_move_to(cr, MENU_PAD_X, y + rh / 2.0);
+            cairo_line_to(cr, w - MENU_PAD_X, y + rh / 2.0);
+            cairo_stroke(cr);
+            y += rh;
+            continue;
+        }
+
+        bool hovered = (i == g_menu_hover) && item->enabled;
+        if (hovered) {
+            cairo_set_source_rgba(cr, 0.25, 0.40, 0.72, 1.0);
+            cairo_rectangle(cr, 2, y, w - 4, rh);
+            cairo_fill(cr);
+        }
+
+        if (item->enabled)
+            cairo_set_source_rgba(cr, 0.92, 0.92, 0.92, 1.0);
+        else
+            cairo_set_source_rgba(cr, 0.50, 0.50, 0.55, 1.0);
+
+        pango_layout_set_text(lay, item->label, -1);
+        cairo_move_to(cr, MENU_PAD_X, y + MENU_PAD_Y);
+        pango_cairo_show_layout(cr, lay);
+
+        y += rh;
+    }
+
+    g_object_unref(lay);
+    cairo_destroy(cr);
+    cairo_surface_finish(cs);
+    cairo_surface_destroy(cs);
+
+    wl_surface_attach(bar->menu_surface, bar->menu_buf, 0, 0);
+    wl_surface_damage_buffer(bar->menu_surface, 0, 0, w, h);
+    wl_surface_commit(bar->menu_surface);
+}
+
+/* Parse props a{sv} iter into a MenuItem */
+static void parse_item_props(DBusMessageIter *props_arr, struct MenuItem *mi) {
+    while (dbus_message_iter_get_arg_type(props_arr) == DBUS_TYPE_DICT_ENTRY) {
+        DBusMessageIter entry, val;
+        dbus_message_iter_recurse(props_arr, &entry);
+
+        const char *key = NULL;
+        dbus_message_iter_get_basic(&entry, &key);
+        dbus_message_iter_next(&entry);
+
+        if (dbus_message_iter_get_arg_type(&entry) == DBUS_TYPE_VARIANT) {
+            dbus_message_iter_recurse(&entry, &val);
+            int vt = dbus_message_iter_get_arg_type(&val);
+            if (key && strcmp(key, "label") == 0 && vt == DBUS_TYPE_STRING) {
+                const char *lbl = NULL;
+                dbus_message_iter_get_basic(&val, &lbl);
+                if (lbl) snprintf(mi->label, sizeof(mi->label), "%s", lbl);
+            } else if (key && strcmp(key, "type") == 0 && vt == DBUS_TYPE_STRING) {
+                const char *t = NULL;
+                dbus_message_iter_get_basic(&val, &t);
+                if (t && strcmp(t, "separator") == 0) mi->separator = true;
+            } else if (key && strcmp(key, "enabled") == 0 && vt == DBUS_TYPE_BOOLEAN) {
+                dbus_bool_t en = TRUE;
+                dbus_message_iter_get_basic(&val, &en);
+                mi->enabled = (bool)en;
+            }
+        }
+        dbus_message_iter_next(props_arr);
+    }
+}
+
+/* Parse one (ia{sv}av) struct from an iter into g_menu_items */
+static void parse_node(DBusMessageIter *node) {
+    /* id */
+    if (dbus_message_iter_get_arg_type(node) != DBUS_TYPE_INT32) return;
+    dbus_int32_t item_id = 0;
+    dbus_message_iter_get_basic(node, &item_id);
+    dbus_message_iter_next(node);
+
+    /* props a{sv} */
+    if (dbus_message_iter_get_arg_type(node) != DBUS_TYPE_ARRAY) return;
+
+    struct MenuItem mi;
+    memset(&mi, 0, sizeof(mi));
+    mi.id      = (int)item_id;
+    mi.enabled = true;
+
+    DBusMessageIter props;
+    dbus_message_iter_recurse(node, &props);
+    parse_item_props(&props, &mi);
+    dbus_message_iter_next(node);
+
+    /* Only add leaf items (not the root node id=0, no label) */
+    if (item_id != 0 && g_menu_item_n < MENU_ITEM_MAX) {
+        g_menu_items[g_menu_item_n++] = mi;
+    }
+}
+
+/* Parse dbusmenu GetLayout reply: out u revision, out (ia{sv}av) layout */
+static void parse_menu_layout(DBusMessage *reply) {
+    g_menu_item_n = 0;
+
+    DBusMessageIter top;
+    dbus_message_iter_init(reply, &top);
+
+    /* skip revision (uint32) */
+    if (dbus_message_iter_get_arg_type(&top) != DBUS_TYPE_UINT32) return;
+    dbus_message_iter_next(&top);
+
+    /* root node: (ia{sv}av) */
+    if (dbus_message_iter_get_arg_type(&top) != DBUS_TYPE_STRUCT) return;
+    DBusMessageIter root;
+    dbus_message_iter_recurse(&top, &root);
+
+    /* parse root node itself (id=0, skip it) then read children av */
+    /* id */
+    if (dbus_message_iter_get_arg_type(&root) != DBUS_TYPE_INT32) return;
+    dbus_message_iter_next(&root); /* skip root id */
+    /* props */
+    if (dbus_message_iter_get_arg_type(&root) != DBUS_TYPE_ARRAY) return;
+    dbus_message_iter_next(&root); /* skip root props */
+    /* children: av */
+    if (dbus_message_iter_get_arg_type(&root) != DBUS_TYPE_ARRAY) return;
+
+    DBusMessageIter children;
+    dbus_message_iter_recurse(&root, &children);
+
+    while (dbus_message_iter_get_arg_type(&children) == DBUS_TYPE_VARIANT) {
+        DBusMessageIter child_var;
+        dbus_message_iter_recurse(&children, &child_var);
+
+        if (dbus_message_iter_get_arg_type(&child_var) == DBUS_TYPE_STRUCT) {
+            DBusMessageIter child_node;
+            dbus_message_iter_recurse(&child_var, &child_node);
+            parse_node(&child_node);
+        }
+        dbus_message_iter_next(&children);
+    }
+
+    LOG_INFO("menu: parsed %d items", g_menu_item_n);
+}
+
+static void menu_popup_done(void *data, struct xdg_popup *popup) {
+    (void)data; (void)popup;
+    LOG_INFO("menu: popup_done");
+    bar_tray_menu_close();
+}
+
+static void menu_popup_configure(void *data, struct xdg_popup *popup,
+    int32_t x, int32_t y, int32_t w, int32_t h) {
+    (void)data; (void)popup; (void)x; (void)y; (void)w; (void)h;
+}
+
+static void menu_popup_repositioned(void *data, struct xdg_popup *popup, uint32_t token) {
+    (void)data; (void)popup; (void)token;
+}
+
+static const struct xdg_popup_listener menu_popup_listener = {
+    .configure     = menu_popup_configure,
+    .popup_done    = menu_popup_done,
+    .repositioned  = menu_popup_repositioned,
+};
+
+static void menu_xdg_surface_configure(void *data, struct xdg_surface *xdg_surf,
+    uint32_t serial) {
+    (void)data;
+    xdg_surface_ack_configure(xdg_surf, serial);
+    menu_render();
+}
+
+static const struct xdg_surface_listener menu_xdg_surface_listener = {
+    .configure = menu_xdg_surface_configure,
+};
+
+void bar_tray_open_menu(int idx, int icon_x, int icon_w, uint32_t serial) {
+    if (!g_conn || idx < 0 || idx >= g_item_n) return;
+    struct BarState *bar = &g_bar;
+    if (!bar->xdg_wm_base) {
+        LOG_WARN("menu: no xdg_wm_base");
+        return;
+    }
+
+    bar_tray_menu_close();
+
+    struct TrayItem *it = &g_items[idx];
+    g_menu_tray_idx  = idx;
+    g_menu_anchor_x  = icon_x;
+    g_menu_anchor_w  = icon_w > 0 ? icon_w : 22;
+    g_menu_serial    = serial;
+    g_menu_hover     = -1;
+    g_menu_item_n    = 0;
+
+    /* Build menu path: SNI obj_path + "/Menu" OR read the Menu property */
+    char menu_path[256];
+    snprintf(menu_path, sizeof(menu_path), "%s/Menu", it->obj_path);
+
+    /* GetLayout(parentId=0, recursionDepth=1, propertyNames=[]) */
+    DBusMessage *msg = dbus_message_new_method_call(
+        it->service, menu_path, "com.canonical.dbusmenu", "GetLayout");
+    if (!msg) return;
+
+    dbus_int32_t parent_id = 0, depth = 1;
+    DBusMessageIter args, arr;
+    dbus_message_iter_init_append(msg, &args);
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_INT32, &parent_id);
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_INT32, &depth);
+    dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY, "s", &arr);
+    dbus_message_iter_close_container(&args, &arr);
+
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(g_conn, msg, 2000, &err);
+    dbus_message_unref(msg);
+
+    if (!reply) {
+        LOG_WARN("menu: GetLayout failed: %s",
+                 dbus_error_is_set(&err) ? err.message : "no reply");
+        if (dbus_error_is_set(&err)) dbus_error_free(&err);
+        return;
+    }
+
+    parse_menu_layout(reply);
+    dbus_message_unref(reply);
+
+    if (g_menu_item_n == 0) {
+        LOG_WARN("menu: no items from GetLayout");
+        return;
+    }
+
+    menu_measure();
+    int mw = menu_calc_width();
+    int mh = menu_calc_height();
+
+    /* Create wl_surface for popup */
+    bar->menu_surface = wl_compositor_create_surface(bar->compositor);
+    bar->menu_xdg_surface = xdg_wm_base_get_xdg_surface(bar->xdg_wm_base, bar->menu_surface);
+    xdg_surface_add_listener(bar->menu_xdg_surface, &menu_xdg_surface_listener, NULL);
+
+    /* Positioner: anchor at icon position on the bar, grow upward */
+    struct xdg_positioner *pos = xdg_wm_base_create_positioner(bar->xdg_wm_base);
+    xdg_positioner_set_size(pos, mw, mh);
+    xdg_positioner_set_anchor_rect(pos, icon_x, 0, g_menu_anchor_w, bar->height);
+    xdg_positioner_set_anchor(pos, XDG_POSITIONER_ANCHOR_TOP_LEFT);
+    xdg_positioner_set_gravity(pos, XDG_POSITIONER_GRAVITY_TOP_LEFT);
+    xdg_positioner_set_constraint_adjustment(pos,
+        XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X |
+        XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y);
+
+    bar->menu_popup = xdg_surface_get_popup(bar->menu_xdg_surface, NULL, pos);
+    xdg_positioner_destroy(pos);
+    xdg_popup_add_listener(bar->menu_popup, &menu_popup_listener, NULL);
+
+    /* Attach popup to the layer surface */
+    zwlr_layer_surface_v1_get_popup(bar->layer_surface, bar->menu_popup);
+
+    /* Grab input focus */
+    xdg_popup_grab(bar->menu_popup, bar->seat, serial);
+
+    /* Allocate SHM buffer */
+    menu_shm_create(mw, mh);
+    bar->menu_open = true;
+
+    /* Commit so compositor sends configure */
+    wl_surface_commit(bar->menu_surface);
+    wl_display_flush(bar->display);
+
+    LOG_INFO("menu: opened for %s (%d items) %dx%d", it->service, g_menu_item_n, mw, mh);
+}
+
+int bar_tray_menu_row_at(int y) {
+    int cy = 4;
+    for (int i = 0; i < g_menu_item_n; i++) {
+        int rh = g_menu_row_h[i];
+        if (!g_menu_items[i].separator && y >= cy && y < cy + rh)
+            return i;
+        cy += rh;
+    }
+    return -1;
+}
+
+void bar_tray_menu_activate(int row, uint32_t time) {
+    if (row < 0 || row >= g_menu_item_n) return;
+    struct MenuItem *mi = &g_menu_items[row];
+    if (mi->separator || !mi->enabled) return;
+
+    if (g_menu_tray_idx < 0 || g_menu_tray_idx >= g_item_n) return;
+    struct TrayItem *it = &g_items[g_menu_tray_idx];
+
+    char menu_path[256];
+    snprintf(menu_path, sizeof(menu_path), "%s/Menu", it->obj_path);
+
+    DBusMessage *msg = dbus_message_new_method_call(
+        it->service, menu_path, "com.canonical.dbusmenu", "Event");
+    if (!msg) return;
+
+    dbus_int32_t item_id = (dbus_int32_t)mi->id;
+    const char *event_id = "clicked";
+    dbus_uint32_t timestamp = (dbus_uint32_t)time;
+
+    DBusMessageIter args;
+    dbus_message_iter_init_append(msg, &args);
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_INT32, &item_id);
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &event_id);
+    /* data: variant with empty string */
+    DBusMessageIter var;
+    dbus_message_iter_open_container(&args, DBUS_TYPE_VARIANT, "s", &var);
+    const char *empty = "";
+    dbus_message_iter_append_basic(&var, DBUS_TYPE_STRING, &empty);
+    dbus_message_iter_close_container(&args, &var);
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &timestamp);
+
+    dbus_connection_send(g_conn, msg, NULL);
+    dbus_connection_flush(g_conn);
+    dbus_message_unref(msg);
+
+    LOG_INFO("menu: Event(%d, clicked) → %s", mi->id, mi->label);
+    bar_tray_menu_close();
+}
+
+void bar_tray_menu_rerend(void) {
+    struct BarState *bar = &g_bar;
+    if (!bar->menu_open || !bar->menu_data) return;
+    g_menu_hover = bar->menu_hover_row;
+    menu_render();
+}
+
+void bar_tray_menu_close(void) {
+    struct BarState *bar = &g_bar;
+    if (!bar->menu_open) return;
+
+    if (bar->menu_popup) {
+        xdg_popup_destroy(bar->menu_popup);
+        bar->menu_popup = NULL;
+    }
+    if (bar->menu_xdg_surface) {
+        xdg_surface_destroy(bar->menu_xdg_surface);
+        bar->menu_xdg_surface = NULL;
+    }
+    if (bar->menu_buf) {
+        wl_buffer_destroy(bar->menu_buf);
+        bar->menu_buf = NULL;
+    }
+    if (bar->menu_pool) {
+        wl_shm_pool_destroy(bar->menu_pool);
+        bar->menu_pool = NULL;
+    }
+    if (bar->menu_data) {
+        int size = bar->menu_stride * bar->menu_height;
+        munmap(bar->menu_data, (size_t)size);
+        bar->menu_data = NULL;
+    }
+    if (bar->menu_surface) {
+        wl_surface_destroy(bar->menu_surface);
+        bar->menu_surface = NULL;
+    }
+
+    bar->menu_open      = false;
+    bar->menu_tray_idx  = -1;
+    g_menu_tray_idx     = -1;
+    g_menu_item_n       = 0;
+    LOG_INFO("menu: closed");
 }
 
 /* ------------------------------------------------------------------ */

@@ -17,6 +17,8 @@ void bar_quicklaunch_exec(int idx) {
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
+        const char *home = getenv("HOME");
+        if (home) chdir(home);
         execlp("/bin/sh", "sh", "-c", cmd, NULL);
         _exit(127);
     }

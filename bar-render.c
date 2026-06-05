@@ -121,9 +121,7 @@ static int draw_quicklaunch(cairo_t *cr, PangoLayout *lay, int h) {
 
     for (int i = 0; i < bar->config.ql_count; i++) {
         struct BarQLButton *btn = &bar->config.ql[i];
-        bool hovered = (bar->hit_n > 0) && (bar->hover_hit >= 0)
-            && (bar->hit_areas[bar->hover_hit].type == HIT_QL)
-            && (bar->hit_areas[bar->hover_hit].index == i);
+        bool hovered = (bar->hover_type == HIT_QL) && (bar->hover_index == i);
 
         /* Calculate button width */
         char *glyph = bar_icon_nf_glyph(btn->icon);
@@ -141,15 +139,22 @@ static int draw_quicklaunch(cairo_t *cr, PangoLayout *lay, int h) {
         if (btn->width >= 2)
             btn_w = btn_w * btn->width;
 
-        /* Button background: custom color if set, hover otherwise */
+        /* Button background: custom color if set, flat hover highlight otherwise */
         {
             double r, g, b, a;
             bool has_bg = parse_hex_color(btn->bg, &r, &g, &b, &a);
-            if (has_bg || hovered) {
-                if (has_bg)
-                    cairo_set_source_rgba(cr, r, g, b, hovered ? (a * 1.15 > 1.0 ? 1.0 : a * 1.15) : a);
-                else
-                    set_col(cr, COL_BTN_HOVER);
+            if (has_bg) {
+                cairo_set_source_rgba(cr, r, g, b, a);
+                rounded_rect(cr, x, btn_y, btn_w, btn_h, BTN_RADIUS);
+                cairo_fill(cr);
+                if (hovered) {
+                    /* white overlay for brightness boost */
+                    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.18);
+                    rounded_rect(cr, x, btn_y, btn_w, btn_h, BTN_RADIUS);
+                    cairo_fill(cr);
+                }
+            } else if (hovered) {
+                cairo_set_source_rgba(cr, 0.30, 0.30, 0.38, 0.55);
                 rounded_rect(cr, x, btn_y, btn_w, btn_h, BTN_RADIUS);
                 cairo_fill(cr);
             }
@@ -179,9 +184,10 @@ static int draw_quicklaunch(cairo_t *cr, PangoLayout *lay, int h) {
         }
 
         /* Register hit area (before resetting hit_n) */
-        push_hit(HIT_QL, i, x, btn_y, btn_w, btn_h);
+        push_hit(HIT_QL, i, x, 0, btn_w, h);
 
-        x += btn_w + 2;
+        x += btn_w + 4;
+        if (i == 0) x += 10; /* extra gap after start button */
     }
 
     return x; /* next x position */
@@ -209,9 +215,7 @@ static void draw_taskbar(cairo_t *cr, PangoLayout *lay, int x_start, int x_end, 
     for (int i = 0; i < n; i++) {
         struct BarToplevel *tl = &bar->toplevels[i];
 
-        bool hovered = (bar->hover_hit >= 0) && (bar->hit_n > 0)
-            && (bar->hit_areas[bar->hover_hit].type == HIT_TASKBAR)
-            && (bar->hit_areas[bar->hover_hit].index == i);
+        bool hovered = (bar->hover_type == HIT_TASKBAR) && (bar->hover_index == i);
 
         /* Always: gradient fill + 1px border (3D glass effect) */
         {
@@ -265,7 +269,7 @@ static void draw_taskbar(cairo_t *cr, PangoLayout *lay, int x_start, int x_end, 
                 text_x, btn_y, text_w, btn_h);
         }
 
-        push_hit(HIT_TASKBAR, i, x, btn_y, btn_w - 2, btn_h);
+        push_hit(HIT_TASKBAR, i, x, 0, btn_w - 2, h);
         x += btn_w;
     }
 }
@@ -281,8 +285,17 @@ static int draw_tray(cairo_t *cr, int h, int x_end) {
     int pad  = 4;
     int btn_y = (h - sz) / 2;
 
+    struct BarState *bar = &g_bar;
+    int btn_h = h - 4;
+    int btn_y2 = 2;
     for (int i = n - 1; i >= 0; i--) {
         x -= sz + pad;
+        bool hovered = (bar->hover_type == HIT_TRAY) && (bar->hover_index == i);
+        if (hovered) {
+            cairo_set_source_rgba(cr, 0.30, 0.30, 0.38, 0.55);
+            rounded_rect(cr, x - 2, btn_y2, sz + 4, btn_h, BTN_RADIUS);
+            cairo_fill(cr);
+        }
         cairo_surface_t *icon = bar_tray_icon(i);
         bar_icon_draw(cr, icon, x, btn_y, sz);
         push_hit(HIT_TRAY, i, x - 2, 0, sz + 4, h);
@@ -291,52 +304,179 @@ static int draw_tray(cairo_t *cr, int h, int x_end) {
     return x;
 }
 
+/* Draw a battery icon via Cairo. cx,cy = center, w x h = bounding box */
+static void draw_battery_icon(cairo_t *cr, double cx, double cy,
+                               int level, bool charging) {
+    double bw = 14.0, bh = 9.0;
+    double bx = cx - bw / 2.0, by = cy - bh / 2.0;
+    double tip_w = 3.0, tip_h = 4.0;
+
+    /* Color: green ≥75, yellow ≥50, orange ≥25, red <25 */
+    double r, g, b;
+    if (charging)          { r=0.30; g=0.80; b=0.40; }
+    else if (level >= 75)  { r=0.30; g=0.85; b=0.35; }
+    else if (level >= 50)  { r=0.85; g=0.80; b=0.20; }
+    else if (level >= 25)  { r=0.95; g=0.55; b=0.10; }
+    else                   { r=0.90; g=0.20; b=0.20; }
+
+    /* Outline */
+    cairo_set_source_rgba(cr, 0.70, 0.70, 0.70, 0.9);
+    cairo_set_line_width(cr, 1.0);
+    cairo_rectangle(cr, bx, by, bw, bh);
+    cairo_stroke(cr);
+
+    /* Terminal nub on right */
+    cairo_rectangle(cr, bx + bw, by + (bh - tip_h) / 2.0, tip_w, tip_h);
+    cairo_fill(cr);
+
+    /* Fill bar (inset 1.5px) */
+    double fill_w = (bw - 3.0) * (level > 100 ? 1.0 : level / 100.0);
+    if (fill_w > 0) {
+        cairo_set_source_rgba(cr, r, g, b, 0.95);
+        cairo_rectangle(cr, bx + 1.5, by + 1.5, fill_w, bh - 3.0);
+        cairo_fill(cr);
+    }
+
+    /* Charging bolt */
+    if (charging) {
+        cairo_set_source_rgba(cr, 1.0, 1.0, 0.6, 1.0);
+        cairo_set_line_width(cr, 1.2);
+        cairo_move_to(cr, cx + 1.5, by + 1.0);
+        cairo_line_to(cr, cx - 1.5, cy);
+        cairo_line_to(cr, cx + 1.0, cy);
+        cairo_line_to(cr, cx - 1.5, by + bh - 1.0);
+        cairo_stroke(cr);
+    }
+}
+
+/* Draw a speaker/volume icon via Cairo */
+static void draw_volume_icon(cairo_t *cr, double cx, double cy, int vol, bool muted) {
+    double sx = cx - 7.0, sy = cy;
+    double spk_w = 5.0, spk_h = 7.0;
+
+    cairo_set_line_width(cr, 1.2);
+
+    if (muted) {
+        cairo_set_source_rgba(cr, 0.65, 0.65, 0.65, 0.9);
+    } else {
+        cairo_set_source_rgba(cr, 0.92, 0.92, 0.92, 1.0);
+    }
+
+    /* Speaker body (trapezoid) */
+    cairo_move_to(cr, sx,            sy - 2.0);
+    cairo_line_to(cr, sx + spk_w,    sy - spk_h / 2.0);
+    cairo_line_to(cr, sx + spk_w,    sy + spk_h / 2.0);
+    cairo_line_to(cr, sx,            sy + 2.0);
+    cairo_close_path(cr);
+    cairo_fill(cr);
+
+    if (muted) {
+        /* X mark */
+        cairo_set_source_rgba(cr, 0.90, 0.25, 0.25, 1.0);
+        cairo_set_line_width(cr, 1.4);
+        double mx = sx + spk_w + 2.5;
+        cairo_move_to(cr, mx,       sy - 2.5);
+        cairo_line_to(cr, mx + 4.0, sy + 2.5);
+        cairo_move_to(cr, mx + 4.0, sy - 2.5);
+        cairo_line_to(cr, mx,       sy + 2.5);
+        cairo_stroke(cr);
+    } else {
+        cairo_set_source_rgba(cr, 0.92, 0.92, 0.92, 1.0);
+        cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+        double ax = sx + spk_w + 2.5;
+        if (vol > 0) {
+            /* small arc */
+            cairo_arc(cr, ax - 0.5, sy, 3.0, -M_PI * 0.45, M_PI * 0.45);
+            cairo_stroke(cr);
+        }
+        if (vol >= 50) {
+            /* medium arc */
+            cairo_arc(cr, ax - 0.5, sy, 5.5, -M_PI * 0.45, M_PI * 0.45);
+            cairo_stroke(cr);
+        }
+    }
+}
+
 static int draw_status(cairo_t *cr, PangoLayout *lay, int h, int x_end) {
     struct BarState *bar = &g_bar;
     int x = x_end;
     int btn_h = h - 4;
     int btn_y = 2;
+    int icon_slot = ICON_SIZE + BTN_PAD * 2; /* fixed-width slot for icon modules */
 
     for (int i = bar->config.status_n - 1; i >= 0; i--) {
         const char *mod = bar->config.status[i];
-        const char *text = NULL;
+        bool hovered = (bar->hover_type == HIT_STATUS) && (bar->hover_index == i);
 
-        if (strcmp(mod, "clock") == 0)   text = bar->clock_text;
-        else if (strcmp(mod, "volume") == 0)  text = bar->vol_text;
-        else if (strcmp(mod, "battery") == 0) text = bar->bat_text;
-        else if (strcmp(mod, "power") == 0)   text = "";
+        if (strcmp(mod, "power") == 0) {
+            int pw = 36;
+            x -= pw + 2;
+            if (hovered) {
+                cairo_set_source_rgba(cr, 0.80, 0.15, 0.15, 0.25);
+                rounded_rect(cr, x, btn_y, pw, btn_h, BTN_RADIUS);
+                cairo_fill(cr);
+            }
+            pango_layout_set_text(lay, "⏻", -1);
+            PangoFontDescription *fd_p = pango_font_description_from_string("sans bold 18");
+            pango_layout_set_font_description(lay, fd_p);
+            pango_font_description_free(fd_p);
+            int tw, th;
+            pango_layout_get_pixel_size(lay, &tw, &th);
+            cairo_set_source_rgba(cr, 1.0, 0.35, 0.35, 1.0);
+            cairo_move_to(cr, x + (pw - tw) / 2.0, btn_y + (btn_h - th) / 2.0);
+            pango_cairo_show_layout(cr, lay);
+            PangoFontDescription *fd_n = pango_font_description_from_string(bar->config.font);
+            pango_layout_set_font_description(lay, fd_n);
+            pango_font_description_free(fd_n);
+            push_hit(HIT_STATUS, i, x, 0, pw, h);
 
-        if (!text) continue;
+        } else if (strcmp(mod, "battery") == 0 && bar->bat_level >= 0) {
+            x -= icon_slot + 2;
+            if (hovered) {
+                cairo_set_source_rgba(cr, 0.30, 0.30, 0.38, 0.55);
+                rounded_rect(cr, x, btn_y, icon_slot, btn_h, BTN_RADIUS);
+                cairo_fill(cr);
+            }
+            double cx = x + icon_slot / 2.0;
+            double cy = btn_y + btn_h / 2.0;
+            draw_battery_icon(cr, cx, cy, bar->bat_level, bar->bat_charging);
+            push_hit(HIT_STATUS, i, x, 0, icon_slot, h);
 
-        bool is_power = (strcmp(mod, "power") == 0);
-        const char *display_text = is_power ? "" : text;
-        if (is_power) display_text = "⏻";
+        } else if (strcmp(mod, "volume") == 0 && bar->vol_text[0]) {
+            x -= icon_slot + 2;
+            if (hovered) {
+                cairo_set_source_rgba(cr, 0.30, 0.30, 0.38, 0.55);
+                rounded_rect(cr, x, btn_y, icon_slot, btn_h, BTN_RADIUS);
+                cairo_fill(cr);
+            }
+            bool muted = (strstr(bar->vol_text, "🔇") != NULL ||
+                          strcmp(bar->vol_text, "🔈") == 0);
+            /* parse vol level from text like "🔊 75%" or "🔉 40%" */
+            int vol = 0;
+            const char *pct = strrchr(bar->vol_text, ' ');
+            if (pct) vol = atoi(pct + 1);
+            else if (!muted) vol = 50;
+            double cx = x + icon_slot / 2.0;
+            double cy = btn_y + btn_h / 2.0;
+            draw_volume_icon(cr, cx, cy, vol, muted);
+            push_hit(HIT_STATUS, i, x, 0, icon_slot, h);
 
-        pango_layout_set_text(lay, display_text, -1);
-        int tw, th; (void)th;
-        pango_layout_get_pixel_size(lay, &tw, &th);
-        int btn_w = tw + BTN_PAD * 2;
-        if (btn_w < 32) btn_w = 32;
-
-        x -= btn_w + 2;
-
-        bool hovered = (bar->hover_hit >= 0) && (bar->hit_n > 0)
-            && (bar->hit_areas[bar->hover_hit].type == HIT_STATUS)
-            && (bar->hit_areas[bar->hover_hit].index == i);
-
-        if (hovered || is_power) {
-            set_col(cr, COL_BTN_HOVER);
-            rounded_rect(cr, x, btn_y, btn_w, btn_h, BTN_RADIUS);
-            cairo_fill(cr);
+        } else if (strcmp(mod, "clock") == 0 && bar->clock_text[0]) {
+            pango_layout_set_text(lay, bar->clock_text, -1);
+            int tw, th; (void)th;
+            pango_layout_get_pixel_size(lay, &tw, &th);
+            int btn_w = tw + BTN_PAD * 2;
+            x -= btn_w + 2;
+            if (hovered) {
+                cairo_set_source_rgba(cr, 0.30, 0.30, 0.38, 0.55);
+                rounded_rect(cr, x, btn_y, btn_w, btn_h, BTN_RADIUS);
+                cairo_fill(cr);
+            }
+            set_col(cr, COL_TEXT);
+            cairo_move_to(cr, x + (btn_w - tw) / 2.0, btn_y + (btn_h - th) / 2.0);
+            pango_cairo_show_layout(cr, lay);
+            push_hit(HIT_STATUS, i, x, 0, btn_w, h);
         }
-
-        set_col(cr, COL_TEXT);
-        pango_layout_set_text(lay, display_text, -1);
-        pango_layout_get_pixel_size(lay, &tw, &th);
-        cairo_move_to(cr, x + (btn_w - tw) / 2.0, btn_y + (btn_h - th) / 2.0);
-        pango_cairo_show_layout(cr, lay);
-
-        push_hit(HIT_STATUS, i, x, btn_y, btn_w, btn_h);
     }
     return x;
 }

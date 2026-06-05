@@ -10,7 +10,6 @@
 #include "bar-taskbar.h"
 #include "bar-quicklaunch.h"
 #include "bar-tray.h"
-#include "bar-render.h"
 #include "bar-log.h"
 
 static int hit_test(double x, double y) {
@@ -28,22 +27,37 @@ static void ptr_enter(void *data, struct wl_pointer *ptr,
     uint32_t serial, struct wl_surface *surf,
     wl_fixed_t fx, wl_fixed_t fy)
 {
-    (void)data; (void)ptr; (void)serial; (void)surf;
+    (void)data; (void)ptr; (void)serial;
     struct BarState *bar = &g_bar;
-    bar->ptr_x      = wl_fixed_to_double(fx);
-    bar->ptr_y      = wl_fixed_to_double(fy);
-    bar->ptr_inside = true;
+    if (bar->menu_open && surf == bar->menu_surface) {
+        bar->ptr_on_menu  = true;
+        bar->menu_ptr_x   = wl_fixed_to_double(fx);
+        bar->menu_ptr_y   = wl_fixed_to_double(fy);
+    } else {
+        bar->ptr_on_menu  = false;
+        bar->ptr_x        = wl_fixed_to_double(fx);
+        bar->ptr_y        = wl_fixed_to_double(fy);
+        bar->ptr_inside   = true;
+    }
 }
 
 static void ptr_leave(void *data, struct wl_pointer *ptr,
     uint32_t serial, struct wl_surface *surf)
 {
-    (void)data; (void)ptr; (void)serial; (void)surf;
+    (void)data; (void)ptr; (void)serial;
     struct BarState *bar = &g_bar;
-    bar->ptr_inside = false;
-    if (bar->hover_hit != -1) {
-        bar->hover_hit = -1;
-        bar->dirty = true;
+    if (bar->menu_open && surf == bar->menu_surface) {
+        bar->ptr_on_menu    = false;
+        bar->menu_hover_row = -1;
+        bar_tray_menu_rerend();
+    } else {
+        bar->ptr_inside  = false;
+        if (bar->hover_hit != -1) {
+            bar->hover_hit   = -1;
+            bar->hover_type  = HIT_NONE;
+            bar->hover_index = -1;
+            bar->dirty = true;
+        }
     }
 }
 
@@ -52,12 +66,31 @@ static void ptr_motion(void *data, struct wl_pointer *ptr,
 {
     (void)data; (void)ptr; (void)time;
     struct BarState *bar = &g_bar;
+
+    if (bar->ptr_on_menu) {
+        bar->menu_ptr_x = wl_fixed_to_double(fx);
+        bar->menu_ptr_y = wl_fixed_to_double(fy);
+        int row = bar_tray_menu_row_at((int)bar->menu_ptr_y);
+        if (row != bar->menu_hover_row) {
+            bar->menu_hover_row = row;
+            bar_tray_menu_rerend();
+        }
+        return;
+    }
+
     bar->ptr_x = wl_fixed_to_double(fx);
     bar->ptr_y = wl_fixed_to_double(fy);
 
     int hit = hit_test(bar->ptr_x, bar->ptr_y);
     if (hit != bar->hover_hit) {
         bar->hover_hit = hit;
+        if (hit >= 0 && hit < bar->hit_n) {
+            bar->hover_type  = bar->hit_areas[hit].type;
+            bar->hover_index = bar->hit_areas[hit].index;
+        } else {
+            bar->hover_type  = HIT_NONE;
+            bar->hover_index = -1;
+        }
         bar->dirty = true;
     }
 }
@@ -65,11 +98,25 @@ static void ptr_motion(void *data, struct wl_pointer *ptr,
 static void ptr_button(void *data, struct wl_pointer *ptr,
     uint32_t serial, uint32_t time, uint32_t button, uint32_t state)
 {
-    (void)data; (void)ptr; (void)serial; (void)time;
+    (void)data; (void)ptr;
     if (state != WL_POINTER_BUTTON_STATE_PRESSED) return;
 
     struct BarState *bar = &g_bar;
+    bar->last_btn_serial = serial;
+    bar->last_btn_time   = time;
+
+    /* Click on menu surface */
+    if (bar->ptr_on_menu && bar->menu_open) {
+        if (button == 0x110) {
+            int row = bar_tray_menu_row_at((int)bar->menu_ptr_y);
+            bar_tray_menu_activate(row, time);
+        }
+        return;
+    }
+
     int hit = hit_test(bar->ptr_x, bar->ptr_y);
+    LOG_INFO("input: button=0x%x ptr=(%.0f,%.0f) hit=%d hit_n=%d",
+             button, bar->ptr_x, bar->ptr_y, hit, bar->hit_n);
     if (hit < 0 || hit >= bar->hit_n) return;
 
     struct HitArea *ha = &bar->hit_areas[hit];
@@ -94,15 +141,26 @@ static void ptr_button(void *data, struct wl_pointer *ptr,
             pid_t pid = fork();
             if (pid == 0) {
                 setsid();
+                const char *home = getenv("HOME");
+                if (home) chdir(home);
                 execlp("/bin/sh", "sh", "-c", cfg->power_exec, NULL);
+                _exit(127);
+            }
+        } else if (left && strcmp(mod, "volume") == 0) {
+            pid_t pid = fork();
+            if (pid == 0) {
+                setsid();
+                const char *home = getenv("HOME");
+                if (home) chdir(home);
+                execlp("pavucontrol", "pavucontrol", NULL);
                 _exit(127);
             }
         }
         break;
     }
     case HIT_TRAY:
-        bar_tray_click(ha->index, left ? 1 : 3,
-                       (int)bar->ptr_x, (int)bar->ptr_y);
+        /* Any click opens the dbusmenu if available, else Activate */
+        bar_tray_open_menu(ha->index, ha->x, ha->w, serial);
         break;
     case HIT_NONE:
         break;
