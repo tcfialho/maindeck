@@ -1,8 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <stdbool.h>
 
-#include <gdk-pixbuf/gdk-pixbuf.h>
+#include <librsvg/rsvg.h>
 #include <cairo/cairo.h>
 
 #include "bar-icons.h"
@@ -119,47 +121,81 @@ static int find_icon_path(const char *icon_name, int size, char *path_out, size_
 }
 
 /* ------------------------------------------------------------------ */
-/* gdk-pixbuf → cairo_surface_t                                        */
+/* Native SVG/PNG to cairo_surface_t                                 */
 /* ------------------------------------------------------------------ */
 
-static cairo_surface_t *pixbuf_to_cairo(const char *path, int size) {
-    GError     *err  = NULL;
-    GdkPixbuf  *pb   = gdk_pixbuf_new_from_file_at_scale(path, size, size, TRUE, &err);
-    if (!pb) {
-        if (err) { g_error_free(err); }
-        return NULL;
-    }
+static cairo_surface_t *load_icon_to_cairo_surface(const char *path, int size) {
+    cairo_surface_t *surf = NULL;
+    size_t len = strlen(path);
 
-    int w = gdk_pixbuf_get_width(pb);
-    int h = gdk_pixbuf_get_height(pb);
-    int rs = gdk_pixbuf_get_rowstride(pb);
-    int nc = gdk_pixbuf_get_n_channels(pb);
-    guchar *pixels = gdk_pixbuf_get_pixels(pb);
-    gboolean has_alpha = gdk_pixbuf_get_has_alpha(pb);
-
-    cairo_surface_t *surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
-    cairo_surface_flush(surf);
-    unsigned char *data = cairo_image_surface_get_data(surf);
-    int crs = cairo_image_surface_get_stride(surf);
-
-    for (int y = 0; y < h; y++) {
-        for (int x = 0; x < w; x++) {
-            guchar *src = pixels + y * rs + x * nc;
-            unsigned char r = src[0];
-            unsigned char g = src[1];
-            unsigned char b = src[2];
-            unsigned char a = has_alpha ? src[3] : 255;
-            /* Premultiply alpha for CAIRO_FORMAT_ARGB32 */
-            unsigned char *dst = data + y * crs + x * 4;
-            dst[0] = (unsigned char)((b * a) / 255);
-            dst[1] = (unsigned char)((g * a) / 255);
-            dst[2] = (unsigned char)((r * a) / 255);
-            dst[3] = a;
+    bool is_svg = false;
+    if (len > 4) {
+        if (strcasecmp(path + len - 4, ".svg") == 0) {
+            is_svg = true;
         }
     }
 
-    cairo_surface_mark_dirty(surf);
-    g_object_unref(pb);
+    if (is_svg) {
+        GError *error = NULL;
+        RsvgHandle *handle = rsvg_handle_new_from_file(path, &error);
+        if (!handle) {
+            if (error) {
+                LOG_WARN("icons: librsvg failed to load %s: %s", path, error->message);
+                g_error_free(error);
+            }
+            return NULL;
+        }
+
+        surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
+        cairo_t *cr = cairo_create(surf);
+
+        RsvgRectangle viewport = {
+            .x = 0.0,
+            .y = 0.0,
+            .width = (double)size,
+            .height = (double)size
+        };
+
+        gboolean ok = rsvg_handle_render_document(handle, cr, &viewport, &error);
+        if (!ok) {
+            if (error) {
+                LOG_WARN("icons: librsvg failed to render %s: %s", path, error->message);
+                g_error_free(error);
+            }
+            cairo_destroy(cr);
+            cairo_surface_destroy(surf);
+            g_object_unref(handle);
+            return NULL;
+        }
+
+        cairo_destroy(cr);
+        g_object_unref(handle);
+    } else {
+        cairo_surface_t *img = cairo_image_surface_create_from_png(path);
+        if (cairo_surface_status(img) != CAIRO_STATUS_SUCCESS) {
+            cairo_surface_destroy(img);
+            return NULL;
+        }
+
+        int w = cairo_image_surface_get_width(img);
+        int h = cairo_image_surface_get_height(img);
+
+        if (w == size && h == size) {
+            return img;
+        }
+
+        surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
+        cairo_t *cr = cairo_create(surf);
+        
+        cairo_scale(cr, (double)size / w, (double)size / h);
+        cairo_set_source_surface(cr, img, 0, 0);
+        cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BEST);
+        cairo_paint(cr);
+        
+        cairo_destroy(cr);
+        cairo_surface_destroy(img);
+    }
+
     return surf;
 }
 
@@ -195,13 +231,13 @@ cairo_surface_t *bar_icon_get(const char *name, int size) {
     cairo_surface_t *surf = NULL;
 
     if (find_icon_path(icon_name, size, path, sizeof(path)) == 0) {
-        surf = pixbuf_to_cairo(path, size);
+        surf = load_icon_to_cairo_surface(path, size);
         if (!surf) {
             /* Try as app_id → .desktop lookup */
             char desktop_icon[128] = "";
             if (read_desktop_icon(name, desktop_icon, sizeof(desktop_icon)) == 0) {
                 if (find_icon_path(desktop_icon, size, path, sizeof(path)) == 0)
-                    surf = pixbuf_to_cairo(path, size);
+                    surf = load_icon_to_cairo_surface(path, size);
             }
         }
     } else {
@@ -209,7 +245,7 @@ cairo_surface_t *bar_icon_get(const char *name, int size) {
         char desktop_icon[128] = "";
         if (read_desktop_icon(name, desktop_icon, sizeof(desktop_icon)) == 0) {
             if (find_icon_path(desktop_icon, size, path, sizeof(path)) == 0)
-                surf = pixbuf_to_cairo(path, size);
+                surf = load_icon_to_cairo_surface(path, size);
         }
     }
 
@@ -224,14 +260,14 @@ cairo_surface_t *bar_icon_get(const char *name, int size) {
 
         /* Try original case first */
         if (find_icon_path(short_name, size, path, sizeof(path)) == 0)
-            surf = pixbuf_to_cairo(path, size);
+            surf = load_icon_to_cairo_surface(path, size);
 
         /* lowercase */
         for (char *p = short_name; *p; p++)
             if (*p >= 'A' && *p <= 'Z') *p += 32;
 
         if (!surf && find_icon_path(short_name, size, path, sizeof(path)) == 0)
-            surf = pixbuf_to_cairo(path, size);
+            surf = load_icon_to_cairo_surface(path, size);
 
         /* strip trailing -state suffix */
         if (!surf) {
@@ -240,7 +276,7 @@ cairo_surface_t *bar_icon_get(const char *name, int size) {
                 char base[128];
                 snprintf(base, sizeof(base), "%.*s", (int)(dash - short_name), short_name);
                 if (find_icon_path(base, size, path, sizeof(path)) == 0)
-                    surf = pixbuf_to_cairo(path, size);
+                    surf = load_icon_to_cairo_surface(path, size);
             }
         }
     }

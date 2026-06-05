@@ -79,9 +79,7 @@ executable(
 
 cairo_dep  = dependency('cairo')
 pangocairo = dependency('pangocairo')
-gdk_pixbuf = dependency('gdk-pixbuf-2.0')
-librsvg    = dependency('librsvg-2.0', required: false)
-gio        = dependency('gio-2.0')
+librsvg_dep = dependency('librsvg-2.0')
 dbus       = dependency('dbus-1')
 
 bar_protocols = wl_mod.scan_xml(
@@ -108,9 +106,7 @@ executable(
     wayland_client,
     cairo_dep,
     pangocairo,
-    gdk_pixbuf,
-    librsvg,
-    gio,
+    librsvg_dep,
     dbus,
   ],
   include_directories: include_directories('vendor'),
