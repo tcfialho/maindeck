@@ -12,7 +12,7 @@
 
 #define DEFAULT_WIDTH 1280
 #define DEFAULT_HEIGHT 720
-#define BORDER_WIDTH 3
+#define BORDER_WIDTH 2
 
 uint32_t chan(uint8_t value) {
 	return (uint32_t)value * 0x01010101u;
@@ -435,9 +435,9 @@ void window_render_layout(struct Window *window, size_t index) {
 	river_node_v1_place_top(window->node);
 
 	if (index == wm.target_index) {
-		// ALVO (focado): borda amarela.
+		// ALVO (focado): borda azul (alinhado com o sublinhado ativo da barra).
 		river_window_v1_set_borders(window->obj, all_edges(), BORDER_WIDTH,
-			chan(245), chan(197), chan(66), 0xffffffffu);
+			chan(76), chan(145), chan(255), 0xffffffffu);
 	} else {
 		// Sem foco (MAIN ou DECK): borda transparente. Mantemos a MESMA largura
 		// (BORDER_WIDTH) com alpha 0 em vez de largura 0, pois a geometria das
