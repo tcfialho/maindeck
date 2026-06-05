@@ -226,33 +226,22 @@ action runs `bash …/niri/fuzzel-toggle.sh`, and the Waybar start button's
 `on-click` points at the same path. Do not move or delete it assuming the
 directory name implies it is unused by River.
 
-Current script (final form):
+Current script (final form, post-Phase-2 — no proxy):
 
 ```sh
 #!/usr/bin/env bash
 set -eu
 
-# Under River, Waybar runs on the proxy display (maindeck-0). If this script is
-# invoked from a Waybar button it inherits WAYLAND_DISPLAY=maindeck-0, and a
-# fuzzel mapped there does NOT get keyboard focus (the proxy doesn't grant
-# layer-shell focus) — so you can't type and "click away to dismiss" never
-# fires. Always launch fuzzel on the real River display (the one maindeck-wm
-# uses). Derived, not hardcoded, since the socket name can vary. If maindeck-wm
-# isn't running, keep the inherited WAYLAND_DISPLAY.
-wm_pid="$(pgrep -x maindeck-wm | head -n1 || true)"
-if [ -n "${wm_pid:-}" ] && [ -r "/proc/${wm_pid}/environ" ]; then
-    wm_disp="$(tr '\0' '\n' < "/proc/${wm_pid}/environ" | sed -n 's/^WAYLAND_DISPLAY=//p' | head -n1 || true)"
-    if [ -n "${wm_disp:-}" ]; then
-        export WAYLAND_DISPLAY="$wm_disp"
-    fi
-fi
-
+# Launches fuzzel on the inherited WAYLAND_DISPLAY. Works in both environments:
+# niri (keyd F19 → niri spawn) inherits niri's display; River (maindeck-bar
+# quick-launch) inherits the bar's display = the real River display (wayland-1).
+# No proxy anymore, so no display rewrite is needed — fuzzel gets keyboard focus
+# directly.
 if pgrep -x fuzzel >/dev/null 2>&1; then
     pkill -x fuzzel
 else
     # --launch-prefix runs the picked app through maindeck-launch (loading
-    # feedback). Absolute path: it resolves via PATH at fuzzel's exec time, and
-    # the bar-launched fuzzel is a child of waybar whose PATH we don't control.
+    # feedback). Absolute path: resolves via PATH at fuzzel's exec time.
     exec fuzzel \
         --anchor=bottom-left --x-margin=2 --y-margin=34 \
         --width=36 --lines=12 --layer=overlay --border-radius=2 \
@@ -264,20 +253,34 @@ Behavior notes:
 
 - It is a **toggle**: Win (or the start button) opens it; pressing again closes
   it.
-- It does **not** pass `--keyboard-focus`, so fuzzel uses its default
-  (`exclusive`) and opens already focused — you can type immediately. **This
-  only holds if fuzzel runs on the real River display**, which is why the script
-  forces `WAYLAND_DISPLAY` to the WM's display (see the comment above): a fuzzel
-  on `maindeck-0` gets no keyboard focus, so launching it from the Waybar button
-  used to open an unfocused, undismissable launcher.
-- "Click outside to dismiss":
-  - Fuzzel's own `exit-on-keyboard-focus-loss=yes` (in `fuzzel.ini`) closes it
-    when keyboard focus moves away — this is the primary mechanism and now works
-    from both the Win key and the Waybar button (both run on the WM's display).
-  - `maindeck-wm` also closes it when focus moves to a normal window (a backup
-    via `close_launcher`/`pkill -x fuzzel`).
-  - On the empty desktop (no windows) there is no window to click, so void-clicks
-    do not dismiss it in River — use `Esc` or Win again.
+- Since Phase 2 removed the proxy, fuzzel always launches on `wayland-1` (the
+  real River display), so it opens focused and you can type immediately.
+- **"Click anywhere to dismiss" — solved via `fuzzel.ini`, not via bar code.**
+  The launcher closes on:
+  - **Clicking anywhere on the bar** (clock, empty area, any icon).
+  - **Clicking a normal window**, or pressing **`Esc`** / Win again.
+
+  The mechanism is two `fuzzel.ini` keys together:
+
+  ```ini
+  keyboard-focus=on-demand
+  exit-on-keyboard-focus-loss=yes
+  ```
+
+  With `on-demand`, fuzzel does not hold an exclusive keyboard grab, so River
+  is free to move keyboard focus when you click elsewhere — including onto the
+  bar layer-surface. That focus move triggers `exit-on-keyboard-focus-loss`
+  and fuzzel closes. **Empirically verified on River:** despite the generic
+  wlr-layer-shell rule that a `keyboard_interactivity=NONE` surface (the bar)
+  can't take keyboard focus, River clears fuzzel's focus on a bar click and the
+  dismiss fires. fuzzel still opens focused and typable, and does not self-close
+  on open.
+
+  > History/footgun: do **not** "fix" this by putting dismiss logic in
+  > `maindeck-bar` (a generic bar shouldn't know about fuzzel), nor by reading
+  > `/dev/input` (keylogger surface), nor by leaving fuzzel on the default
+  > `exclusive` focus (then a bar click can't dismiss it). The one-line
+  > `on-demand` config is the clean fix.
 
 ## Launch feedback (`maindeck-launch`)
 
