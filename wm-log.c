@@ -18,7 +18,13 @@ void log_init(void) {
 	snprintf(path, sizeof(path), "%s/.local/state/maindeck/maindeck.log", home);
 	log_file = fopen(path, "a");
 	if (log_file != NULL) {
-		setvbuf(log_file, NULL, _IOFBF, BUFSIZ);
+		// Line-buffered em debug (testes podem ler o log em tempo real);
+		// fully-buffered em produção (menos syscalls no caminho quente).
+		if (md_verbose()) {
+			setvbuf(log_file, NULL, _IOLBF, BUFSIZ);
+		} else {
+			setvbuf(log_file, NULL, _IOFBF, BUFSIZ);
+		}
 	}
 }
 

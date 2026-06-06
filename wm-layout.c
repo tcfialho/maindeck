@@ -283,11 +283,18 @@ void log_state(void) {
 	size_t i = 0;
 	struct Window *w;
 	wl_list_for_each(w, &wm.windows, link) {
-		const char *role = i == 0 ? "MAIN" : (i == 1 ? "DECK" : "hidden");
-		const char *target = (i == wm.target_index) ? " [ALVO]" : "";
-		LOG_STATE("  [%zu] %s \"%s\" app_id=%s%s", i, role,
-			w->title ? w->title : "", w->app_id ? w->app_id : "", target);
-		i++;
+		if (w->parent != NULL) {
+			LOG_STATE("  [CHILD] \"%s\" parent=\"%s\" app_id=%s",
+				w->title ? w->title : "",
+				w->parent->title ? w->parent->title : "",
+				w->app_id ? w->app_id : "");
+		} else {
+			const char *role = i == 0 ? "MAIN" : (i == 1 ? "DECK" : "hidden");
+			const char *target = (i == wm.target_index) ? " [ALVO]" : "";
+			LOG_STATE("  [%zu] %s \"%s\" app_id=%s%s", i, role,
+				w->title ? w->title : "", w->app_id ? w->app_id : "", target);
+			i++;
+		}
 	}
 }
 
@@ -387,6 +394,7 @@ void window_manage_layout(struct Window *window, size_t index) {
 	// Transient windows / dialogs: compositor/client owns position/dimensions.
 	if (window->parent != NULL) {
 		river_window_v1_use_ssd(window->obj);
+		river_window_v1_set_tiled(window->obj, RIVER_WINDOW_V1_EDGES_NONE);
 		window->new = false;
 		return;
 	}
@@ -443,10 +451,26 @@ void window_render_layout(struct Window *window, size_t index) {
 		window_apply_borders(window, BORDER_NONE);
 		return;
 	}
-	// Transient windows / dialogs: float natively above parent, no WM borders.
+	// Transient windows / dialogs: float centered above parent, no WM borders.
 	if (window->parent != NULL) {
-		window_set_visible(window, true);
-		wm_place_top(window->node);
+		bool visible = window_is_really_visible(window);
+		window_set_visible(window, visible);
+		if (visible) {
+			// Center the child over the parent's layout box.
+			struct Window *root = window->parent;
+			int depth = 0;
+			while (root->parent != NULL && ++depth < 32) root = root->parent;
+			int32_t pidx = window_index(root);
+			if (pidx >= 0) {
+				struct Box pbox = layout_box_for_index((size_t)pidx);
+				int32_t cw = window->width  > 0 ? window->width  : pbox.width  / 2;
+				int32_t ch = window->height > 0 ? window->height : pbox.height / 2;
+				int32_t cx = pbox.x + (pbox.width  - cw) / 2;
+				int32_t cy = pbox.y + (pbox.height - ch) / 2;
+				river_node_v1_set_position(window->node, cx, cy);
+			}
+			wm_place_top(window->node);
+		}
 		window_apply_borders(window, BORDER_NONE);
 		return;
 	}
@@ -483,4 +507,19 @@ void wm_place_top(struct river_node_v1 *node) {
 		wm.last_placed_top_node = node;
 	}
 }
+
+bool window_is_really_visible(struct Window *w) {
+	int depth = 0;
+	while (w != NULL) {
+		if (w->minimized) return false;
+		if (w->parent == NULL) break;
+		if (++depth > 32) return false;   // guarda anti-ciclo / aninhamento patológico
+		w = w->parent;
+	}
+	if (w == NULL) return false;
+	int32_t idx = window_index(w);
+	if (idx < 0) return false;
+	return window_is_visible_index((size_t)idx);
+}
+
 

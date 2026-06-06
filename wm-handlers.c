@@ -106,8 +106,13 @@ static void window_handle_closed(void *data, struct river_window_v1 *obj) {
 
 static void window_handle_dimensions(void *data, struct river_window_v1 *obj, int32_t width, int32_t height) {
 	struct Window *window = data;
-	window->width = width;
-	window->height = height;
+	if (window->width != width || window->height != height) {
+		window->width = width;
+		window->height = height;
+		if (window->parent != NULL) {
+			river_window_manager_v1_manage_dirty(window_manager_v1);
+		}
+	}
 }
 
 static void window_handle_app_id(void *data, struct river_window_v1 *obj, const char *app_id) {
@@ -126,10 +131,29 @@ static void window_handle_parent(void *data, struct river_window_v1 *obj, struct
 	(void)obj;
 	struct Window *new_parent = parent ? river_window_v1_get_user_data(parent) : NULL;
 	if (new_parent == window) new_parent = NULL; // Prevent self-parenting
-	if (window->parent != new_parent) {
-		window->parent = new_parent;
-		river_window_manager_v1_manage_dirty(window_manager_v1);
+	if (window->parent == new_parent) return;    // No change
+
+	bool was_child = (window->parent != NULL);
+	bool becomes_child = (new_parent != NULL);
+
+	window->parent = new_parent;
+
+	if (!was_child && becomes_child) {
+		// Was a root window occupying a slot in the list; move to tail so it
+		// no longer shifts other root windows' indices.
+		move_last(window);
+		LOG_EVENT("window became child: \"%s\" parent=\"%s\"",
+		          window->title ? window->title : "",
+		          new_parent->title ? new_parent->title : "");
+	} else if (was_child && !becomes_child) {
+		// Was a child, now becomes an independent root window: insert as new MAIN.
+		wl_list_remove(&window->link);
+		md_insert_new_window(window);
+		LOG_EVENT("window became root (parent cleared): \"%s\"",
+		          window->title ? window->title : "");
 	}
+
+	river_window_manager_v1_manage_dirty(window_manager_v1);
 }
 static void window_handle_decoration_hint(void *data, struct river_window_v1 *obj, uint32_t hint) {}
 static void window_handle_pointer_move_requested(void *data, struct river_window_v1 *obj, struct river_seat_v1 *river_seat) {}
@@ -185,6 +209,10 @@ static void window_handle_identifier(void *data, struct river_window_v1 *obj, co
 		return;
 	}
 	window_set_string(&window->identifier, identifier);
+	LOG_EVENT("window identifier: title=\"%s\" app_id=\"%s\" id=%s",
+	          window->title ? window->title : "",
+	          window->app_id ? window->app_id : "",
+	          identifier);
 }
 
 static const struct river_window_v1_listener river_window_listener = {

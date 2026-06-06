@@ -31,4 +31,5 @@ void window_render_layout(struct Window *window, size_t index);
 void move_first(struct Window *window);
 void move_last(struct Window *window);
 void wm_place_top(struct river_node_v1 *node);
+bool window_is_really_visible(struct Window *w);
 #endif /* WM_LAYOUT_H */
