@@ -27,7 +27,7 @@ size_t window_count(void) {
 	size_t count = 0;
 	struct Window *window;
 	wl_list_for_each(window, &wm.windows, link) {
-		count++;
+		if (window->parent == NULL) count++;
 	}
 	return count;
 }
@@ -36,7 +36,7 @@ size_t visible_window_count(void) {
 	size_t count = 0;
 	struct Window *window;
 	wl_list_for_each(window, &wm.windows, link) {
-		if (!window->minimized) count++;
+		if (!window->minimized && window->parent == NULL) count++;
 	}
 	return count;
 }
@@ -53,6 +53,7 @@ struct Window *window_at(size_t index) {
 	size_t i = 0;
 	struct Window *window;
 	wl_list_for_each(window, &wm.windows, link) {
+		if (window->parent != NULL) continue;
 		if (i == index) return window;
 		i++;
 	}
@@ -63,6 +64,7 @@ int32_t window_index(struct Window *needle) {
 	int32_t i = 0;
 	struct Window *window;
 	wl_list_for_each(window, &wm.windows, link) {
+		if (window->parent != NULL) continue;
 		if (window == needle) return i;
 		i++;
 	}
@@ -362,6 +364,13 @@ void md_insert_new_window(struct Window *window) {
 }
 
 void window_manage_layout(struct Window *window, size_t index) {
+	// Transient windows / dialogs: compositor/client owns position/dimensions.
+	if (window->parent != NULL) {
+		river_window_v1_use_ssd(window->obj);
+		window->new = false;
+		return;
+	}
+
 	// Client-requested fullscreen: the compositor owns position/dimensions, so
 	// we must NOT propose_dimensions/set_tiled. Issue fullscreen()/exit on the
 	// transition edge (both are manage-sequence-only requests).
@@ -414,6 +423,13 @@ void window_render_layout(struct Window *window, size_t index) {
 		river_window_v1_set_borders(window->obj, RIVER_WINDOW_V1_EDGES_NONE, 0, 0, 0, 0, 0);
 		return;
 	}
+	// Transient windows / dialogs: float natively above parent, no WM borders.
+	if (window->parent != NULL) {
+		river_window_v1_show(window->obj);
+		wm_place_top(window->node);
+		river_window_v1_set_borders(window->obj, RIVER_WINDOW_V1_EDGES_NONE, 0, 0, 0, 0, 0);
+		return;
+	}
 	// Fullscreen window: compositor owns geometry; just show it, no borders,
 	// node on top (so it's the top fullscreen window — anything above it in the
 	// render order, like waybar, keeps drawing; see place_top handling).
@@ -447,4 +463,13 @@ void wm_place_top(struct river_node_v1 *node) {
 		river_node_v1_place_top(node);
 		wm.last_placed_top_node = node;
 	}
+}
+
+struct Window *window_by_obj(struct river_window_v1 *obj) {
+	if (!obj) return NULL;
+	struct Window *w;
+	wl_list_for_each(w, &wm.windows, link) {
+		if (w->obj == obj) return w;
+	}
+	return NULL;
 }

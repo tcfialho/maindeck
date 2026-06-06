@@ -121,7 +121,16 @@ static void window_handle_title(void *data, struct river_window_v1 *obj, const c
 }
 
 static void window_handle_dimensions_hint(void *data, struct river_window_v1 *obj, int32_t min_width, int32_t min_height, int32_t max_width, int32_t max_height) {}
-static void window_handle_parent(void *data, struct river_window_v1 *obj, struct river_window_v1 *parent) {}
+static void window_handle_parent(void *data, struct river_window_v1 *obj, struct river_window_v1 *parent) {
+	struct Window *window = data;
+	(void)obj;
+	struct Window *new_parent = window_by_obj(parent);
+	if (new_parent == window) new_parent = NULL; // Prevent self-parenting
+	if (window->parent != new_parent) {
+		window->parent = new_parent;
+		river_window_manager_v1_manage_dirty(window_manager_v1);
+	}
+}
 static void window_handle_decoration_hint(void *data, struct river_window_v1 *obj, uint32_t hint) {}
 static void window_handle_pointer_move_requested(void *data, struct river_window_v1 *obj, struct river_seat_v1 *river_seat) {}
 static void window_handle_pointer_resize_requested(void *data, struct river_window_v1 *obj, struct river_seat_v1 *river_seat, uint32_t edges) {}
@@ -207,6 +216,10 @@ void window_maybe_destroy(struct Window *window) {
 	}
 	if (wm.last_placed_top_node == window->node) {
 		wm.last_placed_top_node = NULL;
+	}
+	struct Window *w;
+	wl_list_for_each(w, &wm.windows, link) {
+		if (w->parent == window) w->parent = NULL;
 	}
 	river_window_v1_destroy(window->obj);
 	wl_list_remove(&window->link);
@@ -313,6 +326,10 @@ static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *o
 	if (layout_changed) {
 		size_t index = 0;
 		wl_list_for_each(window, &wm.windows, link) {
+			if (window->parent != NULL) {
+				window_manage_layout(window, 0);
+				continue;
+			}
 			window_manage_layout(window, index);
 			index++;
 		}
@@ -344,6 +361,10 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 		size_t index = 0;
 		struct Window *window;
 		wl_list_for_each(window, &wm.windows, link) {
+			if (window->parent != NULL) {
+				window_render_layout(window, 0);
+				continue;
+			}
 			window_render_layout(window, index);
 			index++;
 		}

@@ -28,6 +28,7 @@ struct Output {
 struct Window {
 	struct river_window_v1 *obj;
 	struct river_node_v1 *node;
+	struct Window *parent;
 
 	bool new;
 	bool closed;
