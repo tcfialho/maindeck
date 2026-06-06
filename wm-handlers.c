@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -115,14 +116,53 @@ static void window_handle_dimensions(void *data, struct river_window_v1 *obj, in
 	}
 }
 
+static void resolve_steam_implicit_parent(void) {
+	struct Window *steam_main = NULL;
+	struct Window *w;
+	wl_list_for_each(w, &wm.windows, link) {
+		if (w->app_id != NULL && strcasecmp(w->app_id, "steam") == 0) {
+			if (w->title != NULL &&
+			    (strcmp(w->title, "Steam") == 0 || strcmp(w->title, "Steam Big Picture") == 0)) {
+				steam_main = w;
+				break;
+			}
+		}
+	}
+	if (steam_main != NULL) {
+		struct Window *child, *child_tmp;
+		bool changed = false;
+		wl_list_for_each_safe(child, child_tmp, &wm.windows, link) {
+			if (child != steam_main &&
+			    child->parent == NULL &&
+			    child->app_id != NULL &&
+			    strcasecmp(child->app_id, "steam") == 0 &&
+			    child->title != NULL &&
+			    strcmp(child->title, "Steam") != 0 &&
+			    strcmp(child->title, "Steam Big Picture") != 0) {
+				
+				child->parent = steam_main;
+				move_last(child);
+				changed = true;
+				LOG_EVENT("window became child (implicit): \"%s\" parent=\"Steam\"",
+				          child->title ? child->title : "");
+			}
+		}
+		if (changed) {
+			river_window_manager_v1_manage_dirty(window_manager_v1);
+		}
+	}
+}
+
 static void window_handle_app_id(void *data, struct river_window_v1 *obj, const char *app_id) {
 	struct Window *window = data;
 	window_set_string(&window->app_id, app_id);
+	resolve_steam_implicit_parent();
 }
 
 static void window_handle_title(void *data, struct river_window_v1 *obj, const char *title) {
 	struct Window *window = data;
 	window_set_string(&window->title, title);
+	resolve_steam_implicit_parent();
 }
 
 static void window_handle_dimensions_hint(void *data, struct river_window_v1 *obj, int32_t min_width, int32_t min_height, int32_t max_width, int32_t max_height) {}
@@ -343,6 +383,9 @@ static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *o
 		river_layer_shell_output_v1_set_default(primary->shell_output);
 		primary->default_set = true;
 	}
+
+	// Implicit transient parenting heuristic for Steam windows (Xwayland issue).
+	resolve_steam_implicit_parent();
 
 	static uint64_t last_layout_sig = 0;
 	static bool have_last_sig = false;

@@ -309,4 +309,32 @@ else
     fail "Fechar pai não limpou as filhas corretamente"
 fi
 
+# ══════════════════════════════════════════
+echo ""; echo "Cenário 14: Heurística Steam (Xwayland / bidirecional)"
+offset=$(get_log_offset)
+send "open Steam none steam"
+sleep 0.5
+send "open AboutSteam none steam"
+if assert_child_of "AboutSteam" "Steam" "$offset"; then
+    ok "Caso A: AboutSteam adotada como filha de Steam"
+else
+    fail "Caso A: AboutSteam não foi adotada como filha"
+fi
+
+offset2=$(get_log_offset)
+send "open FriendsList none steam"
+sleep 0.5
+send "close Steam"
+sleep 0.5
+send "open Steam none steam"
+if assert_child_of "FriendsList" "Steam" "$offset2" && assert_child_of "AboutSteam" "Steam" "$offset2"; then
+    ok "Caso B: FriendsList adotada retroativamente ao abrir Steam"
+else
+    fail "Caso B: Falha na adoção retroativa da filha"
+fi
+
+send "close Steam"
+send "close AboutSteam"
+send "close FriendsList"
+
 exec 8>&-

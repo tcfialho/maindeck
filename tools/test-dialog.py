@@ -46,7 +46,6 @@ class TestApp:
         parent.set_wmclass("test-parent", "test-parent")
         parent.set_role("TESTPARENT")
         parent.set_default_size(400, 300)
-        parent.connect("destroy", Gtk.main_quit)
         
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         lbl = Gtk.Label(label="Eu sou a JANELA PAI (TESTPARENT)")
@@ -56,15 +55,17 @@ class TestApp:
         parent.show_all()
         self.windows["TESTPARENT"] = parent
 
-    def open_window(self, name, parent_name=None):
+    def open_window(self, name, parent_name=None, class_name=None):
         if name in self.windows:
             print(f"WINDOW_ALREADY_OPEN {name}")
             return
             
         is_child = parent_name is not None and parent_name in self.windows
         
+        cname = class_name if class_name is not None else name.lower()
+        GLib.set_prgname(cname)
         window = Gtk.Window(title=name)
-        window.set_wmclass(name.lower(), name.lower())
+        window.set_wmclass(cname, cname)
         window.set_role(name)
         window.set_modal(False)
         
@@ -92,9 +93,14 @@ class TestApp:
     def close_window(self, name):
         if name in self.windows:
             w = self.windows.pop(name)
+            # Destruir recursivamente as janelas que têm esta janela como pai transiente
+            to_close = []
+            for k, v in self.windows.items():
+                if v.get_transient_for() == w:
+                    to_close.append(k)
+            for k in to_close:
+                self.close_window(k)
             w.destroy()
-            if name == "TESTPARENT":
-                Gtk.main_quit()
 
     def fullscreen_window(self, name):
         if name in self.windows:
@@ -147,7 +153,10 @@ def read_stdin(source, condition):
         action = parts[0]
         if action == "open" and len(parts) >= 2:
             parent = parts[2] if len(parts) >= 3 else None
-            app.open_window(parts[1], parent)
+            if parent == "none" or parent == "NULL":
+                parent = None
+            class_name = parts[3] if len(parts) >= 4 else None
+            app.open_window(parts[1], parent, class_name)
         elif action == "close" and len(parts) >= 2:
             app.close_window(parts[1])
         elif action == "fullscreen" and len(parts) >= 2:
