@@ -22,9 +22,11 @@ RTDIR="$(mktemp -d /tmp/maindeck-test.XXXXXX)"
 ln -s "$REAL_PARENT_SOCK" "$RTDIR/wayland-parent"
 export XDG_RUNTIME_DIR="$RTDIR"
 export MAINDECK_LOG="debug"
+export MAINDECK_LOG_PATH="$RTDIR/maindeck.log"
+export MAINDECK_IMPLICIT_PARENT_APP_ID="steam"
+export MAINDECK_IMPLICIT_PARENT_TITLES="Steam|Steam Big Picture"
 
-WM_LOG="$HOME/.local/state/maindeck/maindeck.log"
-mkdir -p "$(dirname "$WM_LOG")"
+WM_LOG="$MAINDECK_LOG_PATH"
 > "$WM_LOG"
 
 # Salvar PID do WM num arquivo
@@ -148,6 +150,27 @@ assert_child_of() {
     fi
 }
 
+window_id_for_title() {
+    local title="$1"
+    python3 - "$WM_LOG" "$title" <<'PY'
+import re
+import sys
+
+log_path, title = sys.argv[1], sys.argv[2]
+last_id = None
+with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+    for line in f:
+        m = re.search(r"window identifier:.* id=([!-~]+)", line)
+        if m:
+            last_id = m.group(1)
+            continue
+        if last_id and "[STATE]" in line and f'"{title}"' in line:
+            print(last_id)
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 # --- App de teste com FIFO ---
 FIFO="$RTDIR/dialog.fifo"; mkfifo "$FIFO"
 WAYLAND_DISPLAY="$NESTED" XDG_RUNTIME_DIR="$RTDIR" python3 "$DIALOG_PY" < "$FIFO" 2>/dev/null &
@@ -182,7 +205,7 @@ else fail "TESTPARENT deveria ser hidden"; fi
 # ══════════════════════════════════════════
 echo ""; echo "Cenário 4: Activate IPC traz pai de volta"
 offset=$(get_log_offset)
-PAI_ID=$(grep -oP 'window identifier:.*?id=\K[A-Za-z0-9]+' "$WM_LOG" | head -1 || true)
+PAI_ID=$(window_id_for_title "TESTPARENT" || true)
 if [ -z "$PAI_ID" ]; then
     fail "Não achou identifier no log"
 else
@@ -310,7 +333,7 @@ else
 fi
 
 # ══════════════════════════════════════════
-echo ""; echo "Cenário 14: Heurística Steam (Xwayland / bidirecional)"
+echo ""; echo "Cenário 14: Regra implicit-parent opt-in (Steam/Xwayland)"
 offset=$(get_log_offset)
 send "open Steam none steam"
 sleep 0.5

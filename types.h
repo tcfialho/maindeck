@@ -38,6 +38,7 @@ struct Window {
 
 	bool new;
 	bool closed;
+	bool transient_size_proposed;
 	int32_t width, height;
 	char *app_id;
 	char *title;

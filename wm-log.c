@@ -10,12 +10,17 @@
 static FILE *log_file;
 
 void log_init(void) {
-	const char *home = getenv("HOME");
-	if (home == NULL) home = "/tmp";
 	char path[512];
-	snprintf(path, sizeof(path), "%s/.local/state/maindeck", home);
-	mkdir(path, 0755);
-	snprintf(path, sizeof(path), "%s/.local/state/maindeck/maindeck.log", home);
+	const char *override = getenv("MAINDECK_LOG_PATH");
+	if (override != NULL && override[0] != '\0') {
+		snprintf(path, sizeof(path), "%s", override);
+	} else {
+		const char *home = getenv("HOME");
+		if (home == NULL) home = "/tmp";
+		snprintf(path, sizeof(path), "%s/.local/state/maindeck", home);
+		mkdir(path, 0755);
+		snprintf(path, sizeof(path), "%s/.local/state/maindeck/maindeck.log", home);
+	}
 	log_file = fopen(path, "a");
 	if (log_file != NULL) {
 		// Line-buffered em debug (testes podem ler o log em tempo real);
@@ -78,4 +83,3 @@ void md_log(const char *level, const char *fmt, ...) {
 		fflush(out);
 	}
 }
-

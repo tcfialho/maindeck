@@ -116,35 +116,82 @@ static void window_handle_dimensions(void *data, struct river_window_v1 *obj, in
 	}
 }
 
-static void resolve_steam_implicit_parent(void) {
-	struct Window *steam_main = NULL;
+struct ImplicitParentRule {
+	bool loaded;
+	bool enabled;
+	char app_id[128];
+	char parent_titles[512]; // '|' separated exact titles
+};
+
+static struct ImplicitParentRule implicit_parent_rule(void) {
+	static struct ImplicitParentRule rule;
+	if (!rule.loaded) {
+		const char *app_id = getenv("MAINDECK_IMPLICIT_PARENT_APP_ID");
+		const char *titles = getenv("MAINDECK_IMPLICIT_PARENT_TITLES");
+		if (app_id != NULL && app_id[0] != '\0' && titles != NULL && titles[0] != '\0') {
+			snprintf(rule.app_id, sizeof(rule.app_id), "%s", app_id);
+			snprintf(rule.parent_titles, sizeof(rule.parent_titles), "%s", titles);
+			rule.enabled = true;
+		}
+		rule.loaded = true;
+	}
+	return rule;
+}
+
+static bool implicit_parent_app_matches(const char *app_id) {
+	struct ImplicitParentRule rule = implicit_parent_rule();
+	return rule.enabled && app_id != NULL && strcasecmp(app_id, rule.app_id) == 0;
+}
+
+static bool implicit_parent_title_matches(const char *title) {
+	if (title == NULL) return false;
+	struct ImplicitParentRule rule = implicit_parent_rule();
+	if (!rule.enabled) return false;
+
+	const char *start = rule.parent_titles;
+	while (*start != '\0') {
+		const char *end = strchr(start, '|');
+		size_t len = end ? (size_t)(end - start) : strlen(start);
+		if (strlen(title) == len && strncmp(title, start, len) == 0) {
+			return true;
+		}
+		if (end == NULL) break;
+		start = end + 1;
+	}
+	return false;
+}
+
+static void maybe_apply_implicit_parenting(void) {
+	struct ImplicitParentRule rule = implicit_parent_rule();
+	if (!rule.enabled) return;
+
+	struct Window *implicit_parent = NULL;
 	struct Window *w;
 	wl_list_for_each(w, &wm.windows, link) {
-		if (w->app_id != NULL && strcasecmp(w->app_id, "steam") == 0) {
-			if (w->title != NULL &&
-			    (strcmp(w->title, "Steam") == 0 || strcmp(w->title, "Steam Big Picture") == 0)) {
-				steam_main = w;
-				break;
-			}
+		if (w->parent == NULL &&
+		    implicit_parent_app_matches(w->app_id) &&
+		    implicit_parent_title_matches(w->title)) {
+			implicit_parent = w;
+			break;
 		}
 	}
-	if (steam_main != NULL) {
+	if (implicit_parent != NULL) {
 		struct Window *child, *child_tmp;
 		bool changed = false;
 		wl_list_for_each_safe(child, child_tmp, &wm.windows, link) {
-			if (child != steam_main &&
+			if (child != implicit_parent &&
 			    child->parent == NULL &&
-			    child->app_id != NULL &&
-			    strcasecmp(child->app_id, "steam") == 0 &&
+			    implicit_parent_app_matches(child->app_id) &&
 			    child->title != NULL &&
-			    strcmp(child->title, "Steam") != 0 &&
-			    strcmp(child->title, "Steam Big Picture") != 0) {
-				
-				child->parent = steam_main;
+			    !implicit_parent_title_matches(child->title)) {
+				child->parent = implicit_parent;
+				child->transient_size_proposed = false;
 				move_last(child);
 				changed = true;
-				LOG_EVENT("window became child (implicit): \"%s\" parent=\"Steam\"",
-				          child->title ? child->title : "");
+				LOG_EVENT("window became child (implicit): \"%s\" parent=\"%s\" app_id=%s",
+				          child->title ? child->title : "",
+				          implicit_parent->title ? implicit_parent->title : "",
+				          child->app_id ? child->app_id : "");
 			}
 		}
 		if (changed) {
@@ -153,16 +200,24 @@ static void resolve_steam_implicit_parent(void) {
 	}
 }
 
+static void maybe_apply_implicit_parenting_for(struct Window *window, bool title_signal_is_relevant) {
+	if (window->closed || window->parent != NULL || !implicit_parent_app_matches(window->app_id)) return;
+	if (!title_signal_is_relevant && !implicit_parent_title_matches(window->title)) return;
+	maybe_apply_implicit_parenting();
+}
+
 static void window_handle_app_id(void *data, struct river_window_v1 *obj, const char *app_id) {
 	struct Window *window = data;
 	window_set_string(&window->app_id, app_id);
-	resolve_steam_implicit_parent();
+	maybe_apply_implicit_parenting_for(window, true);
 }
 
 static void window_handle_title(void *data, struct river_window_v1 *obj, const char *title) {
 	struct Window *window = data;
+	bool had_title = window->title != NULL && window->title[0] != '\0';
 	window_set_string(&window->title, title);
-	resolve_steam_implicit_parent();
+	bool title_signal_is_relevant = !had_title || implicit_parent_title_matches(window->title);
+	maybe_apply_implicit_parenting_for(window, title_signal_is_relevant);
 }
 
 static void window_handle_dimensions_hint(void *data, struct river_window_v1 *obj, int32_t min_width, int32_t min_height, int32_t max_width, int32_t max_height) {}
@@ -177,6 +232,7 @@ static void window_handle_parent(void *data, struct river_window_v1 *obj, struct
 	bool becomes_child = (new_parent != NULL);
 
 	window->parent = new_parent;
+	window->transient_size_proposed = false;
 
 	if (!was_child && becomes_child) {
 		// Was a root window occupying a slot in the list; move to tail so it
@@ -287,7 +343,10 @@ void window_maybe_destroy(struct Window *window) {
 	}
 	struct Window *w;
 	wl_list_for_each(w, &wm.windows, link) {
-		if (w->parent == window) w->parent = NULL;
+		if (w->parent == window) {
+			w->parent = NULL;
+			w->transient_size_proposed = false;
+		}
 	}
 	river_window_v1_destroy(window->obj);
 	wl_list_remove(&window->link);
@@ -324,6 +383,10 @@ static uint64_t compute_layout_signature(void) {
 		SIG_MIX(w->fullscreen);
 		SIG_MIX(w->minimized);
 		SIG_MIX((uintptr_t)w->parent);
+		if (w->parent != NULL) {
+			SIG_MIX((uint32_t)w->width);
+			SIG_MIX((uint32_t)w->height);
+		}
 	}
 	SIG_MIX(parentless_count);
 
@@ -384,9 +447,6 @@ static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *o
 		primary->default_set = true;
 	}
 
-	// Implicit transient parenting heuristic for Steam windows (Xwayland issue).
-	resolve_steam_implicit_parent();
-
 	static uint64_t last_layout_sig = 0;
 	static bool have_last_sig = false;
 	uint64_t sig = compute_layout_signature();
@@ -441,6 +501,11 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 		}
 		if (target_window() != NULL) {
 			wm_place_top(target_window()->node);
+		}
+		wl_list_for_each(window, &wm.windows, link) {
+			if (window->parent != NULL && window_is_really_visible(window)) {
+				wm_place_top(window->node);
+			}
 		}
 		last_render_sig = sig;
 		have_last_render_sig = true;

@@ -264,16 +264,27 @@ static void osd(const char *message) {
 void focus_target_on_seats(void) {
 	clamp_target();
 	struct Window *target = target_window();
+	struct Window *focus = target;
+	if (target != NULL) {
+		struct Window *w;
+		wl_list_for_each(w, &wm.windows, link) {
+			if (w->parent == NULL || !window_is_really_visible(w)) continue;
+			struct Window *root = w->parent;
+			int depth = 0;
+			while (root->parent != NULL && ++depth < 32) root = root->parent;
+			if (root == target) focus = w;
+		}
+	}
 	struct Seat *seat;
 	wl_list_for_each(seat, &wm.seats, link) {
 		if (seat->removed) continue;
-		if (target != NULL) {
+		if (focus != NULL) {
 			river_seat_v1_clear_focus(seat->obj);
-			river_seat_v1_focus_window(seat->obj, target->obj);
+			river_seat_v1_focus_window(seat->obj, focus->obj);
 		} else {
 			river_seat_v1_clear_focus(seat->obj);
 		}
-		seat->focused = target;
+		seat->focused = focus;
 	}
 }
 
@@ -395,6 +406,10 @@ void window_manage_layout(struct Window *window, size_t index) {
 	if (window->parent != NULL) {
 		river_window_v1_use_ssd(window->obj);
 		river_window_v1_set_tiled(window->obj, RIVER_WINDOW_V1_EDGES_NONE);
+		if (!window->transient_size_proposed) {
+			river_window_v1_propose_dimensions(window->obj, 0, 0);
+			window->transient_size_proposed = true;
+		}
 		window->new = false;
 		return;
 	}
@@ -521,5 +536,3 @@ bool window_is_really_visible(struct Window *w) {
 	if (idx < 0) return false;
 	return window_is_visible_index((size_t)idx);
 }
-
-
