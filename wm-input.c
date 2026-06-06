@@ -488,6 +488,7 @@ void seat_manage(struct Seat *seat) {
 		xkb_binding_create(seat, super, XKB_KEY_Return, ACTION_SPAWN_TERMINAL, ACTION_NONE);
 		xkb_binding_create(seat, super, XKB_KEY_Delete, ACTION_CLOSE_TARGET, ACTION_NONE);
 		xkb_binding_create(seat, alt, XKB_KEY_F4, ACTION_CLOSE_TARGET, ACTION_NONE);
+		xkb_binding_create(seat, super, XKB_KEY_F4, ACTION_CLOSE_TARGET, ACTION_NONE);
 		xkb_binding_create(seat, super, XKB_KEY_Up, ACTION_MAXIMIZE_TARGET, ACTION_NONE);
 		xkb_binding_create(seat, super, XKB_KEY_Down, ACTION_RESTORE, ACTION_NONE);
 		xkb_binding_create(seat, super | RIVER_SEAT_V1_MODIFIERS_SHIFT, XKB_KEY_Escape, ACTION_EXIT, ACTION_NONE);
