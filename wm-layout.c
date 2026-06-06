@@ -295,10 +295,13 @@ void log_state(void) {
 	struct Window *w;
 	wl_list_for_each(w, &wm.windows, link) {
 		if (w->parent != NULL) {
-			LOG_STATE("  [CHILD] \"%s\" parent=\"%s\" app_id=%s",
+			LOG_STATE("  [CHILD] \"%s\" parent=\"%s\" app_id=%s size=%dx%d implicit=%d",
 				w->title ? w->title : "",
 				w->parent->title ? w->parent->title : "",
-				w->app_id ? w->app_id : "");
+				w->app_id ? w->app_id : "",
+				w->width,
+				w->height,
+				w->implicit_parent ? 1 : 0);
 		} else {
 			const char *role = i == 0 ? "MAIN" : (i == 1 ? "DECK" : "hidden");
 			const char *target = (i == wm.target_index) ? " [ALVO]" : "";
@@ -381,6 +384,49 @@ void md_promote_target_to_main(void) {
 	log_state();
 }
 
+static int32_t clamp_dimension_hint(int32_t value, int32_t min, int32_t max) {
+	if (min > 0 && value < min) value = min;
+	if (max > 0 && value > max) value = max;
+	return value > 0 ? value : 1;
+}
+
+static struct Window *root_window(struct Window *window) {
+	struct Window *root = window;
+	int depth = 0;
+	while (root != NULL && root->parent != NULL && ++depth < 32) {
+		root = root->parent;
+	}
+	return root;
+}
+
+static void child_proposed_dimensions(struct Window *window, int32_t *width, int32_t *height) {
+	if (!window->implicit_parent) {
+		*width = 0;
+		*height = 0;
+		return;
+	}
+
+	struct Window *root = root_window(window);
+	int32_t pidx = root != NULL ? window_index(root) : -1;
+	struct Box pbox = pidx >= 0 ? layout_box_for_index((size_t)pidx) : output_box();
+
+	int32_t fallback_w = pbox.width / 2;
+	int32_t fallback_h = pbox.height / 2;
+	if (fallback_w < 320) fallback_w = pbox.width > 0 ? pbox.width : DEFAULT_WIDTH;
+	if (fallback_h < 200) fallback_h = pbox.height > 0 ? pbox.height : DEFAULT_HEIGHT;
+
+	int32_t max_dialog_w = (pbox.width * 3) / 4;
+	int32_t max_dialog_h = (pbox.height * 3) / 4;
+	int32_t proposed_w = window->width > 0 ? window->width : fallback_w;
+	int32_t proposed_h = window->height > 0 ? window->height : fallback_h;
+
+	if (max_dialog_w > 0 && proposed_w > max_dialog_w) proposed_w = fallback_w;
+	if (max_dialog_h > 0 && proposed_h > max_dialog_h) proposed_h = fallback_h;
+
+	*width = clamp_dimension_hint(proposed_w, window->min_width, window->max_width);
+	*height = clamp_dimension_hint(proposed_h, window->min_height, window->max_height);
+}
+
 void md_insert_new_window(struct Window *window) {
 	wm.last_placed_top_node = NULL;
 	size_t count = window_count();
@@ -407,7 +453,18 @@ void window_manage_layout(struct Window *window, size_t index) {
 		river_window_v1_use_ssd(window->obj);
 		river_window_v1_set_tiled(window->obj, RIVER_WINDOW_V1_EDGES_NONE);
 		if (!window->transient_size_proposed) {
-			river_window_v1_propose_dimensions(window->obj, 0, 0);
+			int32_t width, height;
+			child_proposed_dimensions(window, &width, &height);
+			river_window_v1_propose_dimensions(window->obj, width, height);
+			LOG_EVENT("child dimensions proposed: \"%s\" implicit=%d proposed=%dx%d hint=%dx%d..%dx%d",
+				window->title ? window->title : "",
+				window->implicit_parent ? 1 : 0,
+				width,
+				height,
+				window->min_width,
+				window->min_height,
+				window->max_width,
+				window->max_height);
 			window->transient_size_proposed = true;
 		}
 		window->new = false;
@@ -472,9 +529,7 @@ void window_render_layout(struct Window *window, size_t index) {
 		window_set_visible(window, visible);
 		if (visible) {
 			// Center the child over the parent's layout box.
-			struct Window *root = window->parent;
-			int depth = 0;
-			while (root->parent != NULL && ++depth < 32) root = root->parent;
+			struct Window *root = root_window(window);
 			int32_t pidx = window_index(root);
 			if (pidx >= 0) {
 				struct Box pbox = layout_box_for_index((size_t)pidx);

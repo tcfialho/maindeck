@@ -150,6 +150,26 @@ assert_child_of() {
     fi
 }
 
+assert_implicit_child_proposed_positive() {
+    local child="$1" offset="$2"
+    if wait_log "child dimensions proposed: \"$child\" implicit=1 proposed=[1-9][0-9]*x[1-9][0-9]*" "$offset" 5; then
+        return 0
+    else
+        echo "  [FAIL] child $child não recebeu proposta positiva de dimensão"
+        return 1
+    fi
+}
+
+assert_child_sized_positive() {
+    local child="$1" parent="$2" offset="$3"
+    if wait_log "\[CHILD\] \"$child\" parent=\"$parent\" app_id=.* size=[1-9][0-9]*x[1-9][0-9]*" "$offset" 5; then
+        return 0
+    else
+        echo "  [FAIL] child $child não confirmou dimensão positiva"
+        return 1
+    fi
+}
+
 window_id_for_title() {
     local title="$1"
     python3 - "$WM_LOG" "$title" <<'PY'
@@ -338,10 +358,12 @@ offset=$(get_log_offset)
 send "open Steam none steam"
 sleep 0.5
 send "open AboutSteam none steam"
-if assert_child_of "AboutSteam" "Steam" "$offset"; then
-    ok "Caso A: AboutSteam adotada como filha de Steam"
+if assert_child_of "AboutSteam" "Steam" "$offset" && \
+   assert_implicit_child_proposed_positive "AboutSteam" "$offset" && \
+   assert_child_sized_positive "AboutSteam" "Steam" "$offset"; then
+    ok "Caso A: AboutSteam adotada como filha de Steam e dimensionada"
 else
-    fail "Caso A: AboutSteam não foi adotada como filha"
+    fail "Caso A: AboutSteam não foi adotada/dimensionada como filha"
 fi
 
 offset2=$(get_log_offset)
@@ -350,10 +372,13 @@ sleep 0.5
 send "close Steam"
 sleep 0.5
 send "open Steam none steam"
-if assert_child_of "FriendsList" "Steam" "$offset2" && assert_child_of "AboutSteam" "Steam" "$offset2"; then
-    ok "Caso B: FriendsList adotada retroativamente ao abrir Steam"
+if assert_child_of "FriendsList" "Steam" "$offset2" && \
+   assert_child_of "AboutSteam" "Steam" "$offset2" && \
+   assert_implicit_child_proposed_positive "FriendsList" "$offset2" && \
+   assert_child_sized_positive "FriendsList" "Steam" "$offset2"; then
+    ok "Caso B: FriendsList adotada retroativamente ao abrir Steam e dimensionada"
 else
-    fail "Caso B: Falha na adoção retroativa da filha"
+    fail "Caso B: Falha na adoção/dimensionamento retroativo da filha"
 fi
 
 send "close Steam"

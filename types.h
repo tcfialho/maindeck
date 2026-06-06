@@ -39,7 +39,9 @@ struct Window {
 	bool new;
 	bool closed;
 	bool transient_size_proposed;
+	bool implicit_parent;
 	int32_t width, height;
+	int32_t min_width, min_height, max_width, max_height;
 	char *app_id;
 	char *title;
 	char *identifier; /* river_window.identifier — único por janela, usado para taskbar activate */

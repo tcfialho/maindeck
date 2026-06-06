@@ -185,6 +185,7 @@ static void maybe_apply_implicit_parenting(void) {
 			    child->title != NULL &&
 			    !implicit_parent_title_matches(child->title)) {
 				child->parent = implicit_parent;
+				child->implicit_parent = true;
 				child->transient_size_proposed = false;
 				move_last(child);
 				changed = true;
@@ -220,18 +221,28 @@ static void window_handle_title(void *data, struct river_window_v1 *obj, const c
 	maybe_apply_implicit_parenting_for(window, title_signal_is_relevant);
 }
 
-static void window_handle_dimensions_hint(void *data, struct river_window_v1 *obj, int32_t min_width, int32_t min_height, int32_t max_width, int32_t max_height) {}
+static void window_handle_dimensions_hint(void *data, struct river_window_v1 *obj, int32_t min_width, int32_t min_height, int32_t max_width, int32_t max_height) {
+	struct Window *window = data;
+	window->min_width = min_width;
+	window->min_height = min_height;
+	window->max_width = max_width;
+	window->max_height = max_height;
+}
 static void window_handle_parent(void *data, struct river_window_v1 *obj, struct river_window_v1 *parent) {
 	struct Window *window = data;
 	(void)obj;
 	struct Window *new_parent = parent ? river_window_v1_get_user_data(parent) : NULL;
 	if (new_parent == window) new_parent = NULL; // Prevent self-parenting
-	if (window->parent == new_parent) return;    // No change
+	if (window->parent == new_parent) {
+		if (new_parent != NULL) window->implicit_parent = false;
+		return;
+	}
 
 	bool was_child = (window->parent != NULL);
 	bool becomes_child = (new_parent != NULL);
 
 	window->parent = new_parent;
+	window->implicit_parent = false;
 	window->transient_size_proposed = false;
 
 	if (!was_child && becomes_child) {
@@ -345,6 +356,7 @@ void window_maybe_destroy(struct Window *window) {
 	wl_list_for_each(w, &wm.windows, link) {
 		if (w->parent == window) {
 			w->parent = NULL;
+			w->implicit_parent = false;
 			w->transient_size_proposed = false;
 		}
 	}
