@@ -8,6 +8,7 @@
 
 #include "bar-state.h"
 #include "bar-taskbar.h"
+#include "bar-surface.h"
 #include "bar-icons.h"
 #include "bar-render.h"
 #include "bar-log.h"
@@ -27,11 +28,12 @@ static void bar_update_render_suppressed(void) {
         LOG_INFO("bar: render_suppressed changed from %d to %d", bar->render_suppressed, any_active_fullscreen);
         bar->render_suppressed = any_active_fullscreen;
         if (!bar->render_suppressed) {
-            bar->dirty = true;
             bar->dirty_deferred = false;
+            bar_surface_restore();
         } else {
             bar->dirty = false;
             bar->dirty_deferred = true;
+            bar_surface_destroy();
         }
     }
 }

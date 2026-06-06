@@ -19,6 +19,14 @@
 /* Shared memory helpers                                                */
 /* ------------------------------------------------------------------ */
 
+static void bar_surface_free_buffers(struct BarState *bar) {
+    if (bar->buf[0]) { wl_buffer_destroy(bar->buf[0]); bar->buf[0] = NULL; }
+    if (bar->buf[1]) { wl_buffer_destroy(bar->buf[1]); bar->buf[1] = NULL; }
+    if (bar->shm_data) { munmap(bar->shm_data, (size_t)bar->buf_size * 2); bar->shm_data = NULL; }
+    if (bar->shm_pool) { wl_shm_pool_destroy(bar->shm_pool); bar->shm_pool = NULL; }
+    if (bar->shm_fd >= 0) { close(bar->shm_fd); bar->shm_fd = -1; }
+}
+
 static int create_shm_file(size_t size) {
     char name[64];
     snprintf(name, sizeof(name), "/maindeck-bar-%d", (int)getpid());
@@ -332,18 +340,43 @@ void bg_surface_cleanup(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Public: destroy / restore bar surface for fullscreen scanout         */
+/* ------------------------------------------------------------------ */
+
+void bar_surface_destroy(void) {
+    struct BarState *bar = &g_bar;
+    if (!bar->wl_surface) return;
+
+    bar_surface_free_buffers(bar);
+
+    if (bar->layer_surface) {
+        zwlr_layer_surface_v1_destroy(bar->layer_surface);
+        bar->layer_surface = NULL;
+    }
+    wl_surface_destroy(bar->wl_surface);
+    bar->wl_surface = NULL;
+
+    bar->configured = false;
+    LOG_INFO("surface: destroyed for fullscreen scanout");
+}
+
+void bar_surface_restore(void) {
+    struct BarState *bar = &g_bar;
+    if (bar->wl_surface) return;
+
+    bar_surface_create();
+    wl_display_flush(bar->display);
+    LOG_INFO("surface: restored after fullscreen");
+}
+
+/* ------------------------------------------------------------------ */
 /* Public: resize / allocate buffers                                    */
 /* ------------------------------------------------------------------ */
 
 void bar_surface_resize(int w, int h) {
     struct BarState *bar = &g_bar;
 
-    /* Free old buffers */
-    if (bar->buf[0]) { wl_buffer_destroy(bar->buf[0]); bar->buf[0] = NULL; }
-    if (bar->buf[1]) { wl_buffer_destroy(bar->buf[1]); bar->buf[1] = NULL; }
-    if (bar->shm_data) { munmap(bar->shm_data, (size_t)bar->buf_size * 2); bar->shm_data = NULL; }
-    if (bar->shm_pool) { wl_shm_pool_destroy(bar->shm_pool); bar->shm_pool = NULL; }
-    if (bar->shm_fd >= 0) { close(bar->shm_fd); bar->shm_fd = -1; }
+    bar_surface_free_buffers(bar);
 
     int stride = w * 4;  /* ARGB32 */
     int size   = stride * h;
