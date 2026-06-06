@@ -248,16 +248,18 @@ static uint64_t compute_layout_signature(void) {
 
 	SIG_MIX(wm.target_index);
 	SIG_MIX(wm.maximized);
-	SIG_MIX(window_count());
-
+	size_t parentless_count = 0;
 	struct Window *w;
 	wl_list_for_each(w, &wm.windows, link) {
+		if (w->parent == NULL) parentless_count++;
 		SIG_MIX((uintptr_t)w->obj);
 		SIG_MIX(w->fullscreen);
 		SIG_MIX(w->applied_fullscreen);
 		SIG_MIX(w->new);
 		SIG_MIX(w->minimized);
+		SIG_MIX((uintptr_t)w->parent);
 	}
+	SIG_MIX(parentless_count);
 
 	struct Output *o;
 	wl_list_for_each(o, &wm.outputs, link) {
