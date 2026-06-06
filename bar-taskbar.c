@@ -17,7 +17,7 @@ static void bar_update_render_suppressed(void) {
     bool any_active_fullscreen = false;
     for (int i = 0; i < bar->toplevel_n; i++) {
         struct BarToplevel *tl = &bar->toplevels[i];
-        if (tl->activated && tl->fullscreen && !tl->minimized) {
+        if (!tl->has_parent && tl->activated && tl->fullscreen && !tl->minimized) {
             any_active_fullscreen = true;
             break;
         }
@@ -28,6 +28,10 @@ static void bar_update_render_suppressed(void) {
         bar->render_suppressed = any_active_fullscreen;
         if (!bar->render_suppressed) {
             bar->dirty = true;
+            bar->dirty_deferred = false;
+        } else {
+            bar->dirty = false;
+            bar->dirty_deferred = true;
         }
     }
 }
@@ -41,7 +45,7 @@ static void tl_title(void *data,
     (void)h;
     struct BarToplevel *tl = data;
     snprintf(tl->title, sizeof(tl->title), "%s", s ? s : "");
-    g_bar.dirty = true;
+    bar_request_redraw(&g_bar);
 }
 
 static void tl_app_id(void *data,
@@ -53,7 +57,7 @@ static void tl_app_id(void *data,
     if (!tl->icon_surface && s && s[0]) {
         tl->icon_surface = bar_icon_get(s, 18);
     }
-    g_bar.dirty = true;
+    bar_request_redraw(&g_bar);
 }
 
 static void tl_oe(void *d, struct zwlr_foreign_toplevel_handle_v1 *h,
@@ -76,14 +80,14 @@ static void tl_state(void *data,
     tl->activated = act;
     tl->minimized  = min;
     tl->fullscreen = fs;
-    g_bar.dirty = true;
+    bar_request_redraw(&g_bar);
     bar_update_render_suppressed();
 }
 
 static void tl_done(void *data,
     struct zwlr_foreign_toplevel_handle_v1 *h) {
     (void)h; (void)data;
-    g_bar.dirty = true;
+    bar_request_redraw(&g_bar);
 }
 
 static void tl_closed(void *data,
@@ -105,7 +109,7 @@ static void tl_closed(void *data,
     }
 
     zwlr_foreign_toplevel_handle_v1_destroy(h);
-    g_bar.dirty = true;
+    bar_request_redraw(&g_bar);
     bar_update_render_suppressed();
     (void)data;
     LOG_INFO("taskbar: toplevel closed, remaining=%d", g_bar.toplevel_n);
@@ -114,7 +118,14 @@ static void tl_closed(void *data,
 static void tl_parent(void *d,
     struct zwlr_foreign_toplevel_handle_v1 *h,
     struct zwlr_foreign_toplevel_handle_v1 *p) {
-    (void)d; (void)h; (void)p;
+    struct BarToplevel *tl = d;
+    (void)h;
+    bool has_parent = p != NULL;
+    if (tl && tl->has_parent != has_parent) {
+        tl->has_parent = has_parent;
+        bar_request_redraw(&g_bar);
+        bar_update_render_suppressed();
+    }
 }
 
 static const struct zwlr_foreign_toplevel_handle_v1_listener tl_listener = {
@@ -154,7 +165,7 @@ static void mgr_toplevel(void *data,
     }
 
     bar->toplevel_n++;
-    bar->dirty = true;
+    bar_request_redraw(bar);
     zwlr_foreign_toplevel_handle_v1_add_listener(h, &tl_listener, tl);
     bar_update_render_suppressed();
 

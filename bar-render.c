@@ -237,7 +237,10 @@ static int draw_quicklaunch(cairo_t *cr, PangoLayout *lay, int h) {
 
 static void draw_taskbar(cairo_t *cr, PangoLayout *lay, int x_start, int x_end, int h) {
     struct BarState *bar = &g_bar;
-    int n = bar->toplevel_n;
+    int n = 0;
+    for (int i = 0; i < bar->toplevel_n; i++) {
+        if (!bar->toplevels[i].has_parent) n++;
+    }
     if (n == 0) return;
 
     int avail  = x_end - x_start - 4;
@@ -250,8 +253,9 @@ static void draw_taskbar(cairo_t *cr, PangoLayout *lay, int x_start, int x_end, 
     int btn_y = 2;
     int x = x_start + 4;
 
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < bar->toplevel_n; i++) {
         struct BarToplevel *tl = &bar->toplevels[i];
+        if (tl->has_parent) continue;
 
         bool hovered = (bar->hover_type == HIT_TASKBAR) && (bar->hover_index == i);
 

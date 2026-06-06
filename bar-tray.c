@@ -167,7 +167,7 @@ static void add_item(const char *reg_str) {
 
     load_item_props(it);
     g_item_n++;
-    g_bar.dirty = true;
+    bar_request_redraw(&g_bar);
 }
 
 static void remove_item(const char *reg_str) {
@@ -182,7 +182,7 @@ static void remove_item(const char *reg_str) {
                 memmove(&g_items[i], &g_items[i+1],
                         (size_t)rem * sizeof(g_items[0]));
             g_item_n--;
-            g_bar.dirty = true;
+            bar_request_redraw(&g_bar);
             LOG_INFO("tray: removed item %s", svc);
             return;
         }

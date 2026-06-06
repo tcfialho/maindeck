@@ -57,7 +57,7 @@ static void layer_surface_configure(void *data,
 
     if (!bar->configured || new_w != bar->buf_width || new_h != bar->buf_height) {
         bar_surface_resize(new_w, new_h);
-        bar->dirty = true;
+        bar_request_redraw(bar);
     }
     bar->configured = true;
 }

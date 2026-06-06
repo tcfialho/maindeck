@@ -383,8 +383,10 @@ static void window_destroy_closed(struct Window *window, bool flush_now) {
 	river_window_v1_destroy(window->obj);
 	if (flush_now && wm_display != NULL) {
 		int rc = wl_display_flush(wm_display);
-		if (rc < 0 && errno != EAGAIN) {
-			LOG_WARN("flush after child destroy failed: %s", strerror(errno));
+		if (rc < 0) {
+			if (errno != EAGAIN) {
+				LOG_WARN("flush after child destroy failed: %s", strerror(errno));
+			}
 		}
 	}
 	wl_list_remove(&window->link);

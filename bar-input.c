@@ -56,7 +56,7 @@ static void ptr_leave(void *data, struct wl_pointer *ptr,
             bar->hover_hit   = -1;
             bar->hover_type  = HIT_NONE;
             bar->hover_index = -1;
-            bar->dirty = true;
+            bar_request_redraw(bar);
         }
     }
 }
@@ -91,7 +91,7 @@ static void ptr_motion(void *data, struct wl_pointer *ptr,
             bar->hover_type  = HIT_NONE;
             bar->hover_index = -1;
         }
-        bar->dirty = true;
+        bar_request_redraw(bar);
     }
 }
 

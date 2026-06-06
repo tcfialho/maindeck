@@ -31,6 +31,7 @@ struct BarToplevel {
     bool   activated;
     bool   minimized;
     bool   fullscreen;
+    bool   has_parent;
     bool   closed;
     cairo_surface_t *icon_surface; /* cached, owned by bar-icons */
 };
@@ -99,6 +100,7 @@ struct BarState {
     int width, height;
     bool configured;
     bool dirty;        /* needs redraw */
+    bool dirty_deferred;
     bool render_suppressed;
 
     /* Status */
@@ -158,5 +160,14 @@ struct BarState {
 
 /* Global instance */
 extern struct BarState g_bar;
+
+static inline void bar_request_redraw(struct BarState *bar) {
+    if (bar->render_suppressed) {
+        bar->dirty = false;
+        bar->dirty_deferred = true;
+    } else {
+        bar->dirty = true;
+    }
+}
 
 #endif /* BAR_STATE_H */
