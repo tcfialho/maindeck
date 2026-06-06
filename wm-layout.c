@@ -289,6 +289,8 @@ void focus_target_on_seats(void) {
 }
 
 void log_state(void) {
+	if (!md_verbose()) return;
+
 	size_t count = window_count();
 	LOG_STATE("windows=%zu target=%u maximized=%d", count, wm.target_index, wm.maximized);
 	size_t i = 0;

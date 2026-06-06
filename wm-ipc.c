@@ -38,6 +38,7 @@
 #include "wm-handlers.h"
 
 struct WindowManager wm;
+struct wl_display *wm_display;
 struct river_window_manager_v1 *window_manager_v1;
 struct river_xkb_bindings_v1 *xkb_bindings_v1;
 struct river_layer_shell_v1 *layer_shell_v1;
@@ -125,6 +126,7 @@ int main(void) {
 		fprintf(stderr, "failed to connect to Wayland server\n");
 		return 1;
 	}
+	wm_display = display;
 
 	log_init();
 	LOG_INFO("maindeck-wm starting");
@@ -204,6 +206,7 @@ int main(void) {
 	}
 
 done:
+	wm_display = NULL;
 	log_close();
 	if (ipc_fd >= 0) close(ipc_fd);
 	if (ipc_path[0] != '\0') unlink(ipc_path);

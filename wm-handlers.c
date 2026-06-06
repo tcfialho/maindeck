@@ -31,14 +31,28 @@
 #include "wm-handlers.h"
 
 static void clear_loading_notification(void) {
+	const char *dir = getenv("XDG_RUNTIME_DIR");
+	if (dir == NULL || dir[0] == '\0') dir = "/tmp";
+
+	char path[512];
+	if ((size_t)snprintf(path, sizeof(path), "%s/maindeck-loading.id", dir) >= sizeof(path)) {
+		return;
+	}
+
+	FILE *f = fopen(path, "r");
+	if (f == NULL) return;
+
+	char id[64];
+	if (fgets(id, sizeof(id), f) == NULL) id[0] = '\0';
+	fclose(f);
+	unlink(path);
+
+	char *nl = strchr(id, '\n');
+	if (nl != NULL) *nl = '\0';
+	if (id[0] == '\0') return;
+
 	if (fork() == 0) {
-		execlp("sh", "sh", "-c",
-			"f=\"${XDG_RUNTIME_DIR:-/tmp}/maindeck-loading.id\"; "
-			"[ -f \"$f\" ] || exit 0; "
-			"id=$(cat \"$f\" 2>/dev/null); rm -f \"$f\"; "
-			"[ -n \"$id\" ] && makoctl dismiss -n \"$id\" 2>/dev/null; "
-			"exit 0",
-			(char *)0);
+		execlp("makoctl", "makoctl", "dismiss", "-n", id, (char *)0);
 		_exit(127);
 	}
 }
@@ -96,17 +110,19 @@ void output_maybe_destroy(struct Output *output) {
 	free(output);
 }
 
-static void window_destroy_closed(struct Window *window);
+static void window_destroy_closed(struct Window *window, bool flush_now);
 
 static void window_handle_closed(void *data, struct river_window_v1 *obj) {
 	struct Window *window = data;
-	LOG_EVENT("window closed: \"%s\" app_id=%s index=%d",
-		window->title ? window->title : "",
-		window->app_id ? window->app_id : "",
-		window_index(window));
+	if (md_verbose()) {
+		LOG_EVENT("window closed: \"%s\" app_id=%s index=%d",
+			window->title ? window->title : "",
+			window->app_id ? window->app_id : "",
+			window_index(window));
+	}
 	window->closed = true;
 	if (window->parent != NULL) {
-		window_destroy_closed(window);
+		window_destroy_closed(window, true);
 	}
 }
 
@@ -115,7 +131,7 @@ static void window_handle_dimensions(void *data, struct river_window_v1 *obj, in
 	if (window->width != width || window->height != height) {
 		window->width = width;
 		window->height = height;
-		if (window->parent != NULL) {
+		if (window->parent != NULL && !window->closed && window_is_really_visible(window)) {
 			river_window_manager_v1_manage_dirty(window_manager_v1);
 		}
 	}
@@ -348,7 +364,7 @@ static const struct river_window_v1_listener river_window_listener = {
 	.identifier = window_handle_identifier,
 };
 
-static void window_destroy_closed(struct Window *window) {
+static void window_destroy_closed(struct Window *window, bool flush_now) {
 	struct Seat *seat;
 	wl_list_for_each(seat, &wm.seats, link) {
 		if (seat->focused == window) seat->focused = NULL;
@@ -365,6 +381,12 @@ static void window_destroy_closed(struct Window *window) {
 		}
 	}
 	river_window_v1_destroy(window->obj);
+	if (flush_now && wm_display != NULL) {
+		int rc = wl_display_flush(wm_display);
+		if (rc < 0 && errno != EAGAIN) {
+			LOG_WARN("flush after child destroy failed: %s", strerror(errno));
+		}
+	}
 	wl_list_remove(&window->link);
 	free(window->app_id);
 	free(window->title);
@@ -374,7 +396,7 @@ static void window_destroy_closed(struct Window *window) {
 
 void window_maybe_destroy(struct Window *window) {
 	if (!window->closed) return;
-	window_destroy_closed(window);
+	window_destroy_closed(window, false);
 }
 
 static void wm_handle_unavailable(void *data, struct river_window_manager_v1 *obj) {
@@ -513,10 +535,7 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 		size_t index = 0;
 		struct Window *window;
 		wl_list_for_each(window, &wm.windows, link) {
-			if (window->parent != NULL) {
-				window_render_layout(window, 0);
-				continue;
-			}
+			if (window->parent != NULL) continue;
 			window_render_layout(window, index);
 			index++;
 		}
@@ -524,9 +543,8 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 			wm_place_top(target_window()->node);
 		}
 		wl_list_for_each(window, &wm.windows, link) {
-			if (window->parent != NULL && window_is_really_visible(window)) {
-				wm_place_top(window->node);
-			}
+			if (window->parent == NULL) continue;
+			window_render_layout(window, 0);
 		}
 		last_render_sig = sig;
 		have_last_render_sig = true;

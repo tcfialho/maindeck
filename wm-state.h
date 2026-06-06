@@ -4,6 +4,7 @@
 #include "types.h"
 
 extern struct WindowManager wm;
+extern struct wl_display *wm_display;
 extern struct river_window_manager_v1 *window_manager_v1;
 extern struct river_xkb_bindings_v1 *xkb_bindings_v1;
 extern struct river_layer_shell_v1 *layer_shell_v1;
