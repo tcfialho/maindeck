@@ -40,6 +40,10 @@ static PangoLayout     *s_lay[2]  = { NULL, NULL };
 static PangoLayout     *s_lay_power[2] = { NULL, NULL };
 static int s_cs_w = 0, s_cs_h = 0;
 
+static cairo_pattern_t *s_grad_normal = NULL;
+static cairo_pattern_t *s_grad_hover  = NULL;
+static int s_grad_btn_h = 0;
+
 static void ensure_cairo(struct BarState *bar, void *data) {
     int b = bar->cur_buf;
     if (s_cs[b] && s_cs_w == bar->buf_width && s_cs_h == bar->buf_height)
@@ -169,11 +173,11 @@ static int draw_quicklaunch(cairo_t *cr, PangoLayout *lay, int h) {
         cairo_surface_t *icon = glyph ? NULL : bar_icon_get(btn->icon, ICON_SIZE);
 
         int btn_w;
+        int glyph_tw = 0, glyph_th = 0;
         if (glyph) {
             pango_layout_set_text(lay, glyph, -1);
-            int tw, th; (void)th;
-            pango_layout_get_pixel_size(lay, &tw, &th);
-            btn_w = tw + BTN_PAD * 2;
+            pango_layout_get_pixel_size(lay, &glyph_tw, &glyph_th);
+            btn_w = glyph_tw + BTN_PAD * 2;
         } else {
             btn_w = ICON_SIZE + BTN_PAD * 2;
         }
@@ -202,10 +206,7 @@ static int draw_quicklaunch(cairo_t *cr, PangoLayout *lay, int h) {
         /* Draw icon or glyph */
         if (glyph) {
             set_col(cr, COL_TEXT);
-            pango_layout_set_text(lay, glyph, -1);
-            int tw, th;
-            pango_layout_get_pixel_size(lay, &tw, &th);
-            cairo_move_to(cr, x + (btn_w - tw) / 2.0, btn_y + (btn_h - th) / 2.0);
+            cairo_move_to(cr, x + (btn_w - glyph_tw) / 2.0, btn_y + (btn_h - glyph_th) / 2.0);
             pango_cairo_show_layout(cr, lay);
         } else if (icon) {
             double ix = x + (btn_w - ICON_SIZE) / 2.0;
@@ -264,19 +265,28 @@ static void draw_taskbar(cairo_t *cr, PangoLayout *lay, int x_start, int x_end, 
             double bx = x, by = btn_y;
             double bw = btn_w - 2, bh = btn_h;
 
-            /* Gradient: top slightly lighter → bottom = background */
-            cairo_pattern_t *grad = cairo_pattern_create_linear(bx, by, bx, by + bh);
-            if (hovered) {
-                cairo_pattern_add_color_stop_rgba(grad, 0.0, 0.32, 0.32, 0.42, 1.0);
-                cairo_pattern_add_color_stop_rgba(grad, 1.0, 0.18, 0.18, 0.24, 1.0);
-            } else {
-                cairo_pattern_add_color_stop_rgba(grad, 0.0, 0.22, 0.22, 0.30, 0.9);
-                cairo_pattern_add_color_stop_rgba(grad, 1.0, 0.13, 0.13, 0.17, 0.9);
+            /* Rebuild static gradient patterns when btn_h changes (e.g. first frame or resize).
+             * The gradient is purely vertical (x0==x1), so bx is irrelevant; use bx=0. */
+            if (s_grad_btn_h != btn_h || !s_grad_normal) {
+                if (s_grad_normal) cairo_pattern_destroy(s_grad_normal);
+                if (s_grad_hover)  cairo_pattern_destroy(s_grad_hover);
+                s_grad_normal = cairo_pattern_create_linear(0, 0, 0, bh);
+                cairo_pattern_add_color_stop_rgba(s_grad_normal, 0.0, 0.22, 0.22, 0.30, 0.9);
+                cairo_pattern_add_color_stop_rgba(s_grad_normal, 1.0, 0.13, 0.13, 0.17, 0.9);
+                s_grad_hover = cairo_pattern_create_linear(0, 0, 0, bh);
+                cairo_pattern_add_color_stop_rgba(s_grad_hover, 0.0, 0.32, 0.32, 0.42, 1.0);
+                cairo_pattern_add_color_stop_rgba(s_grad_hover, 1.0, 0.18, 0.18, 0.24, 1.0);
+                s_grad_btn_h = btn_h;
             }
+
+            /* Translate the pattern to match the button's vertical position */
+            cairo_matrix_t m;
+            cairo_matrix_init_translate(&m, 0, -by);
+            cairo_pattern_set_matrix(hovered ? s_grad_hover : s_grad_normal, &m);
+
             rounded_rect(cr, bx, by, bw, bh, BTN_RADIUS);
-            cairo_set_source(cr, grad);
+            cairo_set_source(cr, hovered ? s_grad_hover : s_grad_normal);
             cairo_fill(cr);
-            cairo_pattern_destroy(grad);
 
             /* 1px border: top-left lighter, bottom-right darker */
             rounded_rect(cr, bx + 0.5, by + 0.5, bw - 1, bh - 1, BTN_RADIUS);
@@ -567,6 +577,9 @@ void bar_render(void) {
 }
 
 void bar_render_cleanup(void) {
+    if (s_grad_normal) { cairo_pattern_destroy(s_grad_normal); s_grad_normal = NULL; }
+    if (s_grad_hover)  { cairo_pattern_destroy(s_grad_hover);  s_grad_hover  = NULL; }
+    s_grad_btn_h = 0;
     for (int i = 0; i < 2; i++) {
         if (s_lay[i]) { g_object_unref(s_lay[i]); s_lay[i] = NULL; }
         if (s_lay_power[i]) { g_object_unref(s_lay_power[i]); s_lay_power[i] = NULL; }
