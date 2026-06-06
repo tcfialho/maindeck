@@ -21,6 +21,7 @@
 #include <river-layer-shell-v1-client-protocol.h>
 #include <river-libinput-config-v1-client-protocol.h>
 #include <river-input-management-v1-client-protocol.h>
+#include <cursor-shape-v1-client-protocol.h>
 
 #include "types.h"
 #include "wm-log.h"
@@ -657,6 +658,9 @@ static void handle_global(void *data, struct wl_registry *registry, uint32_t nam
 		layer_shell_v1 = wl_registry_bind(registry, name, &river_layer_shell_v1_interface, 1);
 	} else if (strcmp(interface, river_libinput_config_v1_interface.name) == 0) {
 		libinput_config_v1 = wl_registry_bind(registry, name, &river_libinput_config_v1_interface, 1);
+	} else if (strcmp(interface, wp_cursor_shape_manager_v1_interface.name) == 0) {
+		cursor_shape_manager_v1 = wl_registry_bind(registry, name,
+			&wp_cursor_shape_manager_v1_interface, version < 1 ? version : 1);
 	}
 }
 

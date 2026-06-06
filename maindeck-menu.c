@@ -29,6 +29,7 @@
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 #include "viewporter-client-protocol.h"
+#include "cursor-shape-v1-client-protocol.h"
 #include "bar-icons.h"
 
 #define MENU_WIDTH 320
@@ -63,6 +64,8 @@ typedef struct {
     struct wl_keyboard *keyboard;
     struct wl_pointer *pointer;
     struct wl_surface *ptr_surface;
+    struct wp_cursor_shape_manager_v1 *cursor_shape_manager;
+    struct wp_cursor_shape_device_v1 *cursor_shape_device;
 
     struct xkb_context *xkb_context;
     struct xkb_keymap *xkb_keymap;
@@ -1030,14 +1033,30 @@ static const struct wl_keyboard_listener keyboard_listener = {
 };
 
 // --- Callbacks de Pointer (Mouse) ---
+static void pointer_set_default_cursor(uint32_t serial) {
+    AppState *app = &g_app;
+    if (app->cursor_shape_device) {
+        wp_cursor_shape_device_v1_set_shape(
+            app->cursor_shape_device,
+            serial,
+            WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
+    }
+}
+
 static void pointer_enter(void *d, struct wl_pointer *p, uint32_t s, struct wl_surface *surf, wl_fixed_t sx, wl_fixed_t sy) {
-    (void)d; (void)p; (void)s;
+    (void)d; (void)p;
     g_app.ptr_surface = surf;
     g_app.ptr_x = wl_fixed_to_double(sx);
     g_app.ptr_y = wl_fixed_to_double(sy);
+    if (surf == g_app.menu_surf || surf == g_app.bg_surf) {
+        pointer_set_default_cursor(s);
+    }
 }
 static void pointer_leave(void *d, struct wl_pointer *p, uint32_t s, struct wl_surface *surf) {
-    (void)d; (void)p; (void)s; (void)surf;
+    (void)d; (void)p; (void)s;
+    if (g_app.ptr_surface == surf) {
+        g_app.ptr_surface = NULL;
+    }
 }
 static void pointer_motion(void *d, struct wl_pointer *p, uint32_t t, wl_fixed_t sx, wl_fixed_t sy) {
     (void)d; (void)p; (void)t;
@@ -1131,9 +1150,18 @@ static void seat_capabilities(void *data, struct wl_seat *seat, uint32_t caps) {
     if ((caps & WL_SEAT_CAPABILITY_POINTER) && !app->pointer) {
         app->pointer = wl_seat_get_pointer(seat);
         wl_pointer_add_listener(app->pointer, &pointer_listener, NULL);
+        if (app->cursor_shape_manager) {
+            app->cursor_shape_device =
+                wp_cursor_shape_manager_v1_get_pointer(app->cursor_shape_manager, app->pointer);
+        }
     } else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && app->pointer) {
+        if (app->cursor_shape_device) {
+            wp_cursor_shape_device_v1_destroy(app->cursor_shape_device);
+            app->cursor_shape_device = NULL;
+        }
         wl_pointer_destroy(app->pointer);
         app->pointer = NULL;
+        app->ptr_surface = NULL;
     }
 }
 
@@ -1160,6 +1188,9 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name, 
         app->layer_shell = wl_registry_bind(reg, name, &zwlr_layer_shell_v1_interface, version < 4 ? version : 4);
     } else if (strcmp(iface, "wp_viewporter") == 0) {
         app->viewporter = wl_registry_bind(reg, name, &wp_viewporter_interface, 1);
+    } else if (strcmp(iface, wp_cursor_shape_manager_v1_interface.name) == 0) {
+        app->cursor_shape_manager = wl_registry_bind(reg, name,
+            &wp_cursor_shape_manager_v1_interface, version < 1 ? version : 1);
     }
 }
 
@@ -1416,7 +1447,9 @@ int main(int argc, char **argv) {
     if (g_app.menu_surf) wl_surface_destroy(g_app.menu_surf);
 
     if (g_app.keyboard) wl_keyboard_destroy(g_app.keyboard);
+    if (g_app.cursor_shape_device) wp_cursor_shape_device_v1_destroy(g_app.cursor_shape_device);
     if (g_app.pointer) wl_pointer_destroy(g_app.pointer);
+    if (g_app.cursor_shape_manager) wp_cursor_shape_manager_v1_destroy(g_app.cursor_shape_manager);
     if (g_app.xkb_compose_state) xkb_compose_state_unref(g_app.xkb_compose_state);
     if (g_app.xkb_compose_table) xkb_compose_table_unref(g_app.xkb_compose_table);
     if (g_app.xkb_state) xkb_state_unref(g_app.xkb_state);

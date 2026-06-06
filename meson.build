@@ -41,6 +41,13 @@ generated = wl_mod.scan_xml(
   'protocol/river-input-management-v1.xml',
 )
 
+cursor_shape_protocol = wl_mod.scan_xml(
+  '/usr/share/wayland-protocols/staging/cursor-shape/cursor-shape-v1.xml',
+)
+tablet_protocol = wl_mod.scan_xml(
+  '/usr/share/wayland-protocols/stable/tablet/tablet-v2.xml',
+)
+
 exe = executable(
   'maindeck-wm',
   'wm-ipc.c',
@@ -50,6 +57,8 @@ exe = executable(
   'wm-libinput.c',
   'wm-handlers.c',
   generated,
+  tablet_protocol,
+  cursor_shape_protocol,
   dependencies: [
     wayland_client,
     xkbcommon,
@@ -90,6 +99,8 @@ executable(
   'bar-tray.c',
   bar_protocols,
   toplevel_protocols,
+  tablet_protocol,
+  cursor_shape_protocol,
   dependencies: [
     wayland_client,
     cairo_dep,
@@ -106,6 +117,8 @@ executable(
   'maindeck-menu.c',
   'bar-icons.c',
   bar_protocols,
+  tablet_protocol,
+  cursor_shape_protocol,
   dependencies: [
     wayland_client,
     xkbcommon,

@@ -73,6 +73,9 @@ static void registry_global(void *data, struct wl_registry *reg,
     } else if (strcmp(iface, "wp_viewporter") == 0) {
         bar->viewporter = wl_registry_bind(reg, name,
             &wp_viewporter_interface, 1);
+    } else if (strcmp(iface, wp_cursor_shape_manager_v1_interface.name) == 0) {
+        bar->cursor_shape_manager = wl_registry_bind(reg, name,
+            &wp_cursor_shape_manager_v1_interface, version < 1 ? version : 1);
     }
 }
 
@@ -102,7 +105,21 @@ static void seat_capabilities(void *data, struct wl_seat *seat, uint32_t caps) {
     if ((caps & WL_SEAT_CAPABILITY_POINTER) && !bar->pointer) {
         bar->pointer = wl_seat_get_pointer(seat);
         wl_pointer_add_listener(bar->pointer, &bar_pointer_listener, NULL);
+        if (bar->cursor_shape_manager) {
+            bar->cursor_shape_device =
+                wp_cursor_shape_manager_v1_get_pointer(bar->cursor_shape_manager, bar->pointer);
+        }
         LOG_INFO("main: pointer acquired");
+    } else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && bar->pointer) {
+        if (bar->cursor_shape_device) {
+            wp_cursor_shape_device_v1_destroy(bar->cursor_shape_device);
+            bar->cursor_shape_device = NULL;
+        }
+        wl_pointer_destroy(bar->pointer);
+        bar->pointer = NULL;
+        bar->ptr_surface = NULL;
+        bar->ptr_inside = false;
+        bar->ptr_on_menu = false;
     }
 }
 
@@ -331,6 +348,9 @@ int main(void) {
     bar_status_cleanup();
     bar_icons_cleanup();
     bar_render_cleanup();
+    if (g_bar.cursor_shape_device) wp_cursor_shape_device_v1_destroy(g_bar.cursor_shape_device);
+    if (g_bar.pointer) wl_pointer_destroy(g_bar.pointer);
+    if (g_bar.cursor_shape_manager) wp_cursor_shape_manager_v1_destroy(g_bar.cursor_shape_manager);
     if (g_bar.ipc_sock >= 0) close(g_bar.ipc_sock);
     wl_display_disconnect(g_bar.display);
     return 0;

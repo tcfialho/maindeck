@@ -23,22 +23,54 @@ static int hit_test(double x, double y) {
     return -1;
 }
 
+static void set_default_cursor(uint32_t serial) {
+    struct BarState *bar = &g_bar;
+    if (bar->cursor_shape_device) {
+        wp_cursor_shape_device_v1_set_shape(
+            bar->cursor_shape_device,
+            serial,
+            WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
+    }
+}
+
+static void clear_bar_hover(struct BarState *bar) {
+    if (bar->hover_hit == -1) return;
+    bar->hover_hit   = -1;
+    bar->hover_type  = HIT_NONE;
+    bar->hover_index = -1;
+    bar_request_redraw(bar);
+}
+
 static void ptr_enter(void *data, struct wl_pointer *ptr,
     uint32_t serial, struct wl_surface *surf,
     wl_fixed_t fx, wl_fixed_t fy)
 {
-    (void)data; (void)ptr; (void)serial;
+    (void)data; (void)ptr;
     struct BarState *bar = &g_bar;
+
+    bar->ptr_surface = surf;
     if (bar->menu_open && surf == bar->menu_surface) {
+        set_default_cursor(serial);
         bar->ptr_on_menu  = true;
         bar->menu_ptr_x   = wl_fixed_to_double(fx);
         bar->menu_ptr_y   = wl_fixed_to_double(fy);
-    } else {
-        bar->ptr_on_menu  = false;
-        bar->ptr_x        = wl_fixed_to_double(fx);
-        bar->ptr_y        = wl_fixed_to_double(fy);
-        bar->ptr_inside   = true;
+        return;
     }
+
+    bar->ptr_on_menu = false;
+    if (surf == bar->wl_surface) {
+        set_default_cursor(serial);
+        bar->ptr_x      = wl_fixed_to_double(fx);
+        bar->ptr_y      = wl_fixed_to_double(fy);
+        bar->ptr_inside = true;
+        return;
+    }
+
+    if (surf == bar->bg_surface) {
+        set_default_cursor(serial);
+    }
+    bar->ptr_inside = false;
+    clear_bar_hover(bar);
 }
 
 static void ptr_leave(void *data, struct wl_pointer *ptr,
@@ -46,18 +78,19 @@ static void ptr_leave(void *data, struct wl_pointer *ptr,
 {
     (void)data; (void)ptr; (void)serial;
     struct BarState *bar = &g_bar;
+    if (bar->ptr_surface == surf) {
+        bar->ptr_surface = NULL;
+    }
     if (bar->menu_open && surf == bar->menu_surface) {
         bar->ptr_on_menu    = false;
         bar->menu_hover_row = -1;
         bar_tray_menu_rerend();
-    } else {
-        bar->ptr_inside  = false;
-        if (bar->hover_hit != -1) {
-            bar->hover_hit   = -1;
-            bar->hover_type  = HIT_NONE;
-            bar->hover_index = -1;
-            bar_request_redraw(bar);
-        }
+        return;
+    }
+
+    if (surf == bar->wl_surface) {
+        bar->ptr_inside = false;
+        clear_bar_hover(bar);
     }
 }
 
@@ -67,7 +100,7 @@ static void ptr_motion(void *data, struct wl_pointer *ptr,
     (void)data; (void)ptr; (void)time;
     struct BarState *bar = &g_bar;
 
-    if (bar->ptr_on_menu) {
+    if (bar->ptr_surface == bar->menu_surface && bar->ptr_on_menu && bar->menu_open) {
         bar->menu_ptr_x = wl_fixed_to_double(fx);
         bar->menu_ptr_y = wl_fixed_to_double(fy);
         int row = bar_tray_menu_row_at((int)bar->menu_ptr_y);
@@ -75,6 +108,10 @@ static void ptr_motion(void *data, struct wl_pointer *ptr,
             bar->menu_hover_row = row;
             bar_tray_menu_rerend();
         }
+        return;
+    }
+
+    if (bar->ptr_surface != bar->wl_surface) {
         return;
     }
 
@@ -106,11 +143,15 @@ static void ptr_button(void *data, struct wl_pointer *ptr,
     bar->last_btn_time   = time;
 
     /* Click on menu surface */
-    if (bar->ptr_on_menu && bar->menu_open) {
+    if (bar->ptr_surface == bar->menu_surface && bar->ptr_on_menu && bar->menu_open) {
         if (button == 0x110) {
             int row = bar_tray_menu_row_at((int)bar->menu_ptr_y);
             bar_tray_menu_activate(row, time);
         }
+        return;
+    }
+
+    if (bar->ptr_surface != bar->wl_surface) {
         return;
     }
 

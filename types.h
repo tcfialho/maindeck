@@ -13,6 +13,8 @@
 #include "river-libinput-config-v1-client-protocol.h"
 #include "river-input-management-v1-client-protocol.h"
 
+struct wp_cursor_shape_device_v1;
+
 struct Output {
 	struct river_output_v1 *obj;
 	struct river_layer_shell_output_v1 *shell_output;
@@ -98,6 +100,10 @@ struct PointerBinding {
 struct Seat {
 	struct river_seat_v1 *obj;
 	struct river_layer_shell_seat_v1 *layer_shell_seat;
+	struct wl_seat *wl_seat;
+	struct wl_pointer *wl_pointer;
+	struct wp_cursor_shape_device_v1 *cursor_shape_device;
+	uint32_t wl_seat_name;
 	bool new;
 	bool removed;
 

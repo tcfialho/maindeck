@@ -13,6 +13,7 @@
 #include "ext-foreign-toplevel-list-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 #include "viewporter-client-protocol.h"
+#include "cursor-shape-v1-client-protocol.h"
 
 #include "bar-config.h"
 
@@ -69,6 +70,8 @@ struct BarState {
     struct wl_seat       *seat;
     struct wl_pointer    *pointer;
     struct wl_output     *output;
+    struct wp_cursor_shape_manager_v1 *cursor_shape_manager;
+    struct wp_cursor_shape_device_v1  *cursor_shape_device;
 
     /* Layer shell */
     struct zwlr_layer_shell_v1         *layer_shell;
@@ -113,6 +116,7 @@ struct BarState {
     /* Pointer state */
     double  ptr_x, ptr_y;
     bool    ptr_inside;
+    struct wl_surface *ptr_surface;
     int     hover_hit;    /* index in hit_areas, -1 if none */
     HitType hover_type;   /* type of currently hovered element */
     int     hover_index;  /* index within that type, -1 if none */

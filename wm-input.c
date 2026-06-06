@@ -4,12 +4,15 @@
 #include <time.h>
 #include <linux/input-event-codes.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
+#include <errno.h>
+#include <limits.h>
 
 #include "types.h"
 #include "wm-log.h"
 #include "wm-state.h"
 #include "wm-layout.h"
 #include "wm-input.h"
+#include "cursor-shape-v1-client-protocol.h"
 
 #define HOLD_THRESHOLD_MS 360
 #define DOUBLE_TAP_MS 280
@@ -186,6 +189,137 @@ void process_hold_timers(void) {
 	}
 }
 
+// --- Seat cursor fallback ---
+
+static void wm_pointer_enter(void *data, struct wl_pointer *ptr,
+		uint32_t serial, struct wl_surface *surface, wl_fixed_t sx, wl_fixed_t sy) {
+	(void)data; (void)ptr; (void)serial; (void)surface; (void)sx; (void)sy;
+}
+static void wm_pointer_leave(void *data, struct wl_pointer *ptr,
+		uint32_t serial, struct wl_surface *surface) {
+	(void)data; (void)ptr; (void)serial; (void)surface;
+}
+static void wm_pointer_motion(void *data, struct wl_pointer *ptr,
+		uint32_t time, wl_fixed_t sx, wl_fixed_t sy) {
+	(void)data; (void)ptr; (void)time; (void)sx; (void)sy;
+}
+static void wm_pointer_button(void *data, struct wl_pointer *ptr,
+		uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {
+	(void)data; (void)ptr; (void)serial; (void)time; (void)button; (void)state;
+}
+static void wm_pointer_axis(void *data, struct wl_pointer *ptr,
+		uint32_t time, uint32_t axis, wl_fixed_t value) {
+	(void)data; (void)ptr; (void)time; (void)axis; (void)value;
+}
+static void wm_pointer_frame(void *data, struct wl_pointer *ptr) {
+	(void)data; (void)ptr;
+}
+static void wm_pointer_axis_source(void *data, struct wl_pointer *ptr, uint32_t source) {
+	(void)data; (void)ptr; (void)source;
+}
+static void wm_pointer_axis_stop(void *data, struct wl_pointer *ptr, uint32_t time, uint32_t axis) {
+	(void)data; (void)ptr; (void)time; (void)axis;
+}
+static void wm_pointer_axis_discrete(void *data, struct wl_pointer *ptr, uint32_t axis, int32_t discrete) {
+	(void)data; (void)ptr; (void)axis; (void)discrete;
+}
+static void wm_pointer_axis_value120(void *data, struct wl_pointer *ptr, uint32_t axis, int32_t value120) {
+	(void)data; (void)ptr; (void)axis; (void)value120;
+}
+static void wm_pointer_axis_relative_direction(void *data, struct wl_pointer *ptr, uint32_t axis, uint32_t direction) {
+	(void)data; (void)ptr; (void)axis; (void)direction;
+}
+
+static const struct wl_pointer_listener wm_pointer_listener = {
+	.enter = wm_pointer_enter,
+	.leave = wm_pointer_leave,
+	.motion = wm_pointer_motion,
+	.button = wm_pointer_button,
+	.axis = wm_pointer_axis,
+	.frame = wm_pointer_frame,
+	.axis_source = wm_pointer_axis_source,
+	.axis_stop = wm_pointer_axis_stop,
+	.axis_discrete = wm_pointer_axis_discrete,
+	.axis_value120 = wm_pointer_axis_value120,
+	.axis_relative_direction = wm_pointer_axis_relative_direction,
+};
+
+static uint32_t cursor_size_from_env(void) {
+	const char *value = getenv("XCURSOR_SIZE");
+	if (value == NULL || value[0] == '\0') return 24;
+
+	errno = 0;
+	char *end = NULL;
+	unsigned long parsed = strtoul(value, &end, 10);
+	if (errno != 0 || end == value || *end != '\0' || parsed == 0 || parsed > 512) {
+		return 24;
+	}
+	return (uint32_t)parsed;
+}
+
+static void seat_apply_xcursor_theme(struct Seat *seat) {
+	if (river_seat_v1_get_version(seat->obj) < RIVER_SEAT_V1_SET_XCURSOR_THEME_SINCE_VERSION) {
+		return;
+	}
+	const char *theme = getenv("XCURSOR_THEME");
+	if (theme == NULL) theme = "";
+	river_seat_v1_set_xcursor_theme(seat->obj, theme, cursor_size_from_env());
+}
+
+static void seat_set_default_cursor(struct Seat *seat) {
+	if (seat->cursor_shape_device == NULL) return;
+	wp_cursor_shape_device_v1_set_shape(
+		seat->cursor_shape_device,
+		0,
+		WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
+}
+
+static void seat_ensure_cursor_shape_device(struct Seat *seat) {
+	if (seat->wl_pointer == NULL ||
+	    seat->cursor_shape_device != NULL ||
+	    cursor_shape_manager_v1 == NULL) {
+		return;
+	}
+	seat->cursor_shape_device =
+		wp_cursor_shape_manager_v1_get_pointer(cursor_shape_manager_v1, seat->wl_pointer);
+	seat_set_default_cursor(seat);
+}
+
+static void wm_wl_seat_capabilities(void *data, struct wl_seat *wl_seat, uint32_t caps) {
+	struct Seat *seat = data;
+	if ((caps & WL_SEAT_CAPABILITY_POINTER) && seat->wl_pointer == NULL) {
+		seat->wl_pointer = wl_seat_get_pointer(wl_seat);
+		wl_pointer_add_listener(seat->wl_pointer, &wm_pointer_listener, seat);
+		seat_ensure_cursor_shape_device(seat);
+	} else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && seat->wl_pointer != NULL) {
+		if (seat->cursor_shape_device != NULL) {
+			wp_cursor_shape_device_v1_destroy(seat->cursor_shape_device);
+			seat->cursor_shape_device = NULL;
+		}
+		wl_pointer_destroy(seat->wl_pointer);
+		seat->wl_pointer = NULL;
+	}
+}
+
+static void wm_wl_seat_name(void *data, struct wl_seat *wl_seat, const char *name) {
+	(void)data; (void)wl_seat; (void)name;
+}
+
+static const struct wl_seat_listener wm_wl_seat_listener = {
+	.capabilities = wm_wl_seat_capabilities,
+	.name = wm_wl_seat_name,
+};
+
+static void seat_bind_wl_seat(struct Seat *seat, uint32_t name) {
+	seat->wl_seat_name = name;
+	if (seat->wl_seat != NULL || wm_registry == NULL) return;
+
+	seat->wl_seat = wl_registry_bind(wm_registry, name, &wl_seat_interface, 1);
+	if (seat->wl_seat != NULL) {
+		wl_seat_add_listener(seat->wl_seat, &wm_wl_seat_listener, seat);
+	}
+}
+
 // --- Seat handlers ---
 
 static void seat_handle_removed(void *data, struct river_seat_v1 *obj) {
@@ -209,7 +343,11 @@ static void seat_handle_window_interaction(void *data, struct river_seat_v1 *obj
 	close_launcher();
 }
 
-static void seat_handle_wl_seat(void *data, struct river_seat_v1 *obj, uint32_t id) {}
+static void seat_handle_wl_seat(void *data, struct river_seat_v1 *obj, uint32_t id) {
+	struct Seat *seat = data;
+	(void)obj;
+	seat_bind_wl_seat(seat, id);
+}
 static void seat_handle_shell_surface_interaction(void *data, struct river_seat_v1 *obj, struct river_shell_surface_v1 *river_shell_surface) {}
 static void seat_handle_op_delta(void *data, struct river_seat_v1 *obj, int32_t dx, int32_t dy) {}
 static void seat_handle_op_release(void *data, struct river_seat_v1 *obj) {}
@@ -236,6 +374,18 @@ void seat_maybe_destroy(struct Seat *seat) {
 	struct PointerBinding *pointer_binding, *pointer_binding_tmp;
 	wl_list_for_each_safe(pointer_binding, pointer_binding_tmp, &seat->pointer_bindings, link) {
 		pointer_binding_destroy(pointer_binding);
+	}
+	if (seat->cursor_shape_device != NULL) {
+		wp_cursor_shape_device_v1_destroy(seat->cursor_shape_device);
+		seat->cursor_shape_device = NULL;
+	}
+	if (seat->wl_pointer != NULL) {
+		wl_pointer_destroy(seat->wl_pointer);
+		seat->wl_pointer = NULL;
+	}
+	if (seat->wl_seat != NULL) {
+		wl_seat_destroy(seat->wl_seat);
+		seat->wl_seat = NULL;
 	}
 	if (seat->layer_shell_seat != NULL) {
 		river_layer_shell_seat_v1_destroy(seat->layer_shell_seat);
@@ -314,6 +464,8 @@ void seat_manage(struct Seat *seat) {
 	if (seat->new) {
 		seat->new = false;
 		LOG_EVENT("seat init: creating xkb bindings");
+		seat_apply_xcursor_theme(seat);
+		seat_ensure_cursor_shape_device(seat);
 		const uint32_t super = RIVER_SEAT_V1_MODIFIERS_MOD4;
 		const uint32_t ctrl  = RIVER_SEAT_V1_MODIFIERS_CTRL;
 		const uint32_t alt   = RIVER_SEAT_V1_MODIFIERS_MOD1;

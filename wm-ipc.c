@@ -39,10 +39,12 @@
 
 struct WindowManager wm;
 struct wl_display *wm_display;
+struct wl_registry *wm_registry;
 struct river_window_manager_v1 *window_manager_v1;
 struct river_xkb_bindings_v1 *xkb_bindings_v1;
 struct river_layer_shell_v1 *layer_shell_v1;
 struct river_libinput_config_v1 *libinput_config_v1;
+struct wp_cursor_shape_manager_v1 *cursor_shape_manager_v1;
 
 /* IPC: socket DGRAM que recebe "activate <identifier>" do proxy */
 static int  ipc_fd = -1;
@@ -134,6 +136,7 @@ int main(void) {
 	signal(SIGCHLD, SIG_IGN);
 
 	struct wl_registry *registry = wl_display_get_registry(display);
+	wm_registry = registry;
 	wl_registry_add_listener(registry, &registry_listener, NULL);
 	if (wl_display_roundtrip(display) < 0) {
 		fprintf(stderr, "roundtrip failed\n");
@@ -207,6 +210,7 @@ int main(void) {
 
 done:
 	wm_display = NULL;
+	wm_registry = NULL;
 	log_close();
 	if (ipc_fd >= 0) close(ipc_fd);
 	if (ipc_path[0] != '\0') unlink(ipc_path);
