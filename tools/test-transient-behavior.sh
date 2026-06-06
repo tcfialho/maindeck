@@ -23,8 +23,8 @@ ln -s "$REAL_PARENT_SOCK" "$RTDIR/wayland-parent"
 export XDG_RUNTIME_DIR="$RTDIR"
 export MAINDECK_LOG="debug"
 export MAINDECK_LOG_PATH="$RTDIR/maindeck.log"
-export MAINDECK_IMPLICIT_PARENT_APP_ID="steam"
-export MAINDECK_IMPLICIT_PARENT_TITLES="Steam|Steam Big Picture"
+export MAINDECK_IMPLICIT_PARENT_APP_ID="quirkapp"
+export MAINDECK_IMPLICIT_PARENT_TITLES="QUIRKPARENT|QUIRKPARENT ALT"
 
 WM_LOG="$MAINDECK_LOG_PATH"
 > "$WM_LOG"
@@ -353,36 +353,36 @@ else
 fi
 
 # ══════════════════════════════════════════
-echo ""; echo "Cenário 14: Regra implicit-parent opt-in (Steam/Xwayland)"
+echo ""; echo "Cenário 14: Regra implicit-parent opt-in genérica"
 offset=$(get_log_offset)
-send "open Steam none steam"
+send "open QUIRKPARENT none quirkapp"
 sleep 0.5
-send "open AboutSteam none steam"
-if assert_child_of "AboutSteam" "Steam" "$offset" && \
-   assert_implicit_child_proposed_positive "AboutSteam" "$offset" && \
-   assert_child_sized_positive "AboutSteam" "Steam" "$offset"; then
-    ok "Caso A: AboutSteam adotada como filha de Steam e dimensionada"
+send "open QUIRKCHILD_ABOUT none quirkapp"
+if assert_child_of "QUIRKCHILD_ABOUT" "QUIRKPARENT" "$offset" && \
+   assert_implicit_child_proposed_positive "QUIRKCHILD_ABOUT" "$offset" && \
+   assert_child_sized_positive "QUIRKCHILD_ABOUT" "QUIRKPARENT" "$offset"; then
+    ok "Caso A: filha quirk adotada e dimensionada"
 else
-    fail "Caso A: AboutSteam não foi adotada/dimensionada como filha"
+    fail "Caso A: filha quirk não foi adotada/dimensionada"
 fi
 
 offset2=$(get_log_offset)
-send "open FriendsList none steam"
+send "open QUIRKCHILD_FRIENDS none quirkapp"
 sleep 0.5
-send "close Steam"
+send "close QUIRKPARENT"
 sleep 0.5
-send "open Steam none steam"
-if assert_child_of "FriendsList" "Steam" "$offset2" && \
-   assert_child_of "AboutSteam" "Steam" "$offset2" && \
-   assert_implicit_child_proposed_positive "FriendsList" "$offset2" && \
-   assert_child_sized_positive "FriendsList" "Steam" "$offset2"; then
-    ok "Caso B: FriendsList adotada retroativamente ao abrir Steam e dimensionada"
+send "open QUIRKPARENT none quirkapp"
+if assert_child_of "QUIRKCHILD_FRIENDS" "QUIRKPARENT" "$offset2" && \
+   assert_child_of "QUIRKCHILD_ABOUT" "QUIRKPARENT" "$offset2" && \
+   assert_implicit_child_proposed_positive "QUIRKCHILD_FRIENDS" "$offset2" && \
+   assert_child_sized_positive "QUIRKCHILD_FRIENDS" "QUIRKPARENT" "$offset2"; then
+    ok "Caso B: filha quirk adotada retroativamente e dimensionada"
 else
-    fail "Caso B: Falha na adoção/dimensionamento retroativo da filha"
+    fail "Caso B: falha na adoção/dimensionamento retroativo da filha quirk"
 fi
 
-send "close Steam"
-send "close AboutSteam"
-send "close FriendsList"
+send "close QUIRKPARENT"
+send "close QUIRKCHILD_ABOUT"
+send "close QUIRKCHILD_FRIENDS"
 
 exec 8>&-

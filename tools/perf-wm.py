@@ -171,8 +171,8 @@ class Bench:
         pid_file = self.tmp / "wm.pid"
         init.write_text(f"""#!/bin/sh
 MAINDECK_LOG= MAINDECK_LOG_PATH="{self.tmp / 'maindeck.log'}" \\
-MAINDECK_IMPLICIT_PARENT_APP_ID=steam \\
-MAINDECK_IMPLICIT_PARENT_TITLES='Steam|Steam Big Picture' \\
+MAINDECK_IMPLICIT_PARENT_APP_ID=quirkapp \\
+MAINDECK_IMPLICIT_PARENT_TITLES='QUIRKPARENT|QUIRKPARENT ALT' \\
 "{wm_bin}" &
 echo $! > "{pid_file}"
 """)
@@ -185,8 +185,8 @@ echo $! > "{pid_file}"
                 "WAYLAND_DISPLAY": "wayland-parent",
                 "MAINDECK_LOG": "",
                 "MAINDECK_LOG_PATH": str(self.tmp / "maindeck.log"),
-                "MAINDECK_IMPLICIT_PARENT_APP_ID": "steam",
-                "MAINDECK_IMPLICIT_PARENT_TITLES": "Steam|Steam Big Picture",
+                "MAINDECK_IMPLICIT_PARENT_APP_ID": "quirkapp",
+                "MAINDECK_IMPLICIT_PARENT_TITLES": "QUIRKPARENT|QUIRKPARENT ALT",
             }
         )
         self.river = subprocess.Popen(
@@ -343,16 +343,16 @@ echo $! > "{pid_file}"
         results.append(self.measure("protocol_child_churn", protocol_child_churn))
 
         def implicit_child_churn():
-            times = [self.send("open Steam none steam")]
+            times = [self.send("open QUIRKPARENT none quirkapp")]
             time.sleep(0.25)
             for i in range(n):
-                name = f"AboutSteam{i}"
-                times.append(self.send(f"open {name} none steam"))
+                name = f"QUIRKCHILD{i}"
+                times.append(self.send(f"open {name} none quirkapp"))
                 times.append(self.send(f"close {name}"))
-            times.append(self.send("close Steam"))
+            times.append(self.send("close QUIRKPARENT"))
             return times
 
-        results.append(self.measure("implicit_steam_child_churn", implicit_child_churn))
+        results.append(self.measure("implicit_parent_child_churn", implicit_child_churn))
 
         def fullscreen_child_churn():
             times = [self.send("fullscreen TESTPARENT")]
