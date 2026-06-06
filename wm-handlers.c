@@ -96,6 +96,8 @@ void output_maybe_destroy(struct Output *output) {
 	free(output);
 }
 
+static void window_destroy_closed(struct Window *window);
+
 static void window_handle_closed(void *data, struct river_window_v1 *obj) {
 	struct Window *window = data;
 	LOG_EVENT("window closed: \"%s\" app_id=%s index=%d",
@@ -103,6 +105,9 @@ static void window_handle_closed(void *data, struct river_window_v1 *obj) {
 		window->app_id ? window->app_id : "",
 		window_index(window));
 	window->closed = true;
+	if (window->parent != NULL) {
+		window_destroy_closed(window);
+	}
 }
 
 static void window_handle_dimensions(void *data, struct river_window_v1 *obj, int32_t width, int32_t height) {
@@ -343,8 +348,7 @@ static const struct river_window_v1_listener river_window_listener = {
 	.identifier = window_handle_identifier,
 };
 
-void window_maybe_destroy(struct Window *window) {
-	if (!window->closed) return;
+static void window_destroy_closed(struct Window *window) {
 	struct Seat *seat;
 	wl_list_for_each(seat, &wm.seats, link) {
 		if (seat->focused == window) seat->focused = NULL;
@@ -366,6 +370,11 @@ void window_maybe_destroy(struct Window *window) {
 	free(window->title);
 	free(window->identifier);
 	free(window);
+}
+
+void window_maybe_destroy(struct Window *window) {
+	if (!window->closed) return;
+	window_destroy_closed(window);
 }
 
 static void wm_handle_unavailable(void *data, struct river_window_manager_v1 *obj) {
