@@ -23,6 +23,26 @@ uint32_t all_edges(void) {
 		RIVER_WINDOW_V1_EDGES_LEFT | RIVER_WINDOW_V1_EDGES_RIGHT;
 }
 
+static void window_apply_borders(struct Window *w, enum BorderState desired) {
+	if (w->border_state == desired) return;
+	if (desired == BORDER_NONE) {
+		river_window_v1_set_borders(w->obj, RIVER_WINDOW_V1_EDGES_NONE, 0, 0, 0, 0, 0);
+	} else if (desired == BORDER_TILED) {
+		river_window_v1_set_borders(w->obj, all_edges(), BORDER_WIDTH, 0, 0, 0, 0x00000000u);
+	}
+	w->border_state = desired;
+}
+
+static void window_set_visible(struct Window *w, bool visible) {
+	if (w->applied_visible == visible) return;
+	if (visible) {
+		river_window_v1_show(w->obj);
+	} else {
+		river_window_v1_hide(w->obj);
+	}
+	w->applied_visible = visible;
+}
+
 size_t window_count(void) {
 	size_t count = 0;
 	struct Window *window;
@@ -419,43 +439,42 @@ void window_manage_layout(struct Window *window, size_t index) {
 
 void window_render_layout(struct Window *window, size_t index) {
 	if (window->minimized) {
-		river_window_v1_hide(window->obj);
-		river_window_v1_set_borders(window->obj, RIVER_WINDOW_V1_EDGES_NONE, 0, 0, 0, 0, 0);
+		window_set_visible(window, false);
+		window_apply_borders(window, BORDER_NONE);
 		return;
 	}
 	// Transient windows / dialogs: float natively above parent, no WM borders.
 	if (window->parent != NULL) {
-		river_window_v1_show(window->obj);
+		window_set_visible(window, true);
 		wm_place_top(window->node);
-		river_window_v1_set_borders(window->obj, RIVER_WINDOW_V1_EDGES_NONE, 0, 0, 0, 0, 0);
+		window_apply_borders(window, BORDER_NONE);
 		return;
 	}
 	// Fullscreen window: compositor owns geometry; just show it, no borders,
 	// node on top (so it's the top fullscreen window — anything above it in the
 	// render order, like waybar, keeps drawing; see place_top handling).
 	if (window->fullscreen) {
-		river_window_v1_show(window->obj);
-		river_window_v1_set_borders(window->obj, RIVER_WINDOW_V1_EDGES_NONE, 0, 0, 0, 0, 0);
+		window_set_visible(window, true);
+		window_apply_borders(window, BORDER_NONE);
 		wm_place_top(window->node);
 		return;
 	}
 
 	if (!window_is_visible_index(index)) {
-		river_window_v1_hide(window->obj);
-		river_window_v1_set_borders(window->obj, RIVER_WINDOW_V1_EDGES_NONE, 0, 0, 0, 0, 0);
+		window_set_visible(window, false);
+		window_apply_borders(window, BORDER_NONE);
 		return;
 	}
 
 	struct Box box = layout_box_for_index(index);
-	river_window_v1_show(window->obj);
+	window_set_visible(window, true);
 	river_node_v1_set_position(window->node, box.x + BORDER_WIDTH, box.y + BORDER_WIDTH);
 	wm_place_top(window->node);
 
 	// Borda transparente para todas as janelas (focado e desfocado).
 	// Mantemos a largura (BORDER_WIDTH) com alpha 0 para que a geometria e
 	// o posicionamento das janelas permaneçam idênticos.
-	river_window_v1_set_borders(window->obj, all_edges(), BORDER_WIDTH,
-		0, 0, 0, 0x00000000u);
+	window_apply_borders(window, BORDER_TILED);
 }
 
 void wm_place_top(struct river_node_v1 *node) {

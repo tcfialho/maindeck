@@ -25,6 +25,12 @@ struct Output {
 	struct wl_list link;
 };
 
+enum BorderState {
+	BORDER_UNINITIALIZED = 0,
+	BORDER_NONE,
+	BORDER_TILED
+};
+
 struct Window {
 	struct river_window_v1 *obj;
 	struct river_node_v1 *node;
@@ -44,6 +50,9 @@ struct Window {
 	bool minimized; // force-hidden independente do índice; excluído da contagem visível; agrupado na cauda de wm.windows
 	bool applied_fullscreen; // what we last told the server, to act only on edges
 	struct river_output_v1 *fs_output;
+
+	enum BorderState border_state;
+	bool applied_visible;
 
 	struct wl_list link; // WindowManager.windows in MainDeck order
 };

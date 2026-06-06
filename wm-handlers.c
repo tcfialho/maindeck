@@ -254,8 +254,6 @@ static uint64_t compute_layout_signature(void) {
 		if (w->parent == NULL) parentless_count++;
 		SIG_MIX((uintptr_t)w->obj);
 		SIG_MIX(w->fullscreen);
-		SIG_MIX(w->applied_fullscreen);
-		SIG_MIX(w->new);
 		SIG_MIX(w->minimized);
 		SIG_MIX((uintptr_t)w->parent);
 	}
