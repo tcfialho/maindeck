@@ -465,11 +465,3 @@ void wm_place_top(struct river_node_v1 *node) {
 	}
 }
 
-struct Window *window_by_obj(struct river_window_v1 *obj) {
-	if (!obj) return NULL;
-	struct Window *w;
-	wl_list_for_each(w, &wm.windows, link) {
-		if (w->obj == obj) return w;
-	}
-	return NULL;
-}

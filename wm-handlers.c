@@ -124,7 +124,7 @@ static void window_handle_dimensions_hint(void *data, struct river_window_v1 *ob
 static void window_handle_parent(void *data, struct river_window_v1 *obj, struct river_window_v1 *parent) {
 	struct Window *window = data;
 	(void)obj;
-	struct Window *new_parent = window_by_obj(parent);
+	struct Window *new_parent = parent ? river_window_v1_get_user_data(parent) : NULL;
 	if (new_parent == window) new_parent = NULL; // Prevent self-parenting
 	if (window->parent != new_parent) {
 		window->parent = new_parent;
