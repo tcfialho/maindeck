@@ -198,27 +198,215 @@ static DBusHandlerResult signal_filter(DBusConnection *conn,
 {
     (void)conn; (void)data;
 
-    if (dbus_message_get_type(msg) != DBUS_MESSAGE_TYPE_SIGNAL)
-        return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
-
+    int msg_type = dbus_message_get_type(msg);
     const char *iface  = dbus_message_get_interface(msg);
     const char *member = dbus_message_get_member(msg);
+    const char *path   = dbus_message_get_path(msg);
     if (!iface || !member)
         return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 
-    if (strcmp(iface, SNI_WATCHER_IFACE) == 0) {
-        const char *arg = NULL;
-        dbus_message_get_args(msg, NULL, DBUS_TYPE_STRING, &arg, DBUS_TYPE_INVALID);
-        if (!arg) return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+    if (msg_type == DBUS_MESSAGE_TYPE_METHOD_CALL) {
+        if (path && strcmp(path, SNI_WATCHER_PATH) == 0) {
+            if (strcmp(iface, "org.freedesktop.DBus.Properties") == 0) {
+                if (strcmp(member, "Get") == 0) {
+                    const char *req_iface = NULL;
+                    const char *req_prop = NULL;
+                    dbus_message_get_args(msg, NULL,
+                                          DBUS_TYPE_STRING, &req_iface,
+                                          DBUS_TYPE_STRING, &req_prop,
+                                          DBUS_TYPE_INVALID);
+                    if (req_iface && strcmp(req_iface, SNI_WATCHER_IFACE) == 0) {
+                        if (req_prop && strcmp(req_prop, "RegisteredStatusNotifierItems") == 0) {
+                            DBusMessage *reply = dbus_message_new_method_return(msg);
+                            if (reply) {
+                                DBusMessageIter iter, variant, arr;
+                                dbus_message_iter_init_append(reply, &iter);
+                                dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT, "as", &variant);
+                                dbus_message_iter_open_container(&variant, DBUS_TYPE_ARRAY, "s", &arr);
+                                for (int i = 0; i < g_item_n; i++) {
+                                    char full_path[256];
+                                    snprintf(full_path, sizeof(full_path), "%s%s", 
+                                             g_items[i].service, g_items[i].obj_path);
+                                    const char *s = full_path;
+                                    dbus_message_iter_append_basic(&arr, DBUS_TYPE_STRING, &s);
+                                }
+                                dbus_message_iter_close_container(&variant, &arr);
+                                dbus_message_iter_close_container(&iter, &variant);
+                                dbus_connection_send(conn, reply, NULL);
+                                dbus_message_unref(reply);
+                                return DBUS_HANDLER_RESULT_HANDLED;
+                            }
+                        } else if (req_prop && strcmp(req_prop, "IsStatusNotifierHostRegistered") == 0) {
+                            DBusMessage *reply = dbus_message_new_method_return(msg);
+                            if (reply) {
+                                DBusMessageIter iter, variant;
+                                dbus_message_iter_init_append(reply, &iter);
+                                dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT, "b", &variant);
+                                dbus_bool_t val = TRUE;
+                                dbus_message_iter_append_basic(&variant, DBUS_TYPE_BOOLEAN, &val);
+                                dbus_message_iter_close_container(&iter, &variant);
+                                dbus_connection_send(conn, reply, NULL);
+                                dbus_message_unref(reply);
+                                return DBUS_HANDLER_RESULT_HANDLED;
+                            }
+                        } else if (req_prop && strcmp(req_prop, "ProtocolVersion") == 0) {
+                            DBusMessage *reply = dbus_message_new_method_return(msg);
+                            if (reply) {
+                                DBusMessageIter iter, variant;
+                                dbus_message_iter_init_append(reply, &iter);
+                                dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT, "i", &variant);
+                                dbus_int32_t val = 0;
+                                dbus_message_iter_append_basic(&variant, DBUS_TYPE_INT32, &val);
+                                dbus_message_iter_close_container(&iter, &variant);
+                                dbus_connection_send(conn, reply, NULL);
+                                dbus_message_unref(reply);
+                                return DBUS_HANDLER_RESULT_HANDLED;
+                            }
+                        }
+                    }
+                } else if (strcmp(member, "GetAll") == 0) {
+                    const char *req_iface = NULL;
+                    dbus_message_get_args(msg, NULL, DBUS_TYPE_STRING, &req_iface, DBUS_TYPE_INVALID);
+                    if (req_iface && strcmp(req_iface, SNI_WATCHER_IFACE) == 0) {
+                        DBusMessage *reply = dbus_message_new_method_return(msg);
+                        if (reply) {
+                            DBusMessageIter iter, dict;
+                            dbus_message_iter_init_append(reply, &iter);
+                            dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "{sv}", &dict);
+                            
+                            {
+                                DBusMessageIter entry, variant, arr;
+                                const char *key = "RegisteredStatusNotifierItems";
+                                dbus_message_iter_open_container(&dict, DBUS_TYPE_DICT_ENTRY, NULL, &entry);
+                                dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
+                                dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "as", &variant);
+                                dbus_message_iter_open_container(&variant, DBUS_TYPE_ARRAY, "s", &arr);
+                                for (int i = 0; i < g_item_n; i++) {
+                                    char full_path[256];
+                                    snprintf(full_path, sizeof(full_path), "%s%s", 
+                                             g_items[i].service, g_items[i].obj_path);
+                                    const char *s = full_path;
+                                    dbus_message_iter_append_basic(&arr, DBUS_TYPE_STRING, &s);
+                                }
+                                dbus_message_iter_close_container(&variant, &arr);
+                                dbus_message_iter_close_container(&entry, &variant);
+                                dbus_message_iter_close_container(&dict, &entry);
+                            }
+                            
+                            {
+                                DBusMessageIter entry, variant;
+                                const char *key = "IsStatusNotifierHostRegistered";
+                                dbus_message_iter_open_container(&dict, DBUS_TYPE_DICT_ENTRY, NULL, &entry);
+                                dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
+                                dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "b", &variant);
+                                dbus_bool_t val = TRUE;
+                                dbus_message_iter_append_basic(&variant, DBUS_TYPE_BOOLEAN, &val);
+                                dbus_message_iter_close_container(&entry, &variant);
+                                dbus_message_iter_close_container(&dict, &entry);
+                            }
+                            
+                            {
+                                DBusMessageIter entry, variant;
+                                const char *key = "ProtocolVersion";
+                                dbus_message_iter_open_container(&dict, DBUS_TYPE_DICT_ENTRY, NULL, &entry);
+                                dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
+                                dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "i", &variant);
+                                dbus_int32_t val = 0;
+                                dbus_message_iter_append_basic(&variant, DBUS_TYPE_INT32, &val);
+                                dbus_message_iter_close_container(&entry, &variant);
+                                dbus_message_iter_close_container(&dict, &entry);
+                            }
+                            
+                            dbus_message_iter_close_container(&iter, &dict);
+                            dbus_connection_send(conn, reply, NULL);
+                            dbus_message_unref(reply);
+                            return DBUS_HANDLER_RESULT_HANDLED;
+                        }
+                    }
+                }
+            } else if (strcmp(iface, SNI_WATCHER_IFACE) == 0) {
+                if (strcmp(member, "RegisterStatusNotifierItem") == 0) {
+                    const char *arg = NULL;
+                    dbus_message_get_args(msg, NULL, DBUS_TYPE_STRING, &arg, DBUS_TYPE_INVALID);
+                    if (arg) {
+                        char full_name[256];
+                        const char *sender = dbus_message_get_sender(msg);
+                        if (arg[0] == '/') {
+                            snprintf(full_name, sizeof(full_name), "%s%s", sender ? sender : "", arg);
+                        } else if (strchr(arg, '/') == NULL) {
+                            snprintf(full_name, sizeof(full_name), "%s", arg);
+                        } else {
+                            snprintf(full_name, sizeof(full_name), "%s", arg);
+                        }
+                        LOG_INFO("watcher: RegisterStatusNotifierItem '%s' (sender=%s)", full_name, sender ? sender : "");
+                        add_item(full_name);
 
-        if (strcmp(member, "StatusNotifierItemRegistered") == 0) {
-            LOG_INFO("tray: NewStatusNotifierItem '%s'", arg);
-            add_item(arg);
-        } else if (strcmp(member, "StatusNotifierItemUnregistered") == 0) {
-            LOG_INFO("tray: StatusNotifierItemUnregistered '%s'", arg);
-            remove_item(arg);
+                        DBusMessage *sig = dbus_message_new_signal(
+                            SNI_WATCHER_PATH, SNI_WATCHER_IFACE, "StatusNotifierItemRegistered");
+                        if (sig) {
+                            const char *sig_arg = full_name;
+                            dbus_message_append_args(sig, DBUS_TYPE_STRING, &sig_arg, DBUS_TYPE_INVALID);
+                            dbus_connection_send(conn, sig, NULL);
+                            dbus_message_unref(sig);
+                        }
+                    }
+                    
+                    DBusMessage *reply = dbus_message_new_method_return(msg);
+                    if (reply) {
+                        dbus_connection_send(conn, reply, NULL);
+                        dbus_message_unref(reply);
+                    }
+                    return DBUS_HANDLER_RESULT_HANDLED;
+                } else if (strcmp(member, "RegisterStatusNotifierHost") == 0) {
+                    DBusMessage *reply = dbus_message_new_method_return(msg);
+                    if (reply) {
+                        dbus_connection_send(conn, reply, NULL);
+                        dbus_message_unref(reply);
+                    }
+                    DBusMessage *sig = dbus_message_new_signal(
+                        SNI_WATCHER_PATH, SNI_WATCHER_IFACE, "StatusNotifierHostRegistered");
+                    if (sig) {
+                        dbus_connection_send(conn, sig, NULL);
+                        dbus_message_unref(sig);
+                    }
+                    return DBUS_HANDLER_RESULT_HANDLED;
+                }
+            }
+        }
+        return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+    }
+
+    if (msg_type == DBUS_MESSAGE_TYPE_SIGNAL) {
+        if (strcmp(iface, "org.freedesktop.DBus") == 0 && strcmp(member, "NameOwnerChanged") == 0) {
+            const char *name = NULL;
+            const char *old_owner = NULL;
+            const char *new_owner = NULL;
+            dbus_message_get_args(msg, NULL,
+                                  DBUS_TYPE_STRING, &name,
+                                  DBUS_TYPE_STRING, &old_owner,
+                                  DBUS_TYPE_STRING, &new_owner,
+                                  DBUS_TYPE_INVALID);
+            if (name && new_owner && strcmp(new_owner, "") == 0) {
+                remove_item(name);
+                if (old_owner && strcmp(old_owner, name) != 0) {
+                    remove_item(old_owner);
+                }
+            }
+        } else if (strcmp(iface, SNI_WATCHER_IFACE) == 0) {
+            const char *arg = NULL;
+            dbus_message_get_args(msg, NULL, DBUS_TYPE_STRING, &arg, DBUS_TYPE_INVALID);
+            if (!arg) return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+
+            if (strcmp(member, "StatusNotifierItemRegistered") == 0) {
+                LOG_INFO("tray: NewStatusNotifierItem '%s'", arg);
+                add_item(arg);
+            } else if (strcmp(member, "StatusNotifierItemUnregistered") == 0) {
+                LOG_INFO("tray: StatusNotifierItemUnregistered '%s'", arg);
+                remove_item(arg);
+            }
         }
     }
+
     return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 }
 
@@ -289,6 +477,23 @@ int bar_tray_init(void) {
     /* Don't exit on disconnect — let bar handle it */
     dbus_connection_set_exit_on_disconnect(g_conn, FALSE);
 
+    /* Request StatusNotifierWatcher ownership to become the watcher */
+    bool is_watcher = false;
+    int ret_watcher = dbus_bus_request_name(g_conn, SNI_WATCHER_BUS,
+                                            DBUS_NAME_FLAG_REPLACE_EXISTING, &err);
+    if (ret_watcher == DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER ||
+        ret_watcher == DBUS_REQUEST_NAME_REPLY_ALREADY_OWNER) {
+        is_watcher = true;
+        LOG_INFO("tray: registered as primary StatusNotifierWatcher");
+    } else {
+        if (dbus_error_is_set(&err)) {
+            LOG_WARN("tray: request watcher name failed: %s", err.message);
+            dbus_error_free(&err);
+        } else {
+            LOG_INFO("tray: watcher already active (fallback to host-only mode)");
+        }
+    }
+
     /* Register as StatusNotifierHost */
     snprintf(g_host_name, sizeof(g_host_name),
              "org.kde.StatusNotifierHost-%d", (int)getpid());
@@ -299,31 +504,44 @@ int bar_tray_init(void) {
         LOG_WARN("tray: request_name failed: %s",
                  dbus_error_is_set(&err) ? err.message : "unknown");
         if (dbus_error_is_set(&err)) dbus_error_free(&err);
-        /* non-fatal: we can still watch items */
     }
 
-    /* Tell the watcher we exist */
-    DBusMessage *reg = dbus_message_new_method_call(
-        SNI_WATCHER_BUS, SNI_WATCHER_PATH,
-        SNI_WATCHER_IFACE, "RegisterStatusNotifierHost");
-    if (reg) {
-        dbus_message_append_args(reg,
-            DBUS_TYPE_STRING, &(const char *){ g_host_name },
-            DBUS_TYPE_INVALID);
-        dbus_connection_send(g_conn, reg, NULL);
-        dbus_message_unref(reg);
+    if (!is_watcher) {
+        /* Tell the watcher we exist */
+        DBusMessage *reg = dbus_message_new_method_call(
+            SNI_WATCHER_BUS, SNI_WATCHER_PATH,
+            SNI_WATCHER_IFACE, "RegisterStatusNotifierHost");
+        if (reg) {
+            dbus_message_append_args(reg,
+                DBUS_TYPE_STRING, &(const char *){ g_host_name },
+                DBUS_TYPE_INVALID);
+            dbus_connection_send(g_conn, reg, NULL);
+            dbus_message_unref(reg);
+        }
     }
 
-    /* Watch watcher signals */
-    dbus_bus_add_match(g_conn,
-        "type='signal',interface='" SNI_WATCHER_IFACE "'", &err);
+    /* Add match rules for watcher signals and method calls */
+    dbus_bus_add_match(g_conn, "type='signal',interface='" SNI_WATCHER_IFACE "'", &err);
     if (dbus_error_is_set(&err)) dbus_error_free(&err);
+
+    if (is_watcher) {
+        dbus_bus_add_match(g_conn, "type='method_call',interface='" SNI_WATCHER_IFACE "'", &err);
+        if (dbus_error_is_set(&err)) dbus_error_free(&err);
+
+        dbus_bus_add_match(g_conn, "type='method_call',interface='org.freedesktop.DBus.Properties'", &err);
+        if (dbus_error_is_set(&err)) dbus_error_free(&err);
+
+        dbus_bus_add_match(g_conn, "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged'", &err);
+        if (dbus_error_is_set(&err)) dbus_error_free(&err);
+    }
 
     dbus_connection_add_filter(g_conn, signal_filter, NULL, NULL);
     dbus_connection_flush(g_conn);
 
-    /* Enumerate items already registered */
-    enumerate_items();
+    if (!is_watcher) {
+        /* Enumerate items already registered on external watcher */
+        enumerate_items();
+    }
 
     int fd = -1;
     if (!dbus_connection_get_unix_fd(g_conn, &fd)) {

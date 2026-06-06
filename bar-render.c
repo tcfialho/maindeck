@@ -320,25 +320,26 @@ static int draw_tray(cairo_t *cr, int h, int x_end) {
     int n    = bar_tray_count();
     int x    = x_end;
     int sz   = ICON_SIZE;
-    int pad  = 4;
+    int slot_w = ICON_SIZE + BTN_PAD * 2; /* 34 pixels */
+    int gap  = 2;
     int btn_y = (h - sz) / 2;
 
     struct BarState *bar = &g_bar;
     int btn_h = h - 4;
     int btn_y2 = 2;
     for (int i = n - 1; i >= 0; i--) {
-        x -= sz + pad;
+        x -= slot_w + gap;
         bool hovered = (bar->hover_type == HIT_TRAY) && (bar->hover_index == i);
         if (hovered) {
             cairo_set_source_rgba(cr, 0.30, 0.30, 0.38, 0.55);
-            rounded_rect(cr, x - 2, btn_y2, sz + 4, btn_h, BTN_RADIUS);
+            rounded_rect(cr, x, btn_y2, slot_w, btn_h, BTN_RADIUS);
             cairo_fill(cr);
         }
         cairo_surface_t *icon = bar_tray_icon(i);
-        bar_icon_draw(cr, icon, x, btn_y, sz);
-        push_hit(HIT_TRAY, i, x - 2, 0, sz + 4, h);
+        int ix = x + (slot_w - sz) / 2;
+        bar_icon_draw(cr, icon, ix, btn_y, sz);
+        push_hit(HIT_TRAY, i, x, 0, slot_w, h);
     }
-    if (n > 0) x -= 4; /* gap before status modules */
     return x;
 }
 
