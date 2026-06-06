@@ -384,9 +384,9 @@ void md_promote_target_to_main(void) {
 	log_state();
 }
 
-static int32_t clamp_dimension_hint(int32_t value, int32_t min, int32_t max) {
+static int32_t clamp_implicit_child_dimension(int32_t value, int32_t min, int32_t cap) {
 	if (min > 0 && value < min) value = min;
-	if (max > 0 && value > max) value = max;
+	if (cap > 0 && value > cap) value = cap;
 	return value > 0 ? value : 1;
 }
 
@@ -397,6 +397,13 @@ static struct Window *root_window(struct Window *window) {
 		root = root->parent;
 	}
 	return root;
+}
+
+static int32_t natural_implicit_child_dimension(int32_t current, int32_t min, int32_t max, int32_t cap, int32_t fallback) {
+	if (max > 0 && max <= cap) return max;
+	if (min > 0 && min <= cap) return min;
+	if (current > 0 && current <= cap) return current;
+	return fallback;
 }
 
 static void child_proposed_dimensions(struct Window *window, int32_t *width, int32_t *height) {
@@ -410,21 +417,21 @@ static void child_proposed_dimensions(struct Window *window, int32_t *width, int
 	int32_t pidx = root != NULL ? window_index(root) : -1;
 	struct Box pbox = pidx >= 0 ? layout_box_for_index((size_t)pidx) : output_box();
 
-	int32_t fallback_w = pbox.width / 2;
-	int32_t fallback_h = pbox.height / 2;
-	if (fallback_w < 320) fallback_w = pbox.width > 0 ? pbox.width : DEFAULT_WIDTH;
-	if (fallback_h < 200) fallback_h = pbox.height > 0 ? pbox.height : DEFAULT_HEIGHT;
-
 	int32_t max_dialog_w = (pbox.width * 3) / 4;
 	int32_t max_dialog_h = (pbox.height * 3) / 4;
-	int32_t proposed_w = window->width > 0 ? window->width : fallback_w;
-	int32_t proposed_h = window->height > 0 ? window->height : fallback_h;
+	if (max_dialog_w < 1) max_dialog_w = DEFAULT_WIDTH;
+	if (max_dialog_h < 1) max_dialog_h = DEFAULT_HEIGHT;
 
-	if (max_dialog_w > 0 && proposed_w > max_dialog_w) proposed_w = fallback_w;
-	if (max_dialog_h > 0 && proposed_h > max_dialog_h) proposed_h = fallback_h;
+	int32_t fallback_w = max_dialog_w < 480 ? max_dialog_w : 480;
+	int32_t fallback_h = max_dialog_h < 320 ? max_dialog_h : 320;
+	int32_t natural_w = natural_implicit_child_dimension(window->width, window->min_width, window->max_width, max_dialog_w, fallback_w);
+	int32_t natural_h = natural_implicit_child_dimension(window->height, window->min_height, window->max_height, max_dialog_h, fallback_h);
 
-	*width = clamp_dimension_hint(proposed_w, window->min_width, window->max_width);
-	*height = clamp_dimension_hint(proposed_h, window->min_height, window->max_height);
+	int32_t proposed_w = natural_w + 48;
+	int32_t proposed_h = natural_h + 40;
+
+	*width = clamp_implicit_child_dimension(proposed_w, window->min_width, max_dialog_w);
+	*height = clamp_implicit_child_dimension(proposed_h, window->min_height, max_dialog_h);
 }
 
 void md_insert_new_window(struct Window *window) {
