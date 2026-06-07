@@ -3,7 +3,8 @@
 ## Implementado
 
 - Base C derivada do `tinyrwm`.
-- Bind em `river_window_manager_v1` e `river_xkb_bindings_v1`.
+- Bind em `river_window_manager_v1`, `river_xkb_bindings_v1`,
+  `river_layer_shell_v1` e cursor-shape.
 - Ordem interna MainDeck:
   - `windows[0]` = MAIN
   - `windows[1]` = DECK visivel
@@ -18,27 +19,38 @@
 - Navegar cartas do DECK.
 - Promover ALVO para MAIN.
 - Mandar ALVO para o fundo do DECK.
-- `Super+1..9` com slots configuraveis por ambiente.
+- Tap/hold real com timer de 360 ms.
+- `Super+Tab` com double tap para avancar o DECK.
+- Barra nativa `maindeck-bar` com quick-launch, taskbar, status e tray.
+- IPC `maindeck-bar` -> `maindeck-wm` para ativar janelas pela taskbar.
+- Area util via River/layer-shell para respeitar zonas exclusivas.
+- Modo jogo/fullscreen: o WM notifica a barra, a barra suprime render e destroi
+  a layer-surface principal enquanto o fullscreen esta ativo.
+- Fallback de cursor via cursor-shape no WM, barra e menu.
+- Config externa da barra em `~/.config/maindeck/bar.json`.
 
 ## Atalhos atuais
 
-Tap/hold real ainda nao foi implementado. Por enquanto:
-
-- `Super+Tab`: alterna ALVO.
-- `Super+Shift+Tab`: swap MAIN/DECK.
-- `Super+Right`: proxima carta do DECK.
-- `Super+Left`: carta anterior do DECK.
-- `Super+Shift+Right`: manda ALVO para o fundo do DECK.
-- `Super+Shift+Left`: promove ALVO para MAIN.
+- `Super+Tab` tap: alterna ALVO.
+- `Super+Tab` hold: swap MAIN/DECK.
+- `Super+Tab` double tap: proxima carta do DECK.
+- `Super+Right` tap: proxima carta do DECK.
+- `Super+Right` hold: manda ALVO para o fundo do DECK.
+- `Super+Left` tap: carta anterior do DECK.
+- `Super+Left` hold: promove ALVO para MAIN.
 - `Super+Up`: maximiza ALVO.
 - `Super+Down`: restaura.
-- `Super+Delete`: fecha ALVO.
+- `Super+Delete`, `Super+F4` e `Alt+F4`: fecha ALVO.
+- `Super+Return`: abre `kitty`.
+- `Super+Shift+Escape`: sai da sessao River.
 
 ## Falta
 
-- Tap/hold real com timer de 360ms.
 - OSD visual como shell surface.
-- IPC/comando para Waybar ativar janelas/apps pelo item 6 da spec.
-- Usar area util do River/layer-shell para nao cobrir Waybar.
-- Config externa para proporcoes, comandos e slots.
-- Teste manual em sessao River real.
+- Pareamento robusto entre `zwlr` e `ext_foreign_toplevel` na taskbar; plano em
+  `otimizacao-jogos-task/future-matching-plan.md`.
+- Config externa do WM para proporcoes, comandos e politicas.
+- Investigar direct scanout/presentation async no caminho River/wlroots.
+- Planos futuros fora do Wayland atual:
+  - `docs/plano-maindeck-x11.md`
+  - `docs/plano-maindeck-windows.md`

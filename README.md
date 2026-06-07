@@ -38,44 +38,35 @@ river -c ./build/maindeck-wm
 
 ## Local deployment notes
 
-Machine-local River, Waybar, Sunshine, and notification (mako) configuration
-used on the notebook is documented in `docs/local-session-config.md`. Those
-files live outside this repository and must be managed separately from the
-source tree. In particular the OSD's "replace, don't stack" behavior and its
-auto-expiry rely on mako: see the **Notifications (mako)** section there for
-`~/.config/mako/config` (the 10-second ceiling) — without it, notifications
-never auto-expire.
+Machine-local River, native MainDeck bar/menu, Sunshine, and notification
+configuration used on the notebook is documented in
+`docs/local-session-config.md`. Those files live outside this repository and
+must be managed separately from the source tree.
 
-The River/Waybar taskbar investigation and architecture handoff is documented
-in `docs/river-waybar-taskbar-research.md`.
+Future platform plans:
+
+- `docs/plano-maindeck-x11.md`
+- `docs/plano-maindeck-windows.md`
 
 ## Current bindings
 
-The spec asks for tap/hold. This first implementation uses `Super+Shift` as the
-temporary hold equivalent while the timer-based tap/hold layer is still pending.
+Tap/hold is implemented with a 360 ms threshold. The common tap path is kept
+immediate; hold actions fire only after the threshold.
 
 ```txt
-Super+Return          open foot
-Super+Tab             alternate ALVO MAIN <-> DECK
-Super+Shift+Tab       swap MAIN <-> visible DECK
-Super+Right           next DECK card
-Super+Left            previous DECK card
-Super+Shift+Right     send ALVO to bottom of DECK
-Super+Shift+Left      promote ALVO to MAIN
+Super+Return          open kitty
+Super+Tab             tap: alternate ALVO MAIN <-> DECK
+Super+Tab             hold: swap MAIN <-> visible DECK
+Super+Tab             double tap: next DECK card
+Super+Right           tap: next DECK card
+Super+Right           hold: send ALVO to bottom of DECK
+Super+Left            tap: previous DECK card
+Super+Left            hold: promote ALVO to MAIN
 Super+Up              maximize ALVO
 Super+Down            restore
-Super+Delete          close ALVO
-Super+1..9            activate configured app slot
+Super+Delete/F4       close ALVO
+Alt+F4                close ALVO
 Super+Shift+Escape    exit river session
 ```
 
-App slots can be overridden with environment variables:
-
-```txt
-MAINDECK_APP_1=code
-MAINDECK_CMD_1=code
-```
-
-The default app ids/commands are `code`, `chromium`, `foot`, `thunar`,
-`spotify`, `discord`, `firefox`, `org.wezfurlong.wezterm`/`wezterm`, and
-`Alacritty`/`alacritty`.
+Quick-launch buttons are configured by `~/.config/maindeck/bar.json`.
