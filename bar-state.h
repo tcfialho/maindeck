@@ -145,9 +145,13 @@ struct BarState {
     double                     menu_ptr_x, menu_ptr_y;
     int                        menu_hover_row; /* -1 = none */
 
-    /* IPC socket */
+    /* IPC socket (bar→wm: activate) */
     int ipc_sock;  /* AF_UNIX SOCK_DGRAM, -1 if not connected */
     char ipc_path[108];
+
+    /* Notify socket (wm→bar: fullscreen_on/off) */
+    int notify_sock; /* AF_UNIX SOCK_DGRAM server, -1 if not open */
+    bool wm_fullscreen; /* WM-side fullscreen override; takes precedence over zwlr state */
 
     /* Config */
     struct BarConfig config;

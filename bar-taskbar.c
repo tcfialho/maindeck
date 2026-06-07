@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
 
 #include <wayland-client.h>
 #include "wlr-foreign-toplevel-management-unstable-v1-client-protocol.h"
@@ -10,11 +12,12 @@
 #include "bar-taskbar.h"
 #include "bar-surface.h"
 #include "bar-icons.h"
-#include "bar-render.h"
 #include "bar-log.h"
 
 static void bar_update_render_suppressed(void) {
     struct BarState *bar = &g_bar;
+    /* WM notify takes precedence — don't override with zwlr state */
+    if (bar->wm_fullscreen) return;
     bool any_active_fullscreen = false;
     for (int i = 0; i < bar->toplevel_n; i++) {
         struct BarToplevel *tl = &bar->toplevels[i];
@@ -27,6 +30,25 @@ static void bar_update_render_suppressed(void) {
     if (any_active_fullscreen != bar->render_suppressed) {
         LOG_INFO("bar: render_suppressed changed from %d to %d", bar->render_suppressed, any_active_fullscreen);
         bar->render_suppressed = any_active_fullscreen;
+        if (!fork()) {
+            setsid();
+            if (any_active_fullscreen) {
+                execlp("notify-send", "notify-send", "-i", "applications-games", "-t", "2000",
+                       "Maindeck", "Modo jogo ativado", NULL);
+            } else {
+                execlp("notify-send", "notify-send", "-i", "dialog-information", "-t", "2000",
+                       "Maindeck", "Modo jogo desativado", NULL);
+            }
+            _exit(1);
+        }
+        if (!fork()) {
+            setsid();
+            const char *snd = any_active_fullscreen
+                ? "/usr/share/sounds/freedesktop/stereo/complete.oga"
+                : "/usr/share/sounds/freedesktop/stereo/dialog-information.oga";
+            execlp("paplay", "paplay", snd, NULL);
+            _exit(1);
+        }
         if (!bar->render_suppressed) {
             bar->dirty_deferred = false;
             bar_surface_restore();
@@ -83,12 +105,19 @@ static void tl_state(void *data,
     tl->minimized  = min;
     tl->fullscreen = fs;
     bar_request_redraw(&g_bar);
-    bar_update_render_suppressed();
+    /* Only suppress render if app_id is known — if empty, fullscreen arrived
+     * before the first done; tl_done will call bar_update_render_suppressed
+     * once app_id is guaranteed to be set by the compositor. */
+    if (tl->app_id[0])
+        bar_update_render_suppressed();
 }
 
 static void tl_done(void *data,
     struct zwlr_foreign_toplevel_handle_v1 *h) {
-    (void)h; (void)data;
+    (void)h;
+    (void)data;
+    /* app_id is stable after the first done — process any deferred fullscreen */
+    bar_update_render_suppressed();
     bar_request_redraw(&g_bar);
 }
 

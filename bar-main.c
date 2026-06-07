@@ -139,17 +139,42 @@ static const struct wl_seat_listener seat_listener = {
 static void ipc_init(void) {
     struct BarState *bar = &g_bar;
     const char *dir = getenv("XDG_RUNTIME_DIR");
-    if (!dir) { bar->ipc_sock = -1; return; }
+    if (!dir) { bar->ipc_sock = -1; bar->notify_sock = -1; return; }
 
     if ((size_t)snprintf(bar->ipc_path, sizeof(bar->ipc_path),
             "%s/maindeck-wm.sock", dir) >= sizeof(bar->ipc_path)) {
         bar->ipc_sock = -1;
+        bar->notify_sock = -1;
         return;
     }
 
     bar->ipc_sock = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (bar->ipc_sock < 0) {
         LOG_WARN("main: IPC socket creation failed: %m");
+    }
+
+    /* Notify socket: WM sends fullscreen_on/fullscreen_off here */
+    char notify_path[108];
+    if ((size_t)snprintf(notify_path, sizeof(notify_path),
+            "%s/maindeck-bar.sock", dir) < sizeof(notify_path)) {
+        int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+        if (fd >= 0) {
+            struct sockaddr_un addr = { .sun_family = AF_UNIX };
+            snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", notify_path);
+            unlink(notify_path);
+            if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+                bar->notify_sock = fd;
+                LOG_INFO("main: notify socket bound at %s", notify_path);
+            } else {
+                LOG_WARN("main: notify socket bind failed: %m");
+                close(fd);
+                bar->notify_sock = -1;
+            }
+        } else {
+            bar->notify_sock = -1;
+        }
+    } else {
+        bar->notify_sock = -1;
     }
 }
 
@@ -211,6 +236,7 @@ int main(void) {
     memset(&g_bar, 0, sizeof(g_bar));
     g_bar.shm_fd     = -1;
     g_bar.ipc_sock   = -1;
+    g_bar.notify_sock = -1;
     g_bar.hover_hit  = -1;
     g_bar.hover_type    = HIT_NONE;
     g_bar.hover_index   = -1;
@@ -303,11 +329,13 @@ int main(void) {
             break;
         }
 
-        struct pollfd pfds[2] = {
-            { .fd = wl_fd,   .events = POLLIN },
-            { .fd = tray_fd, .events = tray_fd >= 0 ? POLLIN : 0 },
+        int notify_fd = g_bar.notify_sock;
+        struct pollfd pfds[3] = {
+            { .fd = wl_fd,     .events = POLLIN },
+            { .fd = tray_fd,   .events = tray_fd >= 0   ? POLLIN : 0 },
+            { .fd = notify_fd, .events = notify_fd >= 0 ? POLLIN : 0 },
         };
-        nfds_t nfds = (tray_fd >= 0) ? 2 : 1;
+        nfds_t nfds = 3;
 
         int ret = poll(pfds, nfds, timer_ms);
 
@@ -334,6 +362,47 @@ int main(void) {
             }
             if (tray_fd >= 0 && (pfds[1].revents & POLLIN))
                 bar_tray_dispatch();
+            if (notify_fd >= 0 && (pfds[2].revents & POLLIN)) {
+                char buf[32];
+                ssize_t n = recv(notify_fd, buf, sizeof(buf) - 1, 0);
+                if (n > 0) {
+                    buf[n] = '\0';
+                    bool on = (strncmp(buf, "fullscreen_on", 13) == 0);
+                    bool off = (strncmp(buf, "fullscreen_off", 14) == 0);
+                    LOG_INFO("main: notify received: %s", buf);
+                    g_bar.wm_fullscreen = on;
+                    if ((on || off) && g_bar.render_suppressed != on) {
+                        g_bar.render_suppressed = on;
+                        if (!fork()) {
+                            setsid();
+                            if (on) {
+                                execlp("notify-send", "notify-send", "-i", "applications-games",
+                                       "-t", "2000", "Maindeck", "Modo jogo ativado", NULL);
+                            } else {
+                                execlp("notify-send", "notify-send", "-i", "dialog-information",
+                                       "-t", "2000", "Maindeck", "Modo jogo desativado", NULL);
+                            }
+                            _exit(1);
+                        }
+                        if (!fork()) {
+                            setsid();
+                            const char *snd = on
+                                ? "/usr/share/sounds/freedesktop/stereo/complete.oga"
+                                : "/usr/share/sounds/freedesktop/stereo/dialog-information.oga";
+                            execlp("paplay", "paplay", snd, NULL);
+                            _exit(1);
+                        }
+                        if (!on) {
+                            g_bar.dirty_deferred = false;
+                            bar_surface_restore();
+                        } else {
+                            g_bar.dirty = false;
+                            g_bar.dirty_deferred = true;
+                            bar_surface_destroy();
+                        }
+                    }
+                }
+            }
             timer_ms = ms_until_next_minute();
         }
 
@@ -352,6 +421,7 @@ int main(void) {
     if (g_bar.pointer) wl_pointer_destroy(g_bar.pointer);
     if (g_bar.cursor_shape_manager) wp_cursor_shape_manager_v1_destroy(g_bar.cursor_shape_manager);
     if (g_bar.ipc_sock >= 0) close(g_bar.ipc_sock);
+    if (g_bar.notify_sock >= 0) close(g_bar.notify_sock);
     wl_display_disconnect(g_bar.display);
     return 0;
 }

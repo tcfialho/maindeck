@@ -31,6 +31,20 @@
 #include "wm-libinput.h"
 #include "wm-handlers.h"
 
+static void wm_notify_bar_fullscreen(bool on) {
+	const char *dir = getenv("XDG_RUNTIME_DIR");
+	if (dir == NULL || dir[0] == '\0') return;
+	char path[108];
+	if ((size_t)snprintf(path, sizeof(path), "%s/maindeck-bar.sock", dir) >= sizeof(path)) return;
+	int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+	if (fd < 0) return;
+	struct sockaddr_un addr = { .sun_family = AF_UNIX };
+	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
+	const char *msg = on ? "fullscreen_on" : "fullscreen_off";
+	sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&addr, sizeof(addr));
+	close(fd);
+}
+
 static void clear_loading_notification(void) {
 	const char *dir = getenv("XDG_RUNTIME_DIR");
 	if (dir == NULL || dir[0] == '\0') dir = "/tmp";
@@ -304,12 +318,14 @@ static void window_handle_fullscreen_requested(void *data, struct river_window_v
 	}
 	wm.maximized = false;
 	LOG_EVENT("fullscreen requested: \"%s\" app_id=%s", window->title ? window->title : "", window->app_id ? window->app_id : "");
+	wm_notify_bar_fullscreen(true);
 }
 static void window_handle_exit_fullscreen_requested(void *data, struct river_window_v1 *obj) {
 	struct Window *window = data;
 	window->fullscreen = false;
 	window->fs_output = NULL;
 	LOG_EVENT("exit fullscreen requested: \"%s\" app_id=%s", window->title ? window->title : "", window->app_id ? window->app_id : "");
+	wm_notify_bar_fullscreen(false);
 }
 static void window_handle_minimize_requested(void *data, struct river_window_v1 *obj) {
 	(void)obj;
@@ -319,6 +335,7 @@ static void window_handle_minimize_requested(void *data, struct river_window_v1 
 	if (window->fullscreen) {
 		window->fullscreen = false;
 		window->fs_output = NULL;
+		wm_notify_bar_fullscreen(false);
 	}
 	window->minimized = true;
 	move_last(window);
@@ -366,6 +383,8 @@ static const struct river_window_v1_listener river_window_listener = {
 };
 
 static void window_destroy_closed(struct Window *window, bool flush_now) {
+	if (window->fullscreen)
+		wm_notify_bar_fullscreen(false);
 	struct Seat *seat;
 	wl_list_for_each(seat, &wm.seats, link) {
 		if (seat->focused == window) seat->focused = NULL;
