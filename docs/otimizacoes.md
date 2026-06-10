@@ -263,10 +263,10 @@ Use esta lista para marcar os itens à medida que forem implementados e testados
 - [x] **9.** **P2** — Substituir chamadas O(n²) no layout materializando uma `struct LayoutView` em passada única nos ciclos de layout no [wm-layout.c](file:///home/tcfialho/Documents/poc/maindeck-wm/wm-layout.c).
 
 ### P3 — Render e Startup
-- [ ] **10.** **P3.1** — Implementar damage parcial por seção alterada na barra ([bar-surface.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-surface.c)).
+- [x] **10.** **P3.1** — Implementar damage parcial por seção alterada na barra ([bar-surface.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-surface.c)).
 - [ ] **11.** **P3.2** — Cachear `PangoLayout` por toplevel (taskbar) e para o relógio na barra ([bar-render.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-render.c)).
-- [ ] **12.** **P3.3a** — Alterar o redimensionamento da lista de apps no menu para duplicar a capacidade (capacidade ×2) em vez de `napps+1`.
-- [ ] **13.** **P3.3b** — Otimizar parse dos arquivos `.desktop` no menu para parsear in-place no buffer.
+- [x] **12.** **P3.3a** — Alterar o redimensionamento da lista de apps no menu para duplicar a capacidade (capacidade ×2) em vez de `napps+1`.
+- [x] **13.** **P3.3b** — Otimizar parse dos arquivos `.desktop` no menu para parsear in-place no buffer.
 - [ ] **14.** **P3.3d** — Implementar cache serializado em disco (`~/.cache/maindeck/apps.cache`) para o menu.
 - [ ] **15.** **P3.4** — Substituir comparações de string (`strcmp`) por enums carregados no startup para a renderização de status.
 
