@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulador de Layout e Foco: Maindeck WM</title>
+    <style>
+        :root {
+            --bg-dark: #070609;
+            --bar-bg: #141318;
+            --btn-bg: #1e1d24;
+            --btn-hover: #2b2933;
+            --border-inactive: #222129;
+            
+            /* Cores de foco segundo as regras do Maindeck */
+            --focus-color: #3b82f6; /* Azul brilhante do foco */
+            --focus-glow: rgba(59, 130, 246, 0.4);
+            
+            --text-main: #f8fafc;
+            --text-muted: #64748b;
+        }
+
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: var(--bg-dark);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            color: var(--text-main);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            overflow-x: hidden;
+            box-sizing: border-box;
+        }
+
+        /* Título do Projeto */
+        header {
+            width: 100%;
+            max-width: 1200px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            border-bottom: 1px solid #1f1e26;
+            padding-bottom: 15px;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 1.4rem;
+            font-weight: 700;
+            background: linear-gradient(to right, #60a5fa, #c084fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        header p {
+            margin: 5px 0 0 0;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        /* Container Principal do Layout */
+        .layout-grid {
+            display: grid;
+            grid-template-columns: 1fr 340px;
+            gap: 24px;
+            width: 100%;
+            max-width: 1200px;
+        }
+
+        @media (max-width: 1024px) {
+            .layout-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Simulador de Monitor / Tela */
+        .screen-container {
+            background-color: #0c0b10;
+            border: 4px solid #1e1d24;
+            border-radius: 12px;
+            box-shadow: 0 25px 60px rgba(0, 0, 0, 0.8);
+            overflow: hidden;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            aspect-ratio: 16 / 10;
+            width: 100%;
+        }
+
+        /* Workspace com gaps de 4px */
+        .workspace {
+            flex: 1;
+            padding: 4px;
+            box-sizing: border-box;
+            background-image: 
+                radial-gradient(circle at 20% 30%, rgba(59, 130, 246, 0.06) 0%, transparent 40%),
+                radial-gradient(circle at 80% 70%, rgba(168, 85, 247, 0.06) 0%, transparent 45%),
+                linear-gradient(135deg, #070609 0%, #100f16 100%);
+            position: relative;
+            display: flex;
+            gap: 4px;
+            align-items: stretch;
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        /* Área MAIN (2/3 da largura) */
+        .wm-area-main {
+            flex: 2;
+            position: relative;
+            display: flex;
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        /* Área DECK (1/3 da largura) */
+        .wm-area-deck {
+            flex: 1;
+            position: relative;
+            display: flex;
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        /* Janelas arredondadas em toda a volta */
+        .window {
+            width: 100%;
+            background-color: #121116;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            box-sizing: border-box;
+            border: 2px solid var(--border-inactive);
+            transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+            overflow: hidden;
+            border-radius: 8px !important; 
+        }
+
+        /* Foco Consensual: Contorno Total 360 (Borda completa de 2px azul) */
+        .window.focused {
+            border: 2px solid var(--focus-color);
+            border-radius: 8px !important;
+            box-shadow: 0 5px 25px var(--focus-glow);
+            z-index: 10;
+        }
+
+        /* Configuração de janelas inativas */
+        .window.role-main:not(.focused) {
+            border-color: rgba(59, 130, 246, 0.25);
+            border-radius: 8px !important;
+        }
+
+        .window.role-deck-visible:not(.focused) {
+            border-color: rgba(168, 85, 247, 0.25);
+            border-radius: 8px !important;
+        }
+
+        /* Decoração interna da janela */
+        .win-header {
+            height: 32px;
+            background-color: #18171d;
+            border-bottom: 1px solid #222129;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 12px;
+            border-radius: 6px 6px 0 0;
+        }
+
+        .win-title {
+            font-size: 0.75rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .win-title .icon-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--text-muted);
+        }
+        
+        .window.focused .win-title .icon-dot {
+            background-color: var(--focus-color);
+            box-shadow: 0 0 6px var(--focus-color);
+        }
+
+        .win-badge {
+            font-size: 0.65rem;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
+            text-transform: uppercase;
+        }
+
+        .role-main .win-badge {
+            background-color: rgba(59, 130, 246, 0.15);
+            color: #60a5fa;
+        }
+
+        .role-deck-visible .win-badge {
+            background-color: rgba(168, 85, 247, 0.15);
+            color: #c084fc;
+        }
+
+        .win-body {
+            flex: 1;
+            padding: 16px;
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: #94a3b8;
+            line-height: 1.4;
+            background-color: #0d0c11;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .win-actions-preview {
+            border-top: 1px solid #1c1b22;
+            padding-top: 8px;
+            margin-top: 8px;
+            color: var(--text-muted);
+            font-size: 0.7rem;
+        }
+
+        /* Efeito visual de empilhamento do DECK */
+        .deck-stack-effect {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        .deck-card-back-1, .deck-card-back-2 {
+            position: absolute;
+            background-color: #0f0e13;
+            border: 2px solid rgba(168, 85, 247, 0.15);
+            border-radius: 8px !important;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            transition: all 0.3s ease;
+        }
+
+        .deck-card-back-1 {
+            top: -3px;
+            right: -3px;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+        }
+
+        .deck-card-back-2 {
+            top: -6px;
+            right: -6px;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            opacity: 0.6;
+        }
+
+        .wm-area-deck .window {
+            z-index: 5;
+            position: relative;
+        }
+
+        /* Modo Maximizado */
+        .workspace.maximized-mode .wm-area-main {
+            display: none;
+        }
+        .workspace.maximized-mode .wm-area-deck {
+            flex: 1;
+            width: 100%;
+        }
+        .workspace.maximized-mode .deck-stack-effect {
+            display: none;
+        }
+
+        /* A Barra do Maindeck */
+        .maindeck-bar {
+            height: 40px;
+            background-color: var(--bar-bg);
+            border-top: 1px solid #1f1e24; /* Divisor físico */
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 12px;
+            box-sizing: border-box;
+            z-index: 30;
+            position: relative;
+        }
+
+        .bar-left, .bar-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .menu-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background-color: #22c55e;
+        }
+
+        .task-list {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            height: 100%;
+        }
+
+        /* Botões de Tarefa da Barra com cantos arredondados nos 4 lados e degradê vertical */
+        .task-button {
+            height: 28px;
+            padding: 0 12px;
+            
+            /* Gradiente vertical 3D sutil original */
+            background: linear-gradient(to bottom, #2b2935 0%, #1c1b22 100%);
+            border: 1px solid #383647;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05); /* Chanfrado sutil */
+            
+            border-radius: 6px; 
+            color: #94a3b8;
+            font-size: 0.75rem;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .task-button:hover {
+            background: linear-gradient(to bottom, #353342 0%, #22212b 100%);
+            color: white;
+            border-color: #48465c;
+        }
+
+        /* Estado Consensual: Contorno Total 360 (Borda total de 2px azul, sem deformações, mantendo rounded 3D) */
+        .task-button.active {
+            background: linear-gradient(to bottom, #3c3a4a 0%, #25242e 100%);
+            color: white;
+            border: 2px solid var(--focus-color); /* Borda total 360 azul */
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+            border-radius: 6px; 
+            z-index: 40;
+        }
+
+        .status-clock {
+            font-size: 0.75rem;
+            color: #64748b;
+        }
+
+        /* Painel Lateral de Controle */
+        .control-panel {
+            background-color: #0c0b10;
+            border: 1px solid #1e1d24;
+            border-radius: 12px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            box-sizing: border-box;
+        }
+
+        .panel-section h2 {
+            margin: 0 0 12px 0;
+            font-size: 0.95rem;
+            color: #ffffff;
+            font-weight: 600;
+            border-left: 3px solid var(--focus-color);
+            padding-left: 8px;
+        }
+
+        .panel-section p {
+            margin: 0 0 12px 0;
+            font-size: 0.8rem;
+            line-height: 1.5;
+            color: var(--text-muted);
+        }
+
+        /* Botões de Ação */
+        .action-button {
+            width: 100%;
+            background-color: #1e1d24;
+            border: 1px solid #2d2b36;
+            color: #ffffff;
+            padding: 10px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 500;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.2s ease;
+            margin-bottom: 8px;
+        }
+
+        .action-button:hover {
+            background-color: #2b2933;
+            border-color: var(--focus-color);
+        }
+
+        .action-button span.shortcut {
+            font-size: 0.7rem;
+            background-color: #121116;
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: var(--focus-color);
+            font-family: monospace;
+        }
+
+        /* Mini-lista do Deck */
+        .deck-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            background-color: #08070b;
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid #18171f;
+        }
+
+        .deck-list-item {
+            font-size: 0.75rem;
+            padding: 6px 8px;
+            border-radius: 4px;
+            background-color: #121116;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-left: 2px solid transparent;
+        }
+
+        .deck-list-item.visible-card {
+            border-left-color: #a855f7;
+            background-color: #1a1920;
+            font-weight: 600;
+            color: #ffffff;
+        }
+
+        .deck-list-item.hidden-card {
+            opacity: 0.5;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div>
+            <h1>Simulador Físico do Layout Maindeck WM</h1>
+            <p>Design Consensual: Foco Contorno Total 360, Janelas Rounded e Gaps de 4px</p>
+        </div>
+        <div class="status-clock">Maindeck WM v0.1</div>
+    </header>
+
+    <div class="layout-grid">
+        <!-- MONITOR SIMULADO -->
+        <div class="screen-container">
+            <!-- Área de Trabalho -->
+            <div class="workspace" id="workspace">
+                
+                <!-- Área MAIN (2/3) -->
+                <div class="wm-area-main" id="areaMain">
+                    <div class="window role-main focused" id="winMain">
+                        <div class="win-header">
+                            <div class="win-title">
+                                <span class="icon-dot"></span>
+                                <span id="titleMain">VS Code (código-fonte)</span>
+                            </div>
+                            <div class="win-badge">MAIN</div>
+                        </div>
+                        <div class="win-body">
+                            <div>
+                                <span style="color: #6366f1;">#include</span> &lt;stdio.h&gt;<br>
+                                <span style="color: #6366f1;">int</span> main() {<br>
+                                &nbsp;&nbsp;&nbsp;&nbsp;printf(<span style="color: #22c55e;">"Hello Maindeck!\n"</span>);<br>
+                                &nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #eab308;">// Contorno 360 completo ativo e gaps de 4px</span><br>
+                                }
+                            </div>
+                            <div class="win-actions-preview">
+                                Foco ativo (ALVO) • Borda azul total 360
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Área DECK (1/3) -->
+                <div class="wm-area-deck" id="areaDeck">
+                    <!-- Efeito 3D da pilha -->
+                    <div class="deck-stack-effect" id="deckStack">
+                        <div class="deck-card-back-2"></div>
+                        <div class="deck-card-back-1"></div>
+                    </div>
+
+                    <!-- Janela Visível do Deck -->
+                    <div class="window role-deck-visible" id="winDeck">
+                        <div class="win-header">
+                            <div class="win-title">
+                                <span class="icon-dot"></span>
+                                <span id="titleDeck">Kitty (Terminal)</span>
+                            </div>
+                            <div class="win-badge">DECK (Topo)</div>
+                        </div>
+                        <div class="win-body">
+                            <div>
+                                tcfialho@maindeck-wm:~$ git status<br>
+                                <span style="color: #ef4444;">modified:   bar-render.c</span><br>
+                                <span style="color: #ef4444;">modified:   wm-layout.c</span><br>
+                                <br>
+                                tcfialho@maindeck-wm:~$ _
+                            </div>
+                            <div class="win-actions-preview" id="deckCardCount">
+                                1 de 3 cartas no DECK
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- A Barra de Tarefas -->
+            <div class="maindeck-bar">
+                <div class="bar-left">
+                    <div class="menu-dot"></div>
+                    <!-- Lista de Tarefas -->
+                    <div class="task-list" id="taskList">
+                        <!-- Gerado dinamicamente -->
+                    </div>
+                </div>
+                <div class="bar-right">
+                    <span class="status-clock" id="barTime">01:38</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- PAINEL DE CONTROLE -->
+        <div class="control-panel">
+            
+            <!-- Comandos do Simulador -->
+            <div class="panel-section">
+                <h2>1. Comandos do Simulador</h2>
+                <p>Use os botões para testar as ações reais do WM:</p>
+                
+                <button class="action-button" onclick="alternateFocus()">
+                    Alternar Foco <span>Tab</span>
+                </button>
+                
+                <button class="action-button" onclick="rotateDeck()">
+                    Próxima Carta do Deck <span>Dbl Tab</span>
+                </button>
+                
+                <button class="action-button" onclick="swapMainDeck()">
+                    Swap MAIN <-> DECK <span>Hold Tab</span>
+                </button>
+                
+                <button class="action-button" onclick="promoteToMain()">
+                    Promover para MAIN <span>Hold Left</span>
+                </button>
+                
+                <button class="action-button" onclick="toggleMaximize()">
+                    Maximizar / Restaurar <span>Up / Down</span>
+                </button>
+            </div>
+
+            <!-- Pilha do DECK -->
+            <div class="panel-section">
+                <h2>2. Cartas no DECK</h2>
+                <div class="deck-list" id="deckListUI">
+                    <!-- Gerado dinamicamente -->
+                </div>
+            </div>
+
+            <!-- Resumo do Design Consensual -->
+            <div class="panel-section">
+                <h2>3. Design Consensual</h2>
+                <p style="font-size: 0.75rem; line-height: 1.4;">
+                    • <strong>Bordas de Janela:</strong> 360° completas com cantos 100% arredondados (8px).<br>
+                    • <strong>Espaçamento:</strong> Gaps de 4px entre todas as extremidades e janelas.<br>
+                    • <strong>Botão Focado:</strong> Borda 360° azul total ao redor da forma arredondada suspensa original do botão.
+                </p>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        // Estado
+        let focusedWindow = 'MAIN'; // 'MAIN' ou 'DECK'
+        let isMaximized = false;
+
+        let mainFile = "VS Code (código-fonte)";
+        let deckCards = [
+            "Kitty (Terminal)", 
+            "Firefox (Navegador)", 
+            "Discord (Chat)"
+        ];
+
+        // Relógio
+        function updateTime() {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+            document.getElementById('barTime').innerText = timeStr;
+        }
+        setInterval(updateTime, 1000);
+        updateTime();
+
+        // Renderização lógica
+        function render() {
+            const workspace = document.getElementById('workspace');
+            const winMain = document.getElementById('winMain');
+            const winDeck = document.getElementById('winDeck');
+            const areaMain = document.getElementById('areaMain');
+            const areaDeck = document.getElementById('areaDeck');
+            const deckStack = document.getElementById('deckStack');
+            
+            // Títulos e conteúdo
+            document.getElementById('titleMain').innerText = mainFile;
+            document.getElementById('titleDeck').innerText = deckCards[0];
+            document.getElementById('deckCardCount').innerText = `1 de ${deckCards.length} cartas no DECK`;
+
+            // Resetar classes de foco
+            winMain.className = 'window role-main';
+            winDeck.className = 'window role-deck-visible';
+
+            // Aplicar classe de foco consensual
+            if (focusedWindow === 'MAIN') {
+                winMain.classList.add('focused');
+            } else {
+                winDeck.classList.add('focused');
+            }
+
+            // Maximizado
+            if (isMaximized) {
+                workspace.classList.add('maximized-mode');
+                if (focusedWindow === 'MAIN') {
+                    areaMain.style.flex = "1";
+                    areaDeck.style.display = "none";
+                } else {
+                    areaMain.style.display = "none";
+                    areaDeck.style.flex = "1";
+                }
+            } else {
+                workspace.classList.remove('maximized-mode');
+                areaMain.style.display = "flex";
+                areaDeck.style.display = "flex";
+                areaMain.style.flex = "2";
+                areaDeck.style.flex = "1";
+            }
+
+            // Efeito de cartas ocultas
+            if (deckCards.length > 1 && !isMaximized) {
+                deckStack.style.display = "block";
+                const back1 = deckStack.querySelector('.deck-card-back-1');
+                const back2 = deckStack.querySelector('.deck-card-back-2');
+                if (deckCards.length === 2) {
+                    back1.style.display = "block";
+                    back2.style.display = "none";
+                } else {
+                    back1.style.display = "block";
+                    back2.style.display = "block";
+                }
+            } else {
+                deckStack.style.display = "none";
+            }
+
+            renderTaskbar();
+            renderDeckListUI();
+        }
+
+        // Renderizar a taskbar
+        function renderTaskbar() {
+            const taskList = document.getElementById('taskList');
+            taskList.innerHTML = '';
+
+            // Botão MAIN
+            const btnMain = document.createElement('div');
+            btnMain.className = 'task-button';
+            btnMain.innerHTML = `<span>⚬</span> ${mainFile}`;
+            if (focusedWindow === 'MAIN') {
+                btnMain.className += ' active';
+            }
+            btnMain.onclick = () => { focusedWindow = 'MAIN'; isMaximized = false; render(); };
+            taskList.appendChild(btnMain);
+
+            // Botão DECK
+            const btnDeck = document.createElement('div');
+            btnDeck.className = 'task-button';
+            btnDeck.innerHTML = `<span>✦</span> ${deckCards[0]}`;
+            if (focusedWindow === 'DECK') {
+                btnDeck.className += ' active';
+            }
+            btnDeck.onclick = () => { focusedWindow = 'DECK'; isMaximized = false; render(); };
+            taskList.appendChild(btnDeck);
+        }
+
+        // Renderizar lista lateral do DECK
+        function renderDeckListUI() {
+            const uiList = document.getElementById('deckListUI');
+            uiList.innerHTML = '';
+
+            deckCards.forEach((card, index) => {
+                const item = document.createElement('div');
+                if (index === 0) {
+                    item.className = 'deck-list-item visible-card';
+                    item.innerHTML = `<span>${card}</span> <span class="badge">Visível</span>`;
+                } else {
+                    item.className = 'deck-list-item hidden-card';
+                    item.innerHTML = `<span>${card}</span> <span class="badge" style="opacity:0.6;">Oculta (${index + 1})</span>`;
+                }
+                uiList.appendChild(item);
+            });
+        }
+
+        // Ações do WM
+        function alternateFocus() {
+            focusedWindow = (focusedWindow === 'MAIN') ? 'DECK' : 'MAIN';
+            render();
+        }
+
+        function rotateDeck() {
+            if (deckCards.length > 1) {
+                const first = deckCards.shift();
+                deckCards.push(first);
+                render();
+            }
+        }
+
+        function swapMainDeck() {
+            const temp = mainFile;
+            mainFile = deckCards[0];
+            deckCards[0] = temp;
+            render();
+        }
+
+        function promoteToMain() {
+            if (focusedWindow === 'DECK') {
+                const activeDeck = deckCards.shift();
+                deckCards.unshift(mainFile);
+                mainFile = activeDeck;
+                focusedWindow = 'MAIN';
+                render();
+            }
+        }
+
+        function toggleMaximize() {
+            isMaximized = !isMaximized;
+            render();
+        }
+
+        // Teclado
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                alternateFocus();
+            }
+        });
+
+        // Inicializar
+        render();
+    </script>
+</body>
+</html>

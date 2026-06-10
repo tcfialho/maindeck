@@ -419,43 +419,55 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		if (visible_window_count() >= 2) {
 			wm.target_index = wm.target_index == 0 ? 1 : 0;
 			wm.maximized = false;
+			wm.focus_dirty = true;
 		}
 		break;
 	case ACTION_SWAP_MAIN_DECK:
 		md_swap_main_deck();
+		wm.focus_dirty = true;
 		break;
 	case ACTION_DECK_NEXT:
 		md_deck_next();
+		wm.focus_dirty = true;
 		break;
 	case ACTION_DECK_PREV:
 		md_deck_prev();
+		wm.focus_dirty = true;
 		break;
 	case ACTION_SEND_TARGET_TO_DECK_BOTTOM:
 		md_send_target_to_deck_bottom();
+		wm.focus_dirty = true;
 		break;
 	case ACTION_PROMOTE_TARGET_TO_MAIN:
 		md_promote_target_to_main();
+		wm.focus_dirty = true;
 		break;
 	case ACTION_MAXIMIZE_TARGET: {
 		struct Window *target = target_window();
 		if (target != NULL && !wm.maximized) {
 			wm.maximized = true;
+			wm.focus_dirty = true;
 		}
 		break;
 	}
 	case ACTION_RESTORE:
 		if (wm.maximized) {
 			wm.maximized = false;
+			wm.focus_dirty = true;
 		}
 		break;
 	case ACTION_TOGGLE_MAXIMIZE:
 		// Win+Shift (tap): keyd emite Ctrl+F19. Alterna maximize/restore.
 		if (target_window() != NULL) {
 			wm.maximized = !wm.maximized;
+			wm.focus_dirty = true;
 		}
 		break;
 	case ACTION_EXIT:
 		spawn_sh("sudo -n systemctl restart sddm 2>/dev/null || loginctl terminate-session \"$XDG_SESSION_ID\"");
+		break;
+	case ACTION_SPAWN_SCREENSHOT:
+		spawn_sh("grim -g \"$(slurp)\" - | swappy -f -");
 		break;
 	}
 }
@@ -486,6 +498,7 @@ void seat_manage(struct Seat *seat) {
 		// (F14 não faz round-trip neste keymap; F19 sim — é o keysym do launcher.)
 		xkb_binding_create(seat, ctrl, XKB_KEY_F19, ACTION_TOGGLE_MAXIMIZE, ACTION_NONE);
 		xkb_binding_create(seat, super, XKB_KEY_Return, ACTION_SPAWN_TERMINAL, ACTION_NONE);
+		xkb_binding_create(seat, 0, XKB_KEY_Print, ACTION_SPAWN_SCREENSHOT, ACTION_NONE);
 		xkb_binding_create(seat, super, XKB_KEY_Delete, ACTION_CLOSE_TARGET, ACTION_NONE);
 		xkb_binding_create(seat, alt, XKB_KEY_F4, ACTION_CLOSE_TARGET, ACTION_NONE);
 		xkb_binding_create(seat, super, XKB_KEY_F4, ACTION_CLOSE_TARGET, ACTION_NONE);
@@ -504,6 +517,10 @@ void seat_manage(struct Seat *seat) {
 				wm.maximized = false;
 			}
 			wm.focus_dirty = true;
+		} else if (seat->interacted->floating) {
+			river_seat_v1_clear_focus(seat->obj);
+			river_seat_v1_focus_window(seat->obj, seat->interacted->obj);
+			seat->focused = seat->interacted;
 		}
 	}
 	seat->interacted = NULL;

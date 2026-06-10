@@ -36,6 +36,7 @@
 #include "wm-input.h"
 #include "wm-libinput.h"
 #include "wm-handlers.h"
+#include "wm-config.h"
 
 struct WindowManager wm;
 struct wl_display *wm_display;
@@ -131,6 +132,7 @@ int main(void) {
 	wm_display = display;
 
 	log_init();
+	wm_config_load();
 	LOG_INFO("maindeck-wm starting");
 	unsetenv("WAYLAND_DEBUG");
 	signal(SIGCHLD, SIG_IGN);
@@ -212,6 +214,7 @@ done:
 	wm_display = NULL;
 	wm_registry = NULL;
 	log_close();
+	wm_config_free();
 	if (ipc_fd >= 0) close(ipc_fd);
 	if (ipc_path[0] != '\0') unlink(ipc_path);
 	return 0;

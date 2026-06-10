@@ -26,6 +26,17 @@ export MAINDECK_LOG_PATH="$RTDIR/maindeck.log"
 export MAINDECK_IMPLICIT_PARENT_APP_ID="quirkapp"
 export MAINDECK_IMPLICIT_PARENT_TITLES="QUIRKPARENT|QUIRKPARENT ALT"
 
+# Configuração de teste para janelas flutuantes
+export XDG_CONFIG_HOME="$RTDIR/config"
+mkdir -p "$XDG_CONFIG_HOME/maindeck"
+cat > "$XDG_CONFIG_HOME/maindeck/wm.json" <<EOF
+{
+  "floating_app_ids": [
+    "swappy"
+  ]
+}
+EOF
+
 WM_LOG="$MAINDECK_LOG_PATH"
 > "$WM_LOG"
 
@@ -384,5 +395,17 @@ fi
 send "close QUIRKPARENT"
 send "close QUIRKCHILD_ABOUT"
 send "close QUIRKCHILD_FRIENDS"
+
+# ══════════════════════════════════════════
+echo ""; echo "Cenário 15: Janelas flutuantes (ex: swappy)"
+offset=$(get_log_offset)
+send "open FLOATWINDOW none swappy"
+if wait_log "window designated as floating: app_id=swappy" "$offset" 5 && \
+   wait_log "\[FLOAT\] \"FLOATWINDOW\" app_id=swappy size=" "$offset" 5; then
+    ok "Janela flutuante swappy detectada e registrada com papel FLOAT"
+else
+    fail "Janela flutuante swappy não foi classificada corretamente"
+fi
+send "close FLOATWINDOW"
 
 exec 8>&-

@@ -42,6 +42,7 @@ struct Window {
 	bool closed;
 	bool transient_size_proposed;
 	bool implicit_parent;
+	bool floating;
 	int32_t width, height;
 	int32_t min_width, min_height, max_width, max_height;
 	char *app_id;
@@ -66,6 +67,7 @@ enum Action {
 	ACTION_NONE,
 	ACTION_SPAWN_TERMINAL,
 	ACTION_SPAWN_LAUNCHER,
+	ACTION_SPAWN_SCREENSHOT,
 	ACTION_CLOSE_TARGET,
 	ACTION_TOGGLE_TARGET,
 	ACTION_SWAP_MAIN_DECK,

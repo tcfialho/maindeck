@@ -47,7 +47,7 @@ size_t window_count(void) {
 	size_t count = 0;
 	struct Window *window;
 	wl_list_for_each(window, &wm.windows, link) {
-		if (window->parent == NULL) count++;
+		if (window->parent == NULL && !window->floating) count++;
 	}
 	return count;
 }
@@ -56,7 +56,7 @@ size_t visible_window_count(void) {
 	size_t count = 0;
 	struct Window *window;
 	wl_list_for_each(window, &wm.windows, link) {
-		if (!window->minimized && window->parent == NULL) count++;
+		if (!window->minimized && window->parent == NULL && !window->floating) count++;
 	}
 	return count;
 }
@@ -64,7 +64,7 @@ size_t visible_window_count(void) {
 static struct wl_list *visible_region_end(void) {
 	struct Window *window;
 	wl_list_for_each(window, &wm.windows, link) {
-		if (window->minimized) return &window->link;
+		if (window->minimized || window->parent != NULL || window->floating) return &window->link;
 	}
 	return &wm.windows;
 }
@@ -73,7 +73,7 @@ struct Window *window_at(size_t index) {
 	size_t i = 0;
 	struct Window *window;
 	wl_list_for_each(window, &wm.windows, link) {
-		if (window->parent != NULL) continue;
+		if (window->parent != NULL || window->floating) continue;
 		if (i == index) return window;
 		i++;
 	}
@@ -84,7 +84,7 @@ int32_t window_index(struct Window *needle) {
 	int32_t i = 0;
 	struct Window *window;
 	wl_list_for_each(window, &wm.windows, link) {
-		if (window->parent != NULL) continue;
+		if (window->parent != NULL || window->floating) continue;
 		if (window == needle) return i;
 		i++;
 	}
@@ -278,6 +278,9 @@ void focus_target_on_seats(void) {
 	struct Seat *seat;
 	wl_list_for_each(seat, &wm.seats, link) {
 		if (seat->removed) continue;
+		if (seat->focused != NULL && seat->focused->floating && !seat->focused->closed && !wm.focus_dirty) {
+			continue;
+		}
 		if (focus != NULL) {
 			river_seat_v1_clear_focus(seat->obj);
 			river_seat_v1_focus_window(seat->obj, focus->obj);
@@ -304,6 +307,12 @@ void log_state(void) {
 				w->width,
 				w->height,
 				w->implicit_parent ? 1 : 0);
+		} else if (w->floating) {
+			LOG_STATE("  [FLOAT] \"%s\" app_id=%s size=%dx%d",
+				w->title ? w->title : "",
+				w->app_id ? w->app_id : "",
+				w->width,
+				w->height);
 		} else {
 			const char *role = i == 0 ? "MAIN" : (i == 1 ? "DECK" : "hidden");
 			const char *target = (i == wm.target_index) ? " [ALVO]" : "";
@@ -453,6 +462,7 @@ void md_insert_new_window(struct Window *window) {
 	}
 	wm.target_index = 0;
 	wm.maximized = false;
+	wm.focus_dirty = true;
 	log_state();
 }
 
@@ -476,6 +486,13 @@ void window_manage_layout(struct Window *window, size_t index) {
 				window->max_height);
 			window->transient_size_proposed = true;
 		}
+		window->new = false;
+		return;
+	}
+
+	if (window->floating) {
+		river_window_v1_use_ssd(window->obj);
+		river_window_v1_set_tiled(window->obj, RIVER_WINDOW_V1_EDGES_NONE);
 		window->new = false;
 		return;
 	}
@@ -551,6 +568,12 @@ void window_render_layout(struct Window *window, size_t index) {
 			wm_place_top(window->node);
 		}
 		window_apply_borders(window, BORDER_NONE);
+		return;
+	}
+	if (window->floating) {
+		window_set_visible(window, true);
+		window_apply_borders(window, BORDER_NONE);
+		wm_place_top(window->node);
 		return;
 	}
 	// Fullscreen window: compositor owns geometry; just show it, no borders,

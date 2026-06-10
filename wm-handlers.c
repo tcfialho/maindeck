@@ -30,6 +30,7 @@
 #include "wm-input.h"
 #include "wm-libinput.h"
 #include "wm-handlers.h"
+#include "wm-config.h"
 
 static void wm_notify_bar_fullscreen(bool on) {
 	const char *dir = getenv("XDG_RUNTIME_DIR");
@@ -197,6 +198,10 @@ static bool implicit_parent_title_matches(const char *title) {
 	return false;
 }
 
+static bool window_should_float(const char *app_id) {
+	return wm_config_should_float(app_id);
+}
+
 static void maybe_apply_implicit_parenting(void) {
 	struct ImplicitParentRule rule = implicit_parent_rule();
 	if (!rule.enabled) return;
@@ -204,7 +209,7 @@ static void maybe_apply_implicit_parenting(void) {
 	struct Window *implicit_parent = NULL;
 	struct Window *w;
 	wl_list_for_each(w, &wm.windows, link) {
-		if (w->parent == NULL &&
+		if (w->parent == NULL && !w->floating &&
 		    implicit_parent_app_matches(w->app_id) &&
 		    implicit_parent_title_matches(w->title)) {
 			implicit_parent = w;
@@ -216,7 +221,7 @@ static void maybe_apply_implicit_parenting(void) {
 		bool changed = false;
 		wl_list_for_each_safe(child, child_tmp, &wm.windows, link) {
 			if (child != implicit_parent &&
-			    child->parent == NULL &&
+			    child->parent == NULL && !child->floating &&
 			    implicit_parent_app_matches(child->app_id) &&
 			    child->title != NULL &&
 			    !implicit_parent_title_matches(child->title)) {
@@ -238,7 +243,7 @@ static void maybe_apply_implicit_parenting(void) {
 }
 
 static void maybe_apply_implicit_parenting_for(struct Window *window, bool title_signal_is_relevant) {
-	if (window->closed || window->parent != NULL || !implicit_parent_app_matches(window->app_id)) return;
+	if (window->closed || window->parent != NULL || window->floating || !implicit_parent_app_matches(window->app_id)) return;
 	if (!title_signal_is_relevant && !implicit_parent_title_matches(window->title)) return;
 	maybe_apply_implicit_parenting();
 }
@@ -246,6 +251,25 @@ static void maybe_apply_implicit_parenting_for(struct Window *window, bool title
 static void window_handle_app_id(void *data, struct river_window_v1 *obj, const char *app_id) {
 	struct Window *window = data;
 	window_set_string(&window->app_id, app_id);
+
+	if (window_should_float(app_id) && !window->floating) {
+		window->floating = true;
+		move_last(window);
+		LOG_EVENT("window designated as floating: app_id=%s title=\"%s\"",
+		          app_id ? app_id : "", window->title ? window->title : "");
+
+		// Focus it immediately on all seats!
+		struct Seat *seat;
+		wl_list_for_each(seat, &wm.seats, link) {
+			if (seat->removed) continue;
+			river_seat_v1_clear_focus(seat->obj);
+			river_seat_v1_focus_window(seat->obj, window->obj);
+			seat->focused = window;
+		}
+
+		river_window_manager_v1_manage_dirty(window_manager_v1);
+	}
+
 	maybe_apply_implicit_parenting_for(window, true);
 }
 
@@ -443,12 +467,13 @@ static uint64_t compute_layout_signature(void) {
 	size_t parentless_count = 0;
 	struct Window *w;
 	wl_list_for_each(w, &wm.windows, link) {
-		if (w->parent == NULL) parentless_count++;
+		if (w->parent == NULL && !w->floating) parentless_count++;
 		SIG_MIX((uintptr_t)w->obj);
 		SIG_MIX(w->fullscreen);
 		SIG_MIX(w->minimized);
+		SIG_MIX(w->floating);
 		SIG_MIX((uintptr_t)w->parent);
-		if (w->parent != NULL) {
+		if (w->parent != NULL || w->floating) {
 			SIG_MIX((uint32_t)w->width);
 			SIG_MIX((uint32_t)w->height);
 		}
