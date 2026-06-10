@@ -274,7 +274,7 @@ Use esta lista para marcar os itens à medida que forem implementados e testados
 - [ ] **16.** **C1** — Fazer o ícone de volume ler o volume/mute real do sistema em vez de valores fixados no código ([bar-render.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-render.c)).
 - [ ] **17.** **C2** — Usar o tema de ícones especificado no arquivo de configuração em vez de fallback estático ([bar-config.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-config.c) / [bar-icons.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-icons.c)).
 - [ ] **18.** **C3** — Adicionar suporte a eventos de `NewIcon` e `NewTitle` no tray ([bar-tray.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-tray.c)).
-- [ ] **19.** **C4** — Remover a função morta `make_layout` em [bar-render.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-render.c).
-- [ ] **20.** **C5** — Remover o campo inutilizado `seat->hovered` (ou implementar seu uso efetivo).
+- [x] **19.** **C4** — Remover a função morta `make_layout` em [bar-render.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-render.c).
+- [x] **20.** **C5** — Remover o campo inutilizado `seat->hovered` (ou implementar seu uso efetivo).
 - [ ] **21.** **C6** — Evitar chamada síncrona de `wl_display_roundtrip` dentro do fluxo de render do menu.
 

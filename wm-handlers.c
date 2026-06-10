@@ -448,7 +448,6 @@ static void window_destroy_closed(struct Window *window, bool flush_now) {
 	wl_list_for_each(seat, &wm.seats, link) {
 		if (seat->focused == window) seat->focused = NULL;
 		if (seat->interacted == window) seat->interacted = NULL;
-		if (seat->hovered == window) seat->hovered = NULL;
 	}
 	if (wm.last_placed_top_node == window->node) {
 		wm.last_placed_top_node = NULL;

@@ -85,22 +85,6 @@ static void set_col(cairo_t *cr, double r, double g, double b, double a) {
     cairo_set_source_rgba(cr, r, g, b, a);
 }
 
-/* Parse "#RRGGBB" or "#RRGGBBAA" into r,g,b,a in [0,1]. Returns false if invalid. */
-static bool parse_hex_color(const char *hex, double *r, double *g, double *b, double *a) {
-    if (!hex || hex[0] != '#') return false;
-    size_t len = strlen(hex);
-    unsigned int ri, gi, bi, ai = 255;
-    if (len == 7) {
-        if (sscanf(hex + 1, "%2x%2x%2x", &ri, &gi, &bi) != 3) return false;
-    } else if (len == 9) {
-        if (sscanf(hex + 1, "%2x%2x%2x%2x", &ri, &gi, &bi, &ai) != 4) return false;
-    } else {
-        return false;
-    }
-    *r = ri / 255.0; *g = gi / 255.0; *b = bi / 255.0; *a = ai / 255.0;
-    return true;
-}
-
 static void rounded_rect(cairo_t *cr, double x, double y, double w, double h, double r) {
     cairo_new_sub_path(cr);
     cairo_arc(cr, x+w-r, y+r,   r, -M_PI/2, 0);
@@ -108,15 +92,6 @@ static void rounded_rect(cairo_t *cr, double x, double y, double w, double h, do
     cairo_arc(cr, x+r,   y+h-r, r, M_PI/2,  M_PI);
     cairo_arc(cr, x+r,   y+r,   r, M_PI,    3*M_PI/2);
     cairo_close_path(cr);
-}
-
-static PangoLayout *make_layout(cairo_t *cr, const char *font_desc) {
-    PangoLayout    *lay = pango_cairo_create_layout(cr);
-    if (!s_font_bar) {
-        s_font_bar = pango_font_description_from_string(font_desc);
-    }
-    pango_layout_set_font_description(lay, s_font_bar);
-    return lay;
 }
 
 static void draw_text_centered(cairo_t *cr, PangoLayout *lay,

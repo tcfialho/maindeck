@@ -362,13 +362,14 @@ static void seat_handle_removed(void *data, struct river_seat_v1 *obj) {
 }
 
 static void seat_handle_pointer_enter(void *data, struct river_seat_v1 *obj, struct river_window_v1 *river_window) {
-	struct Seat *seat = data;
-	seat->hovered = river_window_v1_get_user_data(river_window);
+	(void)data;
+	(void)obj;
+	(void)river_window;
 }
 
 static void seat_handle_pointer_leave(void *data, struct river_seat_v1 *obj) {
-	struct Seat *seat = data;
-	seat->hovered = NULL;
+	(void)data;
+	(void)obj;
 }
 
 static void seat_handle_window_interaction(void *data, struct river_seat_v1 *obj, struct river_window_v1 *river_window) {

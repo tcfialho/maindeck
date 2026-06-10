@@ -117,7 +117,6 @@ struct Seat {
 	bool removed;
 
 	struct Window *focused;
-	struct Window *hovered;
 	struct Window *interacted;
 
 	struct wl_list xkb_bindings;
