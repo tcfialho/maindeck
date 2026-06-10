@@ -107,6 +107,7 @@ typedef struct {
     int scroll_offset;
     App *apps;
     size_t napps;
+    size_t capacity;
     int *filtered;
     int *scores;
     size_t nfiltered;
@@ -184,6 +185,28 @@ static void load_desktop_file(const char *filepath, const char *filename) {
     FILE *f = fopen(filepath, "r");
     if (!f) return;
 
+    // Get file size
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return;
+    }
+    long size = ftell(f);
+    if (size <= 0) {
+        fclose(f);
+        return;
+    }
+    rewind(f);
+
+    char *buf = malloc((size_t)size + 1);
+    if (!buf) {
+        fclose(f);
+        return;
+    }
+
+    size_t read_bytes = fread(buf, 1, (size_t)size, f);
+    buf[read_bytes] = '\0';
+    fclose(f);
+
     char *name = NULL;
     char *exec = NULL;
     char *icon = NULL;
@@ -193,12 +216,28 @@ static void load_desktop_file(const char *filepath, const char *filename) {
     char *type = NULL;
     char *try_exec = NULL;
 
-    char line[1024];
     bool in_entry = false;
+    char *pos = buf;
+    while (*pos) {
+        char *line_start = pos;
+        char *line_end = strchr(pos, '\n');
+        if (line_end) {
+            *line_end = '\0';
+            pos = line_end + 1;
+        } else {
+            pos = pos + strlen(pos);
+        }
 
-    while (fgets(line, sizeof(line), f)) {
-        char *trimmed = line;
+        // Trim in-place (leading and trailing whitespace)
+        char *trimmed = line_start;
         while (isspace((unsigned char)*trimmed)) trimmed++;
+
+        size_t len = strlen(trimmed);
+        while (len > 0 && isspace((unsigned char)trimmed[len - 1])) {
+            trimmed[len - 1] = '\0';
+            len--;
+        }
+
         if (trimmed[0] == '#' || trimmed[0] == '\0') continue;
 
         if (trimmed[0] == '[') {
@@ -215,31 +254,51 @@ static void load_desktop_file(const char *filepath, const char *filename) {
 
         char *eq = strchr(trimmed, '=');
         if (!eq) continue;
-        *eq = '\0';
-        char *key = trim_and_dup(trimmed);
-        char *value = trim_and_dup(eq + 1);
-        *eq = '='; // restaura
 
-        if (strcmp(key, "Type") == 0) type = value;
-        else if (strcmp(key, "Name") == 0 && !name) name = value; // pega o Name padrão primeiro
-        else if (strcmp(key, "Exec") == 0) exec = value;
-        else if (strcmp(key, "Icon") == 0) icon = value;
-        else if (strcmp(key, "TryExec") == 0) try_exec = value;
-        else if (strcmp(key, "Terminal") == 0) {
-            terminal = (strcmp(value, "true") == 0);
-            free(value);
-        } else if (strcmp(key, "NoDisplay") == 0) {
-            no_display = (strcmp(value, "true") == 0);
-            free(value);
-        } else if (strcmp(key, "Hidden") == 0) {
-            hidden = (strcmp(value, "true") == 0);
-            free(value);
-        } else {
-            free(value);
+        *eq = '\0';
+        char *key = trimmed;
+        char *val = eq + 1;
+
+        // Trim key
+        while (isspace((unsigned char)*key)) key++;
+        size_t key_len = strlen(key);
+        while (key_len > 0 && isspace((unsigned char)key[key_len - 1])) {
+            key[key_len - 1] = '\0';
+            key_len--;
         }
-        free(key);
+
+        // Trim value
+        while (isspace((unsigned char)*val)) val++;
+        size_t val_len = strlen(val);
+        while (val_len > 0 && isspace((unsigned char)val[val_len - 1])) {
+            val[val_len - 1] = '\0';
+            val_len--;
+        }
+
+        if (strcmp(key, "Type") == 0) {
+            free(type);
+            type = strdup(val);
+        } else if (strcmp(key, "Name") == 0 && !name) {
+            name = strdup(val);
+        } else if (strcmp(key, "Exec") == 0) {
+            free(exec);
+            exec = strdup(val);
+        } else if (strcmp(key, "Icon") == 0) {
+            free(icon);
+            icon = strdup(val);
+        } else if (strcmp(key, "TryExec") == 0) {
+            free(try_exec);
+            try_exec = strdup(val);
+        } else if (strcmp(key, "Terminal") == 0) {
+            terminal = (strcmp(val, "true") == 0);
+        } else if (strcmp(key, "NoDisplay") == 0) {
+            no_display = (strcmp(val, "true") == 0);
+        } else if (strcmp(key, "Hidden") == 0) {
+            hidden = (strcmp(val, "true") == 0);
+        }
     }
-    fclose(f);
+
+    free(buf);
 
     bool ok = true;
     if (!type || strcmp(type, "Application") != 0) ok = false;
@@ -285,9 +344,17 @@ static void load_desktop_file(const char *filepath, const char *filename) {
         }
 
         if (!dup) {
-            App *tmp = realloc(g_app.apps, (g_app.napps + 1) * sizeof(App));
-            if (tmp) {
-                g_app.apps = tmp;
+            if (g_app.napps >= g_app.capacity) {
+                size_t new_cap = g_app.capacity == 0 ? 128 : g_app.capacity * 2;
+                App *tmp = realloc(g_app.apps, new_cap * sizeof(App));
+                if (tmp) {
+                    g_app.apps = tmp;
+                    g_app.capacity = new_cap;
+                } else {
+                    ok = false; // Out of memory
+                }
+            }
+            if (ok && g_app.napps < g_app.capacity) {
                 App *app = &g_app.apps[g_app.napps];
                 app->id = strdup(filename);
                 app->name = name;
