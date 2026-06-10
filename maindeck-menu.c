@@ -1259,7 +1259,7 @@ static void create_menu_surface(void) {
     }
 
     zwlr_layer_surface_v1_set_anchor(app->menu_layer, ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT);
-    zwlr_layer_surface_v1_set_margin(app->menu_layer, 0, 0, 2, 6); // margens: x=6, y=2 (alinhado com o botao iniciar verde)
+    zwlr_layer_surface_v1_set_margin(app->menu_layer, 0, 0, 2, 2); // margens: x=2, y=2 (alinhado com o botao iniciar verde)
     zwlr_layer_surface_v1_set_size(app->menu_layer, MENU_WIDTH, MENU_HEIGHT);
     zwlr_layer_surface_v1_set_keyboard_interactivity(app->menu_layer, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND);
     zwlr_layer_surface_v1_add_listener(app->menu_layer, &menu_layer_listener, NULL);

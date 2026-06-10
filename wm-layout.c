@@ -12,7 +12,8 @@
 
 #define DEFAULT_WIDTH 1280
 #define DEFAULT_HEIGHT 720
-#define BORDER_WIDTH 2
+#define BORDER_WIDTH 3
+#define GAP 12
 
 uint32_t chan(uint8_t value) {
 	return (uint32_t)value * 0x01010101u;
@@ -24,13 +25,24 @@ uint32_t all_edges(void) {
 }
 
 static void window_apply_borders(struct Window *w, enum BorderState desired) {
-	if (w->border_state == desired) return;
+	bool is_target = (w == target_window());
+	if (w->border_state == desired && w->border_focused == is_target) return;
+
 	if (desired == BORDER_NONE) {
 		river_window_v1_set_borders(w->obj, RIVER_WINDOW_V1_EDGES_NONE, 0, 0, 0, 0, 0);
 	} else if (desired == BORDER_TILED) {
-		river_window_v1_set_borders(w->obj, all_edges(), BORDER_WIDTH, 0, 0, 0, 0x00000000u);
+		if (is_target) {
+			// Apenas traço azul na parte de baixo (2px de espessura): #2563eb
+			river_window_v1_set_borders(w->obj, RIVER_WINDOW_V1_EDGES_BOTTOM, 2,
+				chan(37), chan(99), chan(235), chan(255));
+		} else {
+			// Sem bordas nas janelas inativas
+			river_window_v1_set_borders(w->obj, RIVER_WINDOW_V1_EDGES_NONE, 0,
+				0, 0, 0, 0x00000000u);
+		}
 	}
 	w->border_state = desired;
+	w->border_focused = is_target;
 }
 
 static void window_set_visible(struct Window *w, bool visible) {
@@ -137,7 +149,12 @@ static struct Box layout_box_for_index(size_t index) {
 	struct Box out = output_box();
 	size_t count = visible_window_count();
 	if (count <= 1 || wm.maximized) {
-		return out;
+		return (struct Box){
+			.x = out.x,
+			.y = out.y,
+			.width = out.width,
+			.height = out.height
+		};
 	}
 
 	int32_t main_width = (out.width * 2) / 3;
@@ -146,9 +163,21 @@ static struct Box layout_box_for_index(size_t index) {
 	if (deck_width < 1) deck_width = 1;
 
 	if (index == 0) {
-		return (struct Box){ .x = out.x, .y = out.y, .width = main_width, .height = out.height };
+		int32_t w = main_width - (GAP / 2);
+		return (struct Box){
+			.x = out.x,
+			.y = out.y,
+			.width = w > 0 ? w : 1,
+			.height = out.height
+		};
 	}
-	return (struct Box){ .x = out.x + main_width, .y = out.y, .width = deck_width, .height = out.height };
+	int32_t w = deck_width - (GAP / 2);
+	return (struct Box){
+		.x = out.x + main_width + (GAP / 2),
+		.y = out.y,
+		.width = w > 0 ? w : 1,
+		.height = out.height
+	};
 }
 
 static bool window_is_visible_index(size_t index) {

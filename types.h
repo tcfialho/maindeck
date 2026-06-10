@@ -58,6 +58,7 @@ struct Window {
 	struct river_output_v1 *fs_output;
 
 	enum BorderState border_state;
+	bool border_focused;
 	bool applied_visible;
 
 	struct wl_list link; // WindowManager.windows in MainDeck order
