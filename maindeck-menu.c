@@ -20,6 +20,8 @@
 #include <ctype.h>
 #include <time.h>
 
+#include <stdint.h>
+
 #include <wayland-client.h>
 #include <cairo.h>
 #include <pango/pangocairo.h>
@@ -391,32 +393,344 @@ static void scan_desktop_dir(const char *dirpath) {
     closedir(d);
 }
 
-static void load_all_apps(void) {
-    // 1. $XDG_DATA_HOME/applications (default ~/.local/share/applications)
+static void build_watch_dirs(char ***out_dirs, int64_t **out_mtimes, size_t *out_n) {
+    size_t cap = 8;
+    size_t count = 0;
+    char **dirs = malloc(cap * sizeof(char *));
+    int64_t *mtimes = malloc(cap * sizeof(int64_t));
+    if (!dirs || !mtimes) {
+        free(dirs);
+        free(mtimes);
+        *out_dirs = NULL;
+        *out_mtimes = NULL;
+        *out_n = 0;
+        return;
+    }
+
     const char *home = getenv("HOME");
     const char *data_home = getenv("XDG_DATA_HOME");
     char path[1024];
+
+    // 1. Local dir
     if (data_home) {
         snprintf(path, sizeof(path), "%s/applications", data_home);
-        scan_desktop_dir(path);
     } else if (home) {
         snprintf(path, sizeof(path), "%s/.local/share/applications", home);
-        scan_desktop_dir(path);
+    } else {
+        path[0] = '\0';
     }
 
-    // 2. $XDG_DATA_DIRS/applications (default /usr/share/applications:/usr/local/share/applications)
+    if (path[0]) {
+        char *dpath = strdup(path);
+        if (dpath) {
+            dirs[count++] = dpath;
+        }
+    }
+
+    // 2. System dirs
     const char *data_dirs = getenv("XDG_DATA_DIRS");
     if (!data_dirs) {
-        data_dirs = "/usr/share/applications:/usr/local/share/applications";
+        data_dirs = "/usr/share:/usr/local/share";
     }
     char *dirs_dup = strdup(data_dirs);
+    if (!dirs_dup) {
+        goto get_mtimes;
+    }
     char *dir = strtok(dirs_dup, ":");
     while (dir) {
+        if (count >= cap) {
+            size_t new_cap = cap * 2;
+            char **new_dirs = realloc(dirs, new_cap * sizeof(char *));
+            if (!new_dirs) {
+                break;
+            }
+            dirs = new_dirs;
+            int64_t *new_mtimes = realloc(mtimes, new_cap * sizeof(int64_t));
+            if (!new_mtimes) {
+                break;
+            }
+            mtimes = new_mtimes;
+            cap = new_cap;
+        }
         snprintf(path, sizeof(path), "%s/applications", dir);
-        scan_desktop_dir(path);
+        
+        bool dup = false;
+        for (size_t i = 0; i < count; i++) {
+            if (strcmp(dirs[i], path) == 0) {
+                dup = true;
+                break;
+            }
+        }
+        if (!dup) {
+            char *dpath = strdup(path);
+            if (dpath) {
+                dirs[count++] = dpath;
+            }
+        }
         dir = strtok(NULL, ":");
     }
     free(dirs_dup);
+
+get_mtimes:
+    // Get mtimes for all dirs
+    for (size_t i = 0; i < count; i++) {
+        struct stat st;
+        if (stat(dirs[i], &st) == 0) {
+            mtimes[i] = (int64_t)st.st_mtime;
+        } else {
+            mtimes[i] = -1;
+        }
+    }
+
+    *out_dirs = dirs;
+    *out_mtimes = mtimes;
+    *out_n = count;
+}
+
+static bool get_cache_path(char *buf, size_t sz) {
+    const char *cache_home = getenv("XDG_CACHE_HOME");
+    const char *home = getenv("HOME");
+    if (cache_home && cache_home[0]) {
+        snprintf(buf, sz, "%s/maindeck/apps.cache", cache_home);
+        return true;
+    } else if (home && home[0]) {
+        snprintf(buf, sz, "%s/.cache/maindeck/apps.cache", home);
+        return true;
+    }
+    return false;
+}
+
+#define MD_CACHE_MAGIC "MDAC"
+#define MD_CACHE_VERSION 1
+#define MAX_STR_LEN 4096
+
+static int try_load_cache(const char *path, char **dirs, int64_t *mtimes, size_t n) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+
+    char magic[4];
+    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, MD_CACHE_MAGIC, 4) != 0) {
+        fclose(f);
+        return 0;
+    }
+
+    uint32_t version;
+    if (fread(&version, sizeof(version), 1, f) != 1 || version != MD_CACHE_VERSION) {
+        fclose(f);
+        return 0;
+    }
+
+    uint32_t ndirs;
+    if (fread(&ndirs, sizeof(ndirs), 1, f) != 1 || ndirs != n) {
+        fclose(f);
+        return 0;
+    }
+
+    for (uint32_t i = 0; i < ndirs; i++) {
+        uint16_t pathlen;
+        if (fread(&pathlen, sizeof(pathlen), 1, f) != 1 || pathlen > MAX_STR_LEN) {
+            fclose(f);
+            return 0;
+        }
+
+        char *cached_path = malloc(pathlen + 1);
+        if (!cached_path) {
+            fclose(f);
+            return 0;
+        }
+
+        if (fread(cached_path, 1, pathlen, f) != pathlen) {
+            free(cached_path);
+            fclose(f);
+            return 0;
+        }
+        cached_path[pathlen] = '\0';
+
+        int64_t cached_mtime;
+        if (fread(&cached_mtime, sizeof(cached_mtime), 1, f) != 1) {
+            free(cached_path);
+            fclose(f);
+            return 0;
+        }
+
+        if (strcmp(dirs[i], cached_path) != 0 || mtimes[i] != cached_mtime) {
+            free(cached_path);
+            fclose(f);
+            return 0;
+        }
+        free(cached_path);
+    }
+
+    uint32_t napps;
+    if (fread(&napps, sizeof(napps), 1, f) != 1) {
+        fclose(f);
+        return 0;
+    }
+
+    if (napps > 0) {
+        App *tmp = realloc(g_app.apps, napps * sizeof(App));
+        if (!tmp) {
+            fclose(f);
+            return 0;
+        }
+        g_app.apps = tmp;
+        g_app.capacity = napps;
+    }
+
+    for (uint32_t i = 0; i < napps; i++) {
+        uint16_t id_len, name_len, exec_len, icon_len;
+        uint8_t terminal;
+
+        if (fread(&id_len, sizeof(id_len), 1, f) != 1 || id_len > MAX_STR_LEN) goto fail_cleanup;
+        char id_buf[MAX_STR_LEN + 1];
+        if (fread(id_buf, 1, id_len, f) != id_len) goto fail_cleanup;
+        id_buf[id_len] = '\0';
+
+        if (fread(&name_len, sizeof(name_len), 1, f) != 1 || name_len > MAX_STR_LEN) goto fail_cleanup;
+        char name_buf[MAX_STR_LEN + 1];
+        if (fread(name_buf, 1, name_len, f) != name_len) goto fail_cleanup;
+        name_buf[name_len] = '\0';
+
+        if (fread(&exec_len, sizeof(exec_len), 1, f) != 1 || exec_len > MAX_STR_LEN) goto fail_cleanup;
+        char exec_buf[MAX_STR_LEN + 1];
+        if (fread(exec_buf, 1, exec_len, f) != exec_len) goto fail_cleanup;
+        exec_buf[exec_len] = '\0';
+
+        if (fread(&icon_len, sizeof(icon_len), 1, f) != 1 || icon_len > MAX_STR_LEN) goto fail_cleanup;
+        char icon_buf[MAX_STR_LEN + 1];
+        if (icon_len > 0) {
+            if (fread(icon_buf, 1, icon_len, f) != icon_len) goto fail_cleanup;
+            icon_buf[icon_len] = '\0';
+        } else {
+            icon_buf[0] = '\0';
+        }
+
+        if (fread(&terminal, sizeof(terminal), 1, f) != 1) goto fail_cleanup;
+
+        App *app = &g_app.apps[g_app.napps];
+        app->id = strdup(id_buf);
+        app->name = strdup(name_buf);
+        app->exec = strdup(exec_buf);
+        app->icon = icon_len > 0 ? strdup(icon_buf) : NULL;
+        app->terminal = (bool)terminal;
+        app->icon_surface = NULL;
+        g_app.napps++;
+    }
+
+    fclose(f);
+    return 1;
+
+fail_cleanup:
+    for (size_t i = 0; i < g_app.napps; i++) {
+        free(g_app.apps[i].id);
+        free(g_app.apps[i].name);
+        free(g_app.apps[i].exec);
+        if (g_app.apps[i].icon) free(g_app.apps[i].icon);
+    }
+    g_app.napps = 0;
+    fclose(f);
+    return 0;
+}
+
+static void write_cache(const char *path, char **dirs, int64_t *mtimes, size_t n) {
+    const char *home = getenv("HOME");
+    const char *cache_home = getenv("XDG_CACHE_HOME");
+    char dir_path[1024];
+    if (cache_home && cache_home[0]) {
+        snprintf(dir_path, sizeof(dir_path), "%s/maindeck", cache_home);
+    } else if (home && home[0]) {
+        snprintf(dir_path, sizeof(dir_path), "%s/.cache", home);
+        mkdir(dir_path, 0700);
+        snprintf(dir_path, sizeof(dir_path), "%s/.cache/maindeck", home);
+    } else {
+        return;
+    }
+    mkdir(dir_path, 0700);
+
+    char tmp_path[1024];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%d", path, (int)getpid());
+    FILE *f = fopen(tmp_path, "wb");
+    if (!f) return;
+
+    if (fwrite(MD_CACHE_MAGIC, 1, 4, f) != 4) goto fail;
+    uint32_t version = MD_CACHE_VERSION;
+    if (fwrite(&version, sizeof(version), 1, f) != 1) goto fail;
+    uint32_t ndirs = (uint32_t)n;
+    if (fwrite(&ndirs, sizeof(ndirs), 1, f) != 1) goto fail;
+
+    for (size_t i = 0; i < n; i++) {
+        size_t len = strlen(dirs[i]);
+        if (len > MAX_STR_LEN) len = MAX_STR_LEN;
+        uint16_t pathlen = (uint16_t)len;
+        if (fwrite(&pathlen, sizeof(pathlen), 1, f) != 1) goto fail;
+        if (fwrite(dirs[i], 1, pathlen, f) != pathlen) goto fail;
+        int64_t mtime = mtimes[i];
+        if (fwrite(&mtime, sizeof(mtime), 1, f) != 1) goto fail;
+    }
+
+    uint32_t napps = (uint32_t)g_app.napps;
+    if (fwrite(&napps, sizeof(napps), 1, f) != 1) goto fail;
+
+    for (size_t i = 0; i < g_app.napps; i++) {
+        App *app = &g_app.apps[i];
+        
+        size_t id_len_raw = app->id ? strlen(app->id) : 0;
+        uint16_t id_len = id_len_raw > MAX_STR_LEN ? MAX_STR_LEN : (uint16_t)id_len_raw;
+        if (fwrite(&id_len, sizeof(id_len), 1, f) != 1) goto fail;
+        if (id_len > 0) {
+            if (fwrite(app->id, 1, id_len, f) != id_len) goto fail;
+        }
+
+        size_t name_len_raw = app->name ? strlen(app->name) : 0;
+        uint16_t name_len = name_len_raw > MAX_STR_LEN ? MAX_STR_LEN : (uint16_t)name_len_raw;
+        if (fwrite(&name_len, sizeof(name_len), 1, f) != 1) goto fail;
+        if (name_len > 0) {
+            if (fwrite(app->name, 1, name_len, f) != name_len) goto fail;
+        }
+
+        size_t exec_len_raw = app->exec ? strlen(app->exec) : 0;
+        uint16_t exec_len = exec_len_raw > MAX_STR_LEN ? MAX_STR_LEN : (uint16_t)exec_len_raw;
+        if (fwrite(&exec_len, sizeof(exec_len), 1, f) != 1) goto fail;
+        if (exec_len > 0) {
+            if (fwrite(app->exec, 1, exec_len, f) != exec_len) goto fail;
+        }
+
+        size_t icon_len_raw = app->icon ? strlen(app->icon) : 0;
+        uint16_t icon_len = icon_len_raw > MAX_STR_LEN ? MAX_STR_LEN : (uint16_t)icon_len_raw;
+        if (fwrite(&icon_len, sizeof(icon_len), 1, f) != 1) goto fail;
+        if (icon_len > 0) {
+            if (fwrite(app->icon, 1, icon_len, f) != icon_len) goto fail;
+        }
+
+        uint8_t terminal = app->terminal ? 1 : 0;
+        if (fwrite(&terminal, sizeof(terminal), 1, f) != 1) goto fail;
+    }
+
+    fclose(f);
+    rename(tmp_path, path);
+    return;
+
+fail:
+    fclose(f);
+    unlink(tmp_path);
+}
+
+static void free_watch_dirs(char **dirs, int64_t *mtimes, size_t n) {
+    if (dirs) {
+        for (size_t i = 0; i < n; i++) {
+            free(dirs[i]);
+        }
+        free(dirs);
+    }
+    if (mtimes) {
+        free(mtimes);
+    }
+}
+
+static void load_all_apps_from_list(char **dirs, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        scan_desktop_dir(dirs[i]);
+    }
 }
 
 // --- Busca Fuzzy ---
@@ -1370,7 +1684,28 @@ int main(int argc, char **argv) {
     LOG_INFO("Inicializando maindeck-menu...");
 
     // 2. Carrega lista de aplicativos
-    load_all_apps();
+    char **watch_dirs = NULL;
+    int64_t *watch_mtimes = NULL;
+    size_t watch_n = 0;
+    build_watch_dirs(&watch_dirs, &watch_mtimes, &watch_n);
+
+    char cache_path[1024] = {0};
+    bool using_cache = false;
+    bool have_cache = get_cache_path(cache_path, sizeof(cache_path));
+    if (have_cache) {
+        if (try_load_cache(cache_path, watch_dirs, watch_mtimes, watch_n)) {
+            using_cache = true;
+            LOG_INFO("Lista de aplicativos carregada do cache");
+        }
+    }
+
+    if (!using_cache) {
+        load_all_apps_from_list(watch_dirs, watch_n);
+        if (have_cache && cache_path[0]) {
+            write_cache(cache_path, watch_dirs, watch_mtimes, watch_n);
+        }
+    }
+    free_watch_dirs(watch_dirs, watch_mtimes, watch_n);
     LOG_INFO("Carregados %zu aplicativos", g_app.napps);
 
     g_app.filtered = malloc(g_app.napps * sizeof(int));
