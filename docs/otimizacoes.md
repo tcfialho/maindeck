@@ -256,7 +256,7 @@ Use esta lista para marcar os itens à medida que forem implementados e testados
 
 ### P1 — Corretude Estrutural
 - [ ] **6.** **P1.1** — Refatorar o array de toplevels da taskbar ([bar-taskbar.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-taskbar.c)) para slots estáveis (ponteiros alocados via calloc) para evitar ponteiros corrompidos após `memmove`.
-- [ ] **7.** **P1.2** — Limpar `seat->interacted` e `seat->hovered` em `window_destroy_closed` no [wm-handlers.c](file:///home/tcfialho/Documents/poc/maindeck-wm/wm-handlers.c) para evitar use-after-free (UAF).
+- [x] **7.** **P1.2** — Limpar `seat->interacted` e `seat->hovered` em `window_destroy_closed` no [wm-handlers.c](file:///home/tcfialho/Documents/poc/maindeck-wm/wm-handlers.c) para evitar use-after-free (UAF).
 - [ ] **8.** **P1.3** — Incluir o bit de `window_is_ignored` na assinatura de dedup do layout (`compute_layout_signature`) no [wm-handlers.c](file:///home/tcfialho/Documents/poc/maindeck-wm/wm-handlers.c).
 
 ### P2 — Otimização do Layout do WM
