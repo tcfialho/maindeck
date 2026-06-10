@@ -115,11 +115,15 @@ static void tl_closed(void *data,
     }
 
     if (idx >= 0) {
+        if (bar->toplevels[idx].layout) {
+            g_object_unref(bar->toplevels[idx].layout);
+        }
         int rem = bar->toplevel_n - idx - 1;
         if (rem > 0)
             memmove(&bar->toplevels[idx], &bar->toplevels[idx+1],
                     (size_t)rem * sizeof(bar->toplevels[0]));
         bar->toplevel_n--;
+        memset(&bar->toplevels[bar->toplevel_n], 0, sizeof(bar->toplevels[0]));
     }
 
     zwlr_foreign_toplevel_handle_v1_destroy(h);

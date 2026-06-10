@@ -15,6 +15,7 @@
 #include "viewporter-client-protocol.h"
 #include "cursor-shape-v1-client-protocol.h"
 
+#include <pango/pango.h>
 #include "bar-config.h"
 
 /* ------------------------------------------------------------------ */
@@ -35,6 +36,11 @@ struct BarToplevel {
     bool   has_parent;
     bool   closed;
     cairo_surface_t *icon_surface; /* cached, owned by bar-icons */
+    PangoLayout     *layout;
+    char             last_title_shaped[256];
+    int              last_width_shaped;
+    int              last_tw_shaped;
+    int              last_th_shaped;
 };
 
 /* ------------------------------------------------------------------ */

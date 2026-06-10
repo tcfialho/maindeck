@@ -40,6 +40,10 @@ static cairo_surface_t *s_cs[2]   = { NULL, NULL };
 static cairo_t         *s_cr[2]   = { NULL, NULL };
 static PangoLayout     *s_lay[2]  = { NULL, NULL };
 static PangoLayout     *s_lay_power[2] = { NULL, NULL };
+static PangoLayout     *s_lay_clock = NULL;
+static char             s_last_clock_text[128] = {0};
+static int              s_last_clock_w = -1;
+static int              s_last_clock_h = -1;
 static int s_cs_w = 0, s_cs_h = 0;
 
 static cairo_pattern_t *s_grad_normal = NULL;
@@ -58,6 +62,25 @@ static void ensure_cairo(struct BarState *bar, void *data) {
             if (s_cr[i])  { cairo_destroy(s_cr[i]); s_cr[i] = NULL; }
             if (s_cs[i])  { cairo_surface_destroy(s_cs[i]); s_cs[i] = NULL; }
         }
+        if (s_lay_clock) {
+            g_object_unref(s_lay_clock);
+            s_lay_clock = NULL;
+        }
+        s_last_clock_text[0] = '\0';
+        s_last_clock_w = -1;
+        s_last_clock_h = -1;
+
+        /* Per-window taskbar layouts also depend on the (now stale) font
+         * context / DPI; drop them so they are recreated lazily at the new
+         * size and re-shaped on next draw. */
+        for (int i = 0; i < bar->toplevel_n; i++) {
+            struct BarToplevel *tl = &bar->toplevels[i];
+            if (tl->layout) { g_object_unref(tl->layout); tl->layout = NULL; }
+            tl->last_title_shaped[0] = '\0';
+            tl->last_width_shaped = -1;
+            tl->last_tw_shaped = -1;
+            tl->last_th_shaped = -1;
+        }
     }
 
     s_cs[b] = cairo_image_surface_create_for_data(
@@ -73,6 +96,17 @@ static void ensure_cairo(struct BarState *bar, void *data) {
     if (!s_font_power) s_font_power = pango_font_description_from_string("sans bold 15");
     pango_layout_set_font_description(s_lay_power[b], s_font_power);
     pango_layout_set_text(s_lay_power[b], "⏻", -1);
+
+    /* Persistent clock layout: shaped once per text change, reused across redraws.
+     * Bound to the buffer-0 cairo context; a layout is not tied to a specific
+     * cairo_t for measuring/showing, so a single instance serves both buffers. */
+    if (!s_lay_clock) {
+        s_lay_clock = pango_cairo_create_layout(s_cr[b]);
+        pango_layout_set_font_description(s_lay_clock, s_font_bar);
+        s_last_clock_text[0] = '\0';
+        s_last_clock_w = -1;
+        s_last_clock_h = -1;
+    }
 
     s_cs_w = bar->buf_width; s_cs_h = bar->buf_height;
 }
@@ -94,14 +128,43 @@ static void rounded_rect(cairo_t *cr, double x, double y, double w, double h, do
     cairo_close_path(cr);
 }
 
-static void draw_text_centered(cairo_t *cr, PangoLayout *lay,
+/* Draw a taskbar window title using the per-window persistent PangoLayout.
+ * The layout is created lazily and kept on tl->layout; we only re-run text
+ * shaping (set_text/set_width) when the title string or the available width
+ * changes. On the common hover redraw both are identical, so Pango preserves
+ * the shaped runs and both measuring and drawing cost ~0. The cached pixel
+ * size lets us skip get_pixel_size on the unchanged path too. */
+static void draw_taskbar_title(cairo_t *cr, struct BarToplevel *tl,
     const char *text, double x, double y, double max_w, double h) {
-    pango_layout_set_text(lay, text, -1);
-    pango_layout_set_width(lay, (int)(max_w * PANGO_SCALE));
-    pango_layout_set_ellipsize(lay, PANGO_ELLIPSIZE_END);
+    int max_w_i = (int)max_w;
 
+    if (!tl->layout) {
+        tl->layout = pango_cairo_create_layout(cr);
+        pango_layout_set_font_description(tl->layout, s_font_bar);
+        pango_layout_set_ellipsize(tl->layout, PANGO_ELLIPSIZE_END);
+        tl->last_title_shaped[0] = '\0';
+        tl->last_width_shaped = -1;
+        tl->last_tw_shaped = -1;
+        tl->last_th_shaped = -1;
+    }
+
+    PangoLayout *lay = tl->layout;
     int tw, th;
-    pango_layout_get_pixel_size(lay, &tw, &th);
+    if (max_w_i == tl->last_width_shaped &&
+        tl->last_tw_shaped >= 0 &&
+        strcmp(tl->last_title_shaped, text) == 0) {
+        tw = tl->last_tw_shaped;
+        th = tl->last_th_shaped;
+    } else {
+        pango_layout_set_text(lay, text, -1);
+        pango_layout_set_width(lay, (int)(max_w * PANGO_SCALE));
+        pango_layout_get_pixel_size(lay, &tw, &th);
+        snprintf(tl->last_title_shaped, sizeof(tl->last_title_shaped), "%s", text);
+        tl->last_width_shaped = max_w_i;
+        tl->last_tw_shaped = tw;
+        tl->last_th_shaped = th;
+    }
+
     cairo_move_to(cr, x + (max_w - tw) / 2.0, y + (h - th) / 2.0);
     pango_cairo_show_layout(cr, lay);
 }
@@ -213,7 +276,7 @@ static int draw_quicklaunch(cairo_t *cr, PangoLayout *lay, int h) {
 /* Draw taskbar section                                                  */
 /* ------------------------------------------------------------------ */
 
-static void draw_taskbar(cairo_t *cr, PangoLayout *lay, int x_start, int x_end, int h) {
+static void draw_taskbar(cairo_t *cr, int x_start, int x_end, int h) {
     struct BarState *bar = &g_bar;
     int n = 0;
     for (int i = 0; i < bar->toplevel_n; i++) {
@@ -294,7 +357,7 @@ static void draw_taskbar(cairo_t *cr, PangoLayout *lay, int x_start, int x_end, 
         set_col(cr, COL_TEXT);
         double text_w = (btn_w - 2) - (text_x - x) - BTN_PAD;
         if (text_w > 8) {
-            draw_text_centered(cr, lay, tl->title[0] ? tl->title : "...",
+            draw_taskbar_title(cr, tl, tl->title[0] ? tl->title : "...",
                 text_x, btn_y, text_w, btn_h);
         }
 
@@ -484,9 +547,26 @@ static int draw_status(cairo_t *cr, PangoLayout *lay, int h, int x_end) {
             push_hit(HIT_STATUS, i, x, 0, icon_slot, h);
 
         } else if (mod == BAR_STATUS_CLOCK && bar->clock_text[0]) {
-            pango_layout_set_text(lay, bar->clock_text, -1);
-            int tw, th; (void)th;
-            pango_layout_get_pixel_size(lay, &tw, &th);
+            PangoLayout *clk = s_lay_clock ? s_lay_clock : lay;
+            int tw, th;
+            /* Re-shape only when the clock string actually changes (~once/min).
+             * On the common hover redraw the text is identical, so we skip
+             * set_text/get_pixel_size and reuse the cached run + dimensions. */
+            if (clk == s_lay_clock &&
+                strcmp(s_last_clock_text, bar->clock_text) == 0 &&
+                s_last_clock_w >= 0) {
+                tw = s_last_clock_w;
+                th = s_last_clock_h;
+            } else {
+                pango_layout_set_text(clk, bar->clock_text, -1);
+                pango_layout_get_pixel_size(clk, &tw, &th);
+                if (clk == s_lay_clock) {
+                    snprintf(s_last_clock_text, sizeof(s_last_clock_text),
+                             "%s", bar->clock_text);
+                    s_last_clock_w = tw;
+                    s_last_clock_h = th;
+                }
+            }
             int btn_w = tw + BTN_PAD * 2;
             x -= btn_w + 2;
             if (hovered) {
@@ -496,7 +576,7 @@ static int draw_status(cairo_t *cr, PangoLayout *lay, int h, int x_end) {
             }
             set_col(cr, COL_TEXT);
             cairo_move_to(cr, x + (btn_w - tw) / 2.0, btn_y + (btn_h - th) / 2.0);
-            pango_cairo_show_layout(cr, lay);
+            pango_cairo_show_layout(cr, clk);
             push_hit(HIT_STATUS, i, x, 0, btn_w, h);
         }
     }
@@ -547,7 +627,7 @@ void bar_render(void) {
     draw_sep(cr, tray_start - 4, h);
 
     /* Taskbar (center, fills remaining space) */
-    draw_taskbar(cr, lay, ql_end + 8, tray_start - 8, h);
+    draw_taskbar(cr, ql_end + 8, tray_start - 8, h);
 
     /* Record dynamic boundaries for partial damage */
     bar->section_box[BAR_SECTION_QUICKLAUNCH].x1 = 0;
@@ -584,6 +664,18 @@ void bar_render_cleanup(void) {
         if (s_cr[i])  { cairo_destroy(s_cr[i]); s_cr[i] = NULL; }
         if (s_cs[i])  { cairo_surface_destroy(s_cs[i]); s_cs[i] = NULL; }
     }
+    if (s_lay_clock) { g_object_unref(s_lay_clock); s_lay_clock = NULL; }
+    s_last_clock_text[0] = '\0';
+    s_last_clock_w = -1;
+    s_last_clock_h = -1;
+
+    /* Release per-window taskbar layouts still attached to open toplevels
+     * (tl_closed only frees them as windows close individually). */
+    for (int i = 0; i < g_bar.toplevel_n; i++) {
+        struct BarToplevel *tl = &g_bar.toplevels[i];
+        if (tl->layout) { g_object_unref(tl->layout); tl->layout = NULL; }
+    }
+
     if (s_font_bar) {
         pango_font_description_free(s_font_bar);
         s_font_bar = NULL;
