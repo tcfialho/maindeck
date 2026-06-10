@@ -16,6 +16,14 @@ struct BarQLButton {
     double bg_r, bg_g, bg_b, bg_a;
 };
 
+typedef enum {
+    BAR_STATUS_UNKNOWN = 0,
+    BAR_STATUS_POWER,
+    BAR_STATUS_BATTERY,
+    BAR_STATUS_VOLUME,
+    BAR_STATUS_CLOCK
+} BarStatusModule;
+
 struct BarConfig {
     int  height;
     char font[64];
@@ -26,10 +34,11 @@ struct BarConfig {
     struct BarQLButton ql[BAR_MAX_QL];
     int  ql_count;
 
-    char status[BAR_MAX_STATUS][32];
+    BarStatusModule status[BAR_MAX_STATUS];
     int  status_n;
 };
 
+BarStatusModule bar_status_from_string(const char *s);
 int bar_config_load(const char *path, struct BarConfig *cfg);
 
 #endif /* BAR_CONFIG_H */

@@ -193,8 +193,8 @@ static void ptr_button(void *data, struct wl_pointer *ptr,
     case HIT_STATUS: {
         struct BarConfig *cfg = &bar->config;
         if (ha->index < 0 || ha->index >= cfg->status_n) break;
-        const char *mod = cfg->status[ha->index];
-        if (left && strcmp(mod, "power") == 0 && cfg->power_exec[0]) {
+        BarStatusModule mod = cfg->status[ha->index];
+        if (left && mod == BAR_STATUS_POWER && cfg->power_exec[0]) {
             pid_t pid = fork();
             if (pid == 0) {
                 setsid();
@@ -203,7 +203,7 @@ static void ptr_button(void *data, struct wl_pointer *ptr,
                 execlp("/bin/sh", "sh", "-c", cfg->power_exec, NULL);
                 _exit(127);
             }
-        } else if (left && strcmp(mod, "volume") == 0) {
+        } else if (left && mod == BAR_STATUS_VOLUME) {
             pid_t pid = fork();
             if (pid == 0) {
                 setsid();

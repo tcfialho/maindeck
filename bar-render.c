@@ -460,10 +460,10 @@ static int draw_status(cairo_t *cr, PangoLayout *lay, int h, int x_end) {
     int icon_slot = ICON_SIZE + BTN_PAD * 2; /* fixed-width slot for icon modules */
 
     for (int i = bar->config.status_n - 1; i >= 0; i--) {
-        const char *mod = bar->config.status[i];
+        BarStatusModule mod = bar->config.status[i];
         bool hovered = (bar->hover_type == HIT_STATUS) && (bar->hover_index == i);
 
-        if (strcmp(mod, "power") == 0) {
+        if (mod == BAR_STATUS_POWER) {
             int pw = POWER_BTN_W;
             x -= pw + 2;
             if (hovered) {
@@ -484,7 +484,7 @@ static int draw_status(cairo_t *cr, PangoLayout *lay, int h, int x_end) {
             }
             push_hit(HIT_STATUS, i, x, 0, pw, h);
 
-        } else if (strcmp(mod, "battery") == 0 && bar->bat_level >= 0) {
+        } else if (mod == BAR_STATUS_BATTERY && bar->bat_level >= 0) {
             x -= icon_slot + 2;
             if (hovered) {
                 cairo_set_source_rgba(cr, 0.30, 0.30, 0.38, 0.55);
@@ -496,7 +496,7 @@ static int draw_status(cairo_t *cr, PangoLayout *lay, int h, int x_end) {
             draw_battery_icon(cr, cx, cy, bar->bat_level, bar->bat_charging);
             push_hit(HIT_STATUS, i, x, 0, icon_slot, h);
 
-        } else if (strcmp(mod, "volume") == 0 && bar->vol_text[0]) {
+        } else if (mod == BAR_STATUS_VOLUME && bar->vol_text[0]) {
             x -= icon_slot + 2;
             if (hovered) {
                 cairo_set_source_rgba(cr, 0.30, 0.30, 0.38, 0.55);
@@ -508,7 +508,7 @@ static int draw_status(cairo_t *cr, PangoLayout *lay, int h, int x_end) {
             draw_volume_icon(cr, cx, cy, 50, false);
             push_hit(HIT_STATUS, i, x, 0, icon_slot, h);
 
-        } else if (strcmp(mod, "clock") == 0 && bar->clock_text[0]) {
+        } else if (mod == BAR_STATUS_CLOCK && bar->clock_text[0]) {
             pango_layout_set_text(lay, bar->clock_text, -1);
             int tw, th; (void)th;
             pango_layout_get_pixel_size(lay, &tw, &th);

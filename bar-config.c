@@ -163,8 +163,15 @@ int bar_config_load(const char *path, struct BarConfig *cfg) {
             i++;
             for (int s = 0; s < arr_size && cfg->status_n < BAR_MAX_STATUS; s++, i++) {
                 if (i >= n) break;
-                tok_str(json, &toks[i], cfg->status[cfg->status_n], 32);
-                cfg->status_n++;
+                char tmp[32];
+                tok_str(json, &toks[i], tmp, sizeof(tmp));
+                BarStatusModule mapped = bar_status_from_string(tmp);
+                if (mapped != BAR_STATUS_UNKNOWN) {
+                    cfg->status[cfg->status_n] = mapped;
+                    cfg->status_n++;
+                } else {
+                    LOG_WARN("config: status module desconhecido '%s' ignorado", tmp);
+                }
             }
         } else if (tok_eq(json, &toks[i], "power")) {
             i++;
@@ -194,4 +201,12 @@ int bar_config_load(const char *path, struct BarConfig *cfg) {
     munmap(json, (size_t)st.st_size);
     LOG_INFO("config: loaded %d quick-launch buttons, %d status modules", cfg->ql_count, cfg->status_n);
     return 0;
+}
+
+BarStatusModule bar_status_from_string(const char *s) {
+    if (strcmp(s, "power") == 0)   return BAR_STATUS_POWER;
+    if (strcmp(s, "battery") == 0) return BAR_STATUS_BATTERY;
+    if (strcmp(s, "volume") == 0)  return BAR_STATUS_VOLUME;
+    if (strcmp(s, "clock") == 0)   return BAR_STATUS_CLOCK;
+    return BAR_STATUS_UNKNOWN;
 }

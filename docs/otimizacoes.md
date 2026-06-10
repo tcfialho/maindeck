@@ -268,7 +268,7 @@ Use esta lista para marcar os itens à medida que forem implementados e testados
 - [x] **12.** **P3.3a** — Alterar o redimensionamento da lista de apps no menu para duplicar a capacidade (capacidade ×2) em vez de `napps+1`.
 - [x] **13.** **P3.3b** — Otimizar parse dos arquivos `.desktop` no menu para parsear in-place no buffer.
 - [ ] **14.** **P3.3d** — Implementar cache serializado em disco (`~/.cache/maindeck/apps.cache`) para o menu.
-- [ ] **15.** **P3.4** — Substituir comparações de string (`strcmp`) por enums carregados no startup para a renderização de status.
+- [x] **15.** **P3.4** — Substituir comparações de string (`strcmp`) por enums carregados no startup para a renderização de status.
 
 ### Achados Colaterais
 - [ ] **16.** **C1** — Fazer o ícone de volume ler o volume/mute real do sistema em vez de valores fixados no código ([bar-render.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-render.c)).
