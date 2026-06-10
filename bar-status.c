@@ -77,7 +77,7 @@ int bar_status_init(void) {
 void bar_status_tick(void) {
     update_clock();
     update_battery();
-    bar_request_redraw(&g_bar);
+    bar_request_redraw_flags(&g_bar, BAR_DIRTY_STATUS);
 }
 
 void bar_status_cleanup(void) {

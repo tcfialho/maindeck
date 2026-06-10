@@ -154,7 +154,7 @@ static void on_props_reply(DBusPendingCall *pending, void *user_data) {
 
     LOG_INFO("tray: item %s icon='%s' title='%s'",
              it->service, it->icon_name, it->title);
-    bar_request_redraw(&g_bar);
+    bar_request_redraw_flags(&g_bar, BAR_DIRTY_TRAY);
 }
 
 static void free_props_request(void *user_data) {
@@ -213,7 +213,7 @@ static void add_item(const char *reg_str) {
 
     load_item_props(it);
     g_item_n++;
-    bar_request_redraw(&g_bar);
+    bar_request_redraw_flags(&g_bar, BAR_DIRTY_TRAY);
 }
 
 static void remove_item(const char *reg_str) {
@@ -232,7 +232,7 @@ static void remove_item(const char *reg_str) {
                 memmove(&g_items[i], &g_items[i+1],
                         (size_t)rem * sizeof(g_items[0]));
             g_item_n--;
-            bar_request_redraw(&g_bar);
+            bar_request_redraw_flags(&g_bar, BAR_DIRTY_TRAY);
             LOG_INFO("tray: removed item %s", svc);
             return;
         }
@@ -1073,7 +1073,7 @@ static void on_menu_layout_reply(DBusPendingCall *pending, void *user_data) {
     wl_display_flush(bar->display);
 
     LOG_INFO("menu: opened for %s (%d items) %dx%d", req->service, g_menu_item_n, mw, mh);
-    bar_request_redraw(bar);
+    bar_request_redraw_flags(bar, BAR_DIRTY_TRAY);
 }
 
 void bar_tray_open_menu(int idx, int icon_x, int icon_w, uint32_t serial) {
@@ -1227,6 +1227,7 @@ void bar_tray_menu_close(void) {
     g_menu_tray_idx     = -1;
     g_menu_item_n       = 0;
     LOG_INFO("menu: closed");
+    bar_request_redraw_flags(&g_bar, BAR_DIRTY_TRAY);
 }
 
 /* ------------------------------------------------------------------ */

@@ -64,6 +64,7 @@ static void layer_surface_configure(void *data,
     if (new_w == 0) new_w = 1920; /* safe fallback until output geometry arrives */
 
     if (!bar->configured || new_w != bar->buf_width || new_h != bar->buf_height) {
+        bar->prev_boxes_valid = false;
         bar_surface_resize(new_w, new_h);
         bar_request_redraw(bar);
     }
@@ -410,12 +411,56 @@ void bar_surface_resize(int w, int h) {
 /* Public: commit current buffer                                        */
 /* ------------------------------------------------------------------ */
 
+static inline uint32_t flag_for_section(int section) {
+    switch (section) {
+        case BAR_SECTION_QUICKLAUNCH: return BAR_DIRTY_QUICKLAUNCH;
+        case BAR_SECTION_TASKBAR:     return BAR_DIRTY_TASKBAR;
+        case BAR_SECTION_TRAY:        return BAR_DIRTY_TRAY;
+        case BAR_SECTION_STATUS:      return BAR_DIRTY_STATUS;
+        default:                      return BAR_DIRTY_NONE;
+    }
+}
+
 void bar_surface_commit(void) {
     struct BarState *bar = &g_bar;
     if (!bar->wl_surface || !bar->buf[bar->cur_buf]) return;
 
     wl_surface_attach(bar->wl_surface, bar->buf[bar->cur_buf], 0, 0);
-    wl_surface_damage_buffer(bar->wl_surface, 0, 0, bar->buf_width, bar->buf_height);
+
+    /* Note: Cairo surface drawing logic uses physical pixel dimensions directly
+     * matching bar->buf_width and bar->buf_height (scale=1). Therefore, Cairo
+     * coordinates match Wayland buffer coordinates exactly. No scaling factor is needed. */
+    if (!bar->prev_boxes_valid || (bar->dirty_flags & BAR_DIRTY_ALL)) {
+        wl_surface_damage_buffer(bar->wl_surface, 0, 0, bar->buf_width, bar->buf_height);
+    } else {
+        for (int i = 0; i < 4; i++) {
+            uint32_t flag = flag_for_section(i);
+            bool dirty = (bar->dirty_flags & flag) ||
+                         (bar->section_box[i].x1 != bar->section_box_prev[i].x1) ||
+                         (bar->section_box[i].x2 != bar->section_box_prev[i].x2);
+            if (dirty) {
+                int32_t x1 = bar->section_box[i].x1;
+                int32_t x2 = bar->section_box[i].x2;
+                int32_t px1 = bar->section_box_prev[i].x1;
+                int32_t px2 = bar->section_box_prev[i].x2;
+
+                int32_t ux1 = x1 < px1 ? x1 : px1;
+                int32_t ux2 = x2 > px2 ? x2 : px2;
+
+                if (ux1 < 0) ux1 = 0;
+                if (ux2 > bar->buf_width) ux2 = bar->buf_width;
+
+                if (ux2 > ux1) {
+                    wl_surface_damage_buffer(bar->wl_surface, ux1, 0, ux2 - ux1, bar->buf_height);
+                }
+            }
+        }
+    }
+
+    memcpy(bar->section_box_prev, bar->section_box, sizeof(bar->section_box));
+    bar->prev_boxes_valid = true;
+    bar->dirty_flags = BAR_DIRTY_NONE;
+
     wl_surface_commit(bar->wl_surface);
 
     /* Swap to next buffer */

@@ -52,7 +52,7 @@ static void tl_title(void *data,
     (void)h;
     struct BarToplevel *tl = data;
     snprintf(tl->title, sizeof(tl->title), "%s", s ? s : "");
-    bar_request_redraw(&g_bar);
+    bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
 }
 
 static void tl_app_id(void *data,
@@ -64,7 +64,7 @@ static void tl_app_id(void *data,
     if (!tl->icon_surface && s && s[0]) {
         tl->icon_surface = bar_icon_get(s, 18);
     }
-    bar_request_redraw(&g_bar);
+    bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
 }
 
 static void tl_oe(void *d, struct zwlr_foreign_toplevel_handle_v1 *h,
@@ -87,7 +87,7 @@ static void tl_state(void *data,
     tl->activated = act;
     tl->minimized  = min;
     tl->fullscreen = fs;
-    bar_request_redraw(&g_bar);
+    bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
     /* Only suppress render if app_id is known — if empty, fullscreen arrived
      * before the first done; tl_done will call bar_update_render_suppressed
      * once app_id is guaranteed to be set by the compositor. */
@@ -101,7 +101,7 @@ static void tl_done(void *data,
     (void)data;
     /* app_id is stable after the first done — process any deferred fullscreen */
     bar_update_render_suppressed();
-    bar_request_redraw(&g_bar);
+    bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
 }
 
 static void tl_closed(void *data,
@@ -123,7 +123,7 @@ static void tl_closed(void *data,
     }
 
     zwlr_foreign_toplevel_handle_v1_destroy(h);
-    bar_request_redraw(&g_bar);
+    bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
     bar_update_render_suppressed();
     (void)data;
     LOG_INFO("taskbar: toplevel closed, remaining=%d", g_bar.toplevel_n);
@@ -137,7 +137,7 @@ static void tl_parent(void *d,
     bool has_parent = p != NULL;
     if (tl && tl->has_parent != has_parent) {
         tl->has_parent = has_parent;
-        bar_request_redraw(&g_bar);
+        bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
         bar_update_render_suppressed();
     }
 }
@@ -179,7 +179,7 @@ static void mgr_toplevel(void *data,
     }
 
     bar->toplevel_n++;
-    bar_request_redraw(bar);
+    bar_request_redraw_flags(bar, BAR_DIRTY_TASKBAR);
     zwlr_foreign_toplevel_handle_v1_add_listener(h, &tl_listener, tl);
     bar_update_render_suppressed();
 

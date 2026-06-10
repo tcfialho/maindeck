@@ -51,6 +51,24 @@ typedef enum {
     HIT_TRAY,      /* system tray item */
 } HitType;
 
+enum BarDirtyFlags {
+    BAR_DIRTY_NONE        = 0,
+    BAR_DIRTY_QUICKLAUNCH = 1 << 0,
+    BAR_DIRTY_TASKBAR     = 1 << 1,
+    BAR_DIRTY_TRAY        = 1 << 2,
+    BAR_DIRTY_STATUS      = 1 << 3,
+    BAR_DIRTY_ALL         = 1 << 4
+};
+
+#define BAR_SECTION_QUICKLAUNCH 0
+#define BAR_SECTION_TASKBAR     1
+#define BAR_SECTION_TRAY        2
+#define BAR_SECTION_STATUS      3
+
+struct BarSectionBox {
+    int32_t x1, x2;
+};
+
 struct HitArea {
     HitType type;
     int     index;   /* QL index, taskbar index, or status index */
@@ -105,6 +123,10 @@ struct BarState {
     bool dirty;        /* needs redraw */
     bool dirty_deferred;
     bool render_suppressed;
+    uint32_t dirty_flags;
+    struct BarSectionBox section_box[4];
+    struct BarSectionBox section_box_prev[4];
+    bool prev_boxes_valid;
 
     /* Status */
     char vol_text[32];
@@ -169,13 +191,18 @@ struct BarState {
 /* Global instance */
 extern struct BarState g_bar;
 
-static inline void bar_request_redraw(struct BarState *bar) {
+static inline void bar_request_redraw_flags(struct BarState *bar, uint32_t flags) {
+    bar->dirty_flags |= flags;
     if (bar->render_suppressed) {
         bar->dirty = false;
         bar->dirty_deferred = true;
     } else {
         bar->dirty = true;
     }
+}
+
+static inline void bar_request_redraw(struct BarState *bar) {
+    bar_request_redraw_flags(bar, BAR_DIRTY_ALL);
 }
 
 #endif /* BAR_STATE_H */

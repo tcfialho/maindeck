@@ -574,6 +574,25 @@ void bar_render(void) {
     /* Taskbar (center, fills remaining space) */
     draw_taskbar(cr, lay, ql_end + 8, tray_start - 8, h);
 
+    /* Record dynamic boundaries for partial damage */
+    bar->section_box[BAR_SECTION_QUICKLAUNCH].x1 = 0;
+    bar->section_box[BAR_SECTION_QUICKLAUNCH].x2 = ql_end + 8;
+
+    bar->section_box[BAR_SECTION_STATUS].x1 = status_start - 8;
+    bar->section_box[BAR_SECTION_STATUS].x2 = w;
+
+    bar->section_box[BAR_SECTION_TRAY].x1 = tray_start - 8;
+    bar->section_box[BAR_SECTION_TRAY].x2 = status_start;
+
+    bar->section_box[BAR_SECTION_TASKBAR].x1 = ql_end + 4;
+    bar->section_box[BAR_SECTION_TASKBAR].x2 = tray_start - 4;
+
+    /* Apply 6px margin padding to avoid border/separator artifacts */
+    for (int i = 0; i < 4; i++) {
+        bar->section_box[i].x1 -= 6;
+        bar->section_box[i].x2 += 6;
+    }
+
     cairo_restore(cr);
 
     bar_surface_commit();

@@ -35,10 +35,18 @@ static void set_default_cursor(uint32_t serial) {
 
 static void clear_bar_hover(struct BarState *bar) {
     if (bar->hover_hit == -1) return;
+    HitType old_type = bar->hover_type;
     bar->hover_hit   = -1;
     bar->hover_type  = HIT_NONE;
     bar->hover_index = -1;
-    bar_request_redraw(bar);
+
+    uint32_t flags = BAR_DIRTY_NONE;
+    if (old_type == HIT_QL) flags |= BAR_DIRTY_QUICKLAUNCH;
+    else if (old_type == HIT_TASKBAR) flags |= BAR_DIRTY_TASKBAR;
+    else if (old_type == HIT_TRAY) flags |= BAR_DIRTY_TRAY;
+    else if (old_type == HIT_STATUS) flags |= BAR_DIRTY_STATUS;
+
+    bar_request_redraw_flags(bar, flags);
 }
 
 static void ptr_enter(void *data, struct wl_pointer *ptr,
@@ -120,6 +128,7 @@ static void ptr_motion(void *data, struct wl_pointer *ptr,
 
     int hit = hit_test(bar->ptr_x, bar->ptr_y);
     if (hit != bar->hover_hit) {
+        HitType old_type = bar->hover_type;
         bar->hover_hit = hit;
         if (hit >= 0 && hit < bar->hit_n) {
             bar->hover_type  = bar->hit_areas[hit].type;
@@ -128,7 +137,14 @@ static void ptr_motion(void *data, struct wl_pointer *ptr,
             bar->hover_type  = HIT_NONE;
             bar->hover_index = -1;
         }
-        bar_request_redraw(bar);
+
+        uint32_t flags = BAR_DIRTY_NONE;
+        if (old_type == HIT_QL || bar->hover_type == HIT_QL) flags |= BAR_DIRTY_QUICKLAUNCH;
+        if (old_type == HIT_TASKBAR || bar->hover_type == HIT_TASKBAR) flags |= BAR_DIRTY_TASKBAR;
+        if (old_type == HIT_TRAY || bar->hover_type == HIT_TRAY) flags |= BAR_DIRTY_TRAY;
+        if (old_type == HIT_STATUS || bar->hover_type == HIT_STATUS) flags |= BAR_DIRTY_STATUS;
+
+        bar_request_redraw_flags(bar, flags);
     }
 }
 
