@@ -495,16 +495,24 @@ static void wm_handle_finished(void *data, struct river_window_manager_v1 *obj) 
 static uint64_t g_layout_sig = 0;
 static bool g_layout_sig_fresh = false;
 
-static uint64_t compute_layout_signature(void) {
+static uint64_t compute_layout_signature(const struct LayoutView *view) {
 	uint64_t h = 1469598103934665603ULL;
 	#define SIG_MIX(val) do { h = (h ^ (uint64_t)(val)) * 1099511628211ULL; } while (0)
 
-	SIG_MIX(wm.target_index);
-	SIG_MIX(wm.maximized);
-	size_t parentless_count = 0;
+	SIG_MIX(view->target_index);
+	SIG_MIX(view->maximized);
+	SIG_MIX(view->visible_count);
+	SIG_MIX((uintptr_t)view->target);
+	SIG_MIX((uintptr_t)view->main_win);
+	SIG_MIX((uintptr_t)view->deck_win);
+	SIG_MIX(view->single);
+	SIG_MIX(view->output.x);
+	SIG_MIX(view->output.y);
+	SIG_MIX(view->output.width);
+	SIG_MIX(view->output.height);
+
 	struct Window *w;
 	wl_list_for_each(w, &wm.windows, link) {
-		if (w->parent == NULL && !w->floating) parentless_count++;
 		SIG_MIX((uintptr_t)w->obj);
 		SIG_MIX(w->fullscreen);
 		SIG_MIX(w->minimized);
@@ -515,7 +523,6 @@ static uint64_t compute_layout_signature(void) {
 			SIG_MIX((uint32_t)w->height);
 		}
 	}
-	SIG_MIX(parentless_count);
 
 	struct Output *o;
 	wl_list_for_each(o, &wm.outputs, link) {
@@ -641,9 +648,12 @@ static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *o
 		primary->default_set = true;
 	}
 
+	struct LayoutView view;
+	layout_view_init(&view);
+
 	static uint64_t last_layout_sig = 0;
 	static bool have_last_sig = false;
-	uint64_t sig = compute_layout_signature();
+	uint64_t sig = compute_layout_signature(&view);
 	g_layout_sig = sig;
 	g_layout_sig_fresh = true;
 
@@ -652,11 +662,13 @@ static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *o
 		size_t index = 0;
 		wl_list_for_each(window, &wm.windows, link) {
 			if (window->parent != NULL) {
-				window_manage_layout(window, 0);
+				window_manage_layout(window, 0, &view);
 				continue;
 			}
-			window_manage_layout(window, index);
-			index++;
+			window_manage_layout(window, index, &view);
+			if (!window->floating && !window->minimized) {
+				index++;
+			}
 		}
 		last_layout_sig = sig;
 		have_last_sig = true;
@@ -675,11 +687,14 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 	static uint64_t last_render_sig = 0;
 	static bool have_last_render_sig = false;
 	uint64_t sig;
+	struct LayoutView view;
 	if (g_layout_sig_fresh) {
 		sig = g_layout_sig;
 		g_layout_sig_fresh = false;
+		layout_view_init(&view);
 	} else {
-		sig = compute_layout_signature();
+		layout_view_init(&view);
+		sig = compute_layout_signature(&view);
 	}
 
 	apply_output_presentation_modes();
@@ -689,15 +704,17 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 		struct Window *window;
 		wl_list_for_each(window, &wm.windows, link) {
 			if (window->parent != NULL) continue;
-			window_render_layout(window, index);
-			index++;
+			window_render_layout(window, index, &view);
+			if (!window->floating && !window->minimized) {
+				index++;
+			}
 		}
-		if (target_window() != NULL) {
-			wm_place_top(target_window()->node);
+		if (view.target != NULL) {
+			wm_place_top(view.target->node);
 		}
 		wl_list_for_each(window, &wm.windows, link) {
 			if (window->parent == NULL) continue;
-			window_render_layout(window, 0);
+			window_render_layout(window, 0, &view);
 		}
 		last_render_sig = sig;
 		have_last_render_sig = true;

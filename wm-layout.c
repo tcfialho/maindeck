@@ -81,7 +81,7 @@ static struct wl_list *visible_region_end(void) {
 	return &wm.windows;
 }
 
-struct Window *window_at(size_t index) {
+static struct Window *window_at(size_t index) {
 	size_t i = 0;
 	struct Window *window;
 	wl_list_for_each(window, &wm.windows, link) {
@@ -145,44 +145,59 @@ struct Box output_box(void) {
 	return (struct Box){ .x = output->x, .y = output->y, .width = output->width, .height = output->height };
 }
 
-static struct Box layout_box_for_index(size_t index) {
-	struct Box out = output_box();
-	size_t count = visible_window_count();
-	if (count <= 1 || wm.maximized) {
-		return (struct Box){
-			.x = out.x,
-			.y = out.y,
-			.width = out.width,
-			.height = out.height
-		};
+void layout_view_init(struct LayoutView *view) {
+	view->output = output_box();
+	view->visible_count = 0;
+	view->target = target_window();
+	view->main_win = NULL;
+	view->deck_win = NULL;
+	view->maximized = wm.maximized;
+	view->target_index = wm.target_index;
+
+	struct Window *w;
+	wl_list_for_each(w, &wm.windows, link) {
+		if (w->minimized || w->parent != NULL || w->floating) continue;
+		if (view->visible_count == 0) {
+			view->main_win = w;
+		} else if (view->visible_count == 1) {
+			view->deck_win = w;
+		}
+		view->visible_count++;
 	}
 
-	int32_t main_width = (out.width * 2) / 3;
-	if (main_width < 1) main_width = out.width;
-	int32_t deck_width = out.width - main_width;
+	view->single = (view->visible_count <= 1 || view->maximized);
+
+	int32_t main_width = (view->output.width * 2) / 3;
+	if (main_width < 1) main_width = view->output.width;
+	int32_t deck_width = view->output.width - main_width;
 	if (deck_width < 1) deck_width = 1;
 
-	if (index == 0) {
-		int32_t w = main_width - (GAP / 2);
-		return (struct Box){
-			.x = out.x,
-			.y = out.y,
-			.width = w > 0 ? w : 1,
-			.height = out.height
+	// main_box & deck_box
+	if (view->single) {
+		view->main_box = view->output;
+		view->deck_box = view->output;
+	} else {
+		int32_t w_main = main_width - (GAP / 2);
+		view->main_box = (struct Box){
+			.x = view->output.x,
+			.y = view->output.y,
+			.width = w_main > 0 ? w_main : 1,
+			.height = view->output.height
+		};
+		int32_t w_deck = deck_width - (GAP / 2);
+		view->deck_box = (struct Box){
+			.x = view->output.x + main_width + (GAP / 2),
+			.y = view->output.y,
+			.width = w_deck > 0 ? w_deck : 1,
+			.height = view->output.height
 		};
 	}
-	int32_t w = deck_width - (GAP / 2);
-	return (struct Box){
-		.x = out.x + main_width + (GAP / 2),
-		.y = out.y,
-		.width = w > 0 ? w : 1,
-		.height = out.height
-	};
 }
 
-static bool window_is_visible_index(size_t index) {
-	if (wm.maximized) return index == wm.target_index;
-	return index < 2 && index < visible_window_count();
+static struct Box layout_box_for_index(const struct LayoutView *view, size_t index) {
+	if (view->single) return view->output;
+	if (index == 0) return view->main_box;
+	return view->deck_box;
 }
 
 static void move_after(struct Window *window, struct wl_list *position) {
@@ -448,7 +463,7 @@ static int32_t natural_implicit_child_dimension(int32_t current, int32_t min, in
 	return fallback;
 }
 
-static void child_proposed_dimensions(struct Window *window, int32_t *width, int32_t *height) {
+static void child_proposed_dimensions(struct Window *window, int32_t *width, int32_t *height, const struct LayoutView *view) {
 	if (!window->implicit_parent) {
 		*width = 0;
 		*height = 0;
@@ -456,8 +471,16 @@ static void child_proposed_dimensions(struct Window *window, int32_t *width, int
 	}
 
 	struct Window *root = root_window(window);
-	int32_t pidx = root != NULL ? window_index(root) : -1;
-	struct Box pbox = pidx >= 0 ? layout_box_for_index((size_t)pidx) : output_box();
+	struct Box pbox = output_box();
+	if (root != NULL) {
+		if (root == view->main_win) {
+			pbox = view->main_box;
+		} else if (root == view->deck_win) {
+			pbox = view->deck_box;
+		} else if (view->single && root == view->target) {
+			pbox = view->output;
+		}
+	}
 
 	int32_t max_dialog_w = (pbox.width * 3) / 4;
 	int32_t max_dialog_h = (pbox.height * 3) / 4;
@@ -497,14 +520,14 @@ void md_insert_new_window(struct Window *window) {
 	log_state();
 }
 
-void window_manage_layout(struct Window *window, size_t index) {
+void window_manage_layout(struct Window *window, size_t index, const struct LayoutView *view) {
 	// Transient windows / dialogs: compositor/client owns position/dimensions.
 	if (window->parent != NULL) {
 		river_window_v1_use_ssd(window->obj);
 		river_window_v1_set_tiled(window->obj, RIVER_WINDOW_V1_EDGES_NONE);
 		if (!window->transient_size_proposed) {
 			int32_t width, height;
-			child_proposed_dimensions(window, &width, &height);
+			child_proposed_dimensions(window, &width, &height, view);
 			river_window_v1_propose_dimensions(window->obj, width, height);
 			LOG_EVENT("child dimensions proposed: \"%s\" implicit=%d proposed=%dx%d hint=%dx%d..%dx%d",
 				window->title ? window->title : "",
@@ -564,8 +587,9 @@ void window_manage_layout(struct Window *window, size_t index) {
 	// the fullscreen exit-reconcile so minimize-from-fullscreen still issues exit.
 	if (window->minimized) { window->new = false; return; }
 
-	if (!window_is_visible_index(index)) return;
-	struct Box box = layout_box_for_index(index);
+	bool visible = view->maximized ? (window == view->target) : (index < 2 && index < (size_t)view->visible_count);
+	if (!visible) return;
+	struct Box box = layout_box_for_index(view, index);
 	int32_t width = box.width - (BORDER_WIDTH * 2);
 	int32_t height = box.height - (BORDER_WIDTH * 2);
 	river_window_v1_use_ssd(window->obj);
@@ -574,7 +598,7 @@ void window_manage_layout(struct Window *window, size_t index) {
 	window->new = false;
 }
 
-void window_render_layout(struct Window *window, size_t index) {
+void window_render_layout(struct Window *window, size_t index, const struct LayoutView *view) {
 	if (window->minimized) {
 		window_set_visible(window, false);
 		window_apply_borders(window, BORDER_NONE);
@@ -582,14 +606,24 @@ void window_render_layout(struct Window *window, size_t index) {
 	}
 	// Transient windows / dialogs: float centered above parent, no WM borders.
 	if (window->parent != NULL) {
-		bool visible = window_is_really_visible(window);
+		bool visible = window_is_really_visible_view(window, view);
 		window_set_visible(window, visible);
 		if (visible) {
 			// Center the child over the parent's layout box.
 			struct Window *root = root_window(window);
-			int32_t pidx = window_index(root);
-			if (pidx >= 0) {
-				struct Box pbox = layout_box_for_index((size_t)pidx);
+			struct Box pbox;
+			bool found = false;
+			if (root == view->main_win) {
+				pbox = view->main_box;
+				found = true;
+			} else if (root == view->deck_win) {
+				pbox = view->deck_box;
+				found = true;
+			} else if (view->single && root == view->target) {
+				pbox = view->output;
+				found = true;
+			}
+			if (found) {
 				int32_t cw = window->width  > 0 ? window->width  : pbox.width  / 2;
 				int32_t ch = window->height > 0 ? window->height : pbox.height / 2;
 				int32_t cx = pbox.x + (pbox.width  - cw) / 2;
@@ -617,13 +651,14 @@ void window_render_layout(struct Window *window, size_t index) {
 		return;
 	}
 
-	if (!window_is_visible_index(index)) {
+	bool visible = view->maximized ? (window == view->target) : (index < 2 && index < (size_t)view->visible_count);
+	if (!visible) {
 		window_set_visible(window, false);
 		window_apply_borders(window, BORDER_NONE);
 		return;
 	}
 
-	struct Box box = layout_box_for_index(index);
+	struct Box box = layout_box_for_index(view, index);
 	window_set_visible(window, true);
 	river_node_v1_set_position(window->node, box.x + BORDER_WIDTH, box.y + BORDER_WIDTH);
 	wm_place_top(window->node);
@@ -642,6 +677,13 @@ void wm_place_top(struct river_node_v1 *node) {
 }
 
 bool window_is_really_visible(struct Window *w) {
+	if (w == NULL) return false;
+	struct LayoutView view;
+	layout_view_init(&view);
+	return window_is_really_visible_view(w, &view);
+}
+
+bool window_is_really_visible_view(struct Window *w, const struct LayoutView *view) {
 	int depth = 0;
 	while (w != NULL) {
 		if (w->minimized) return false;
@@ -650,7 +692,8 @@ bool window_is_really_visible(struct Window *w) {
 		w = w->parent;
 	}
 	if (w == NULL) return false;
-	int32_t idx = window_index(w);
-	if (idx < 0) return false;
-	return window_is_visible_index((size_t)idx);
+	if (view->single) {
+		return w == view->target;
+	}
+	return w == view->main_win || w == view->deck_win;
 }

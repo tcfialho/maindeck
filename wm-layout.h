@@ -6,9 +6,22 @@
 #include <sys/types.h>
 #include "types.h"
 
+struct LayoutView {
+	struct Box output;
+	int visible_count;
+	struct Window *target;
+	struct Window *main_win;
+	struct Window *deck_win;
+	bool single;
+	bool maximized;
+	int32_t target_index;
+	struct Box main_box;
+	struct Box deck_box;
+};
+
+void layout_view_init(struct LayoutView *view);
 size_t window_count(void);
 size_t visible_window_count(void);
-struct Window *window_at(size_t index);
 int32_t window_index(struct Window *needle);
 struct Window *target_window(void);
 void clamp_target(void);
@@ -27,10 +40,11 @@ void md_deck_prev(void);
 void md_send_target_to_deck_bottom(void);
 void md_promote_target_to_main(void);
 void md_insert_new_window(struct Window *window);
-void window_manage_layout(struct Window *window, size_t index);
-void window_render_layout(struct Window *window, size_t index);
+void window_manage_layout(struct Window *window, size_t index, const struct LayoutView *view);
+void window_render_layout(struct Window *window, size_t index, const struct LayoutView *view);
 void move_first(struct Window *window);
 void move_last(struct Window *window);
 void wm_place_top(struct river_node_v1 *node);
 bool window_is_really_visible(struct Window *w);
+bool window_is_really_visible_view(struct Window *w, const struct LayoutView *view);
 #endif /* WM_LAYOUT_H */
