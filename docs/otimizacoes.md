@@ -260,7 +260,7 @@ Use esta lista para marcar os itens à medida que forem implementados e testados
 - [ ] **8.** **P1.3** — Incluir o bit de `window_is_ignored` na assinatura de dedup do layout (`compute_layout_signature`) no [wm-handlers.c](file:///home/tcfialho/Documents/poc/maindeck-wm/wm-handlers.c).
 
 ### P2 — Otimização do Layout do WM
-- [ ] **9.** **P2** — Substituir chamadas O(n²) no layout materializando uma `struct LayoutView` em passada única nos ciclos de layout no [wm-layout.c](file:///home/tcfialho/Documents/poc/maindeck-wm/wm-layout.c).
+- [x] **9.** **P2** — Substituir chamadas O(n²) no layout materializando uma `struct LayoutView` em passada única nos ciclos de layout no [wm-layout.c](file:///home/tcfialho/Documents/poc/maindeck-wm/wm-layout.c).
 
 ### P3 — Render e Startup
 - [ ] **10.** **P3.1** — Implementar damage parcial por seção alterada na barra ([bar-surface.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-surface.c)).
