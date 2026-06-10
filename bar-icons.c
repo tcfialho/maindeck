@@ -14,16 +14,99 @@
 #include "bar-icons.h"
 #include "bar-log.h"
 
-#define ICON_CACHE_MAX 64
+#include <stdint.h>
 
 struct IconEntry {
-    char              name[128];
-    cairo_surface_t  *surf;   /* NULL = nf: glyph or not found */
-    char              glyph[32]; /* set if nf: prefix */
+    char              *name;
+    int               size;
+    cairo_surface_t  *surf;
+    bool              occupied;
+    bool              not_found;
 };
 
-static struct IconEntry g_cache[ICON_CACHE_MAX];
-static int              g_cache_n = 0;
+static struct IconEntry *g_hash_table = NULL;
+static int              g_hash_capacity = 0;
+static int              g_hash_count = 0;
+
+static uint32_t hash_key(const char *name, int size) {
+    uint32_t hash = 2166136261u;
+    while (*name) {
+        hash ^= (unsigned char)*name++;
+        hash *= 16777619u;
+    }
+    hash ^= (uint32_t)size;
+    hash *= 16777619u;
+    return hash;
+}
+
+static struct IconEntry *hash_table_lookup(const char *name, int size) {
+    if (!g_hash_table || g_hash_capacity == 0) return NULL;
+    uint32_t h = hash_key(name, size);
+    int idx = (int)(h & (g_hash_capacity - 1));
+    int start_idx = idx;
+    while (g_hash_table[idx].occupied) {
+        if (g_hash_table[idx].size == size && strcmp(g_hash_table[idx].name, name) == 0) {
+            return &g_hash_table[idx];
+        }
+        idx = (idx + 1) & (g_hash_capacity - 1);
+        if (idx == start_idx) break;
+    }
+    return NULL;
+}
+
+static void hash_table_insert_entry(struct IconEntry *table, int capacity, const char *name, int size, cairo_surface_t *surf, bool not_found) {
+    uint32_t h = hash_key(name, size);
+    int idx = (int)(h & (capacity - 1));
+    while (table[idx].occupied) {
+        idx = (idx + 1) & (capacity - 1);
+    }
+    table[idx].name = strdup(name);
+    table[idx].size = size;
+    table[idx].surf = surf;
+    table[idx].occupied = true;
+    table[idx].not_found = not_found;
+}
+
+static void hash_table_resize(int new_capacity) {
+    struct IconEntry *new_table = calloc(new_capacity, sizeof(struct IconEntry));
+    if (!new_table) return;
+
+    for (int i = 0; i < g_hash_capacity; i++) {
+        if (g_hash_table[i].occupied) {
+            uint32_t h = hash_key(g_hash_table[i].name, g_hash_table[i].size);
+            int idx = (int)(h & (new_capacity - 1));
+            while (new_table[idx].occupied) {
+                idx = (idx + 1) & (new_capacity - 1);
+            }
+            new_table[idx].name = g_hash_table[i].name;
+            new_table[idx].size = g_hash_table[i].size;
+            new_table[idx].surf = g_hash_table[i].surf;
+            new_table[idx].occupied = true;
+            new_table[idx].not_found = g_hash_table[i].not_found;
+        }
+    }
+    free(g_hash_table);
+    g_hash_table = new_table;
+    g_hash_capacity = new_capacity;
+}
+
+static void hash_table_insert(const char *name, int size, cairo_surface_t *surf, bool not_found) {
+    if (g_hash_capacity == 0) {
+        int init_cap = 128;
+        struct IconEntry *table = calloc(init_cap, sizeof(struct IconEntry));
+        if (!table) return;
+        g_hash_table = table;
+        g_hash_capacity = init_cap;
+        g_hash_count = 0;
+    } else if ((double)g_hash_count / g_hash_capacity >= 0.7) {
+        hash_table_resize(g_hash_capacity * 2);
+    }
+
+    if (g_hash_table) {
+        hash_table_insert_entry(g_hash_table, g_hash_capacity, name, size, surf, not_found);
+        g_hash_count++;
+    }
+}
 
 /* ------------------------------------------------------------------ */
 /* .desktop lookup                                                      */
@@ -291,9 +374,10 @@ cairo_surface_t *bar_icon_get(const char *name, int size) {
     if (strncmp(name, "nf:", 3) == 0) return NULL;
 
     /* Check cache */
-    for (int i = 0; i < g_cache_n; i++) {
-        if (strcmp(g_cache[i].name, name) == 0)
-            return g_cache[i].surf;
+    struct IconEntry *entry = hash_table_lookup(name, size);
+    if (entry) {
+        if (entry->not_found) return NULL;
+        return entry->surf;
     }
 
     /* Not in cache — resolve */
@@ -360,10 +444,10 @@ cairo_surface_t *bar_icon_get(const char *name, int size) {
     }
 
     /* Store in cache (even if NULL to avoid repeated lookups) */
-    if (g_cache_n < ICON_CACHE_MAX) {
-        snprintf(g_cache[g_cache_n].name, sizeof(g_cache[g_cache_n].name), "%s", name);
-        g_cache[g_cache_n].surf = surf;
-        g_cache_n++;
+    if (surf) {
+        hash_table_insert(name, size, surf, false);
+    } else {
+        hash_table_insert(name, size, NULL, true);
     }
 
     return surf;
@@ -382,11 +466,18 @@ void bar_icon_draw(cairo_t *cr, cairo_surface_t *icon, double x, double y, int s
 }
 
 void bar_icons_cleanup(void) {
-    for (int i = 0; i < g_cache_n; i++) {
-        if (g_cache[i].surf) {
-            cairo_surface_destroy(g_cache[i].surf);
-            g_cache[i].surf = NULL;
+    if (g_hash_table) {
+        for (int i = 0; i < g_hash_capacity; i++) {
+            if (g_hash_table[i].occupied) {
+                if (g_hash_table[i].surf) {
+                    cairo_surface_destroy(g_hash_table[i].surf);
+                }
+                free(g_hash_table[i].name);
+            }
         }
+        free(g_hash_table);
+        g_hash_table = NULL;
     }
-    g_cache_n = 0;
+    g_hash_capacity = 0;
+    g_hash_count = 0;
 }

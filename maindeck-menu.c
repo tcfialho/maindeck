@@ -49,6 +49,7 @@ typedef struct {
     char *exec;     // Comando a executar
     char *icon;     // Nome/caminho do ícone
     bool terminal;  // Executar no terminal?
+    cairo_surface_t *icon_surface; // Memoização do ícone
 } App;
 
 // Estrutura de estado global do app
@@ -293,6 +294,7 @@ static void load_desktop_file(const char *filepath, const char *filename) {
                 app->exec = clean_exec(exec);
                 app->icon = icon;
                 app->terminal = terminal;
+                app->icon_surface = NULL;
                 g_app.napps++;
                 name = NULL; // consumido
                 icon = NULL; // consumido
@@ -711,12 +713,14 @@ static void render(void) {
             cairo_fill(cr);
         }
 
-        // Carrega e desenha o ícone do aplicativo
-        cairo_surface_t *icon_surf = NULL;
-        if (a->icon) {
-            icon_surf = bar_icon_get(a->icon, 18);
+        // Carrega e desenha o ícone do aplicativo (memoizado por App com refcount simétrico)
+        if (a->icon && !a->icon_surface) {
+            cairo_surface_t *raw_surf = bar_icon_get(a->icon, 18);
+            if (raw_surf) {
+                a->icon_surface = cairo_surface_reference(raw_surf);
+            }
         }
-        bar_icon_draw(cr, icon_surf, 20, list_y + 8, 18);
+        bar_icon_draw(cr, a->icon_surface, 20, list_y + 8, 18);
 
         pango_layout_set_text(layout, a->name, -1);
         cairo_set_source_rgba(cr, 0.92, 0.92, 0.92, 1.0); // COL_TEXT (mesma cor branca da barra)
@@ -1466,10 +1470,14 @@ int main(int argc, char **argv) {
         free(g_app.apps[i].name);
         free(g_app.apps[i].exec);
         free(g_app.apps[i].icon);
+        if (g_app.apps[i].icon_surface) {
+            cairo_surface_destroy(g_app.apps[i].icon_surface);
+        }
     }
     free(g_app.apps);
     free(g_app.filtered);
     free(g_app.scores);
+    bar_icons_cleanup();
 
     for (int i = 0; i < 2; i++) {
         if (s_lay[i]) { g_object_unref(s_lay[i]); s_lay[i] = NULL; }

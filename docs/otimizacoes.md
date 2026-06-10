@@ -240,3 +240,41 @@ bug da assinatura.**
 Build/validação por item: `ninja -C build` + `tools/build-deploy.sh` + teste manual do
 comportamento descrito em cada "Verificação". Itens P0.1/P0.2 têm verificação objetiva
 por strace/SNI-fake; P0.4 exige medição em log ANTES do fix (não instalar às cegas).
+
+---
+
+## 📋 Checklist de Controle de Implementação
+
+Use esta lista para marcar os itens à medida que forem implementados e testados.
+
+### P0 — Latência Interativa
+- [x] **1.** **P0.1.1** — Implementar cache dinâmico de ícones (sem limite duro) com cacheamento de misses (NULL) no resolvedor em [bar-icons.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-icons.c).
+- [x] **2.** **P0.1.2** — Memoizar a `cairo_surface_t*` no próprio `struct App` (campo `icon_surface`) no menu ([maindeck-menu.c](file:///home/tcfialho/Documents/poc/maindeck-wm/maindeck-menu.c)) resolvida de forma lazy.
+- [x] **3.** **P0.2** — Migrar chamadas bloqueantes de D-Bus (`GetAll`/`GetLayout`) para chamadas assíncronas no tray ([bar-tray.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-tray.c)).
+- [x] **4.** **P0.3** — Substituir fork+exec do `pkill` ao clicar em janelas por envio de datagrama Unix-socket/UDP ou kill direto ao PID no [wm-input.c](file:///home/tcfialho/Documents/poc/maindeck-wm/wm-input.c).
+- [ ] **5.** **P0.4** — Adicionar chamada de `river_window_manager_v1_manage_dirty()` no timeout do timer de hold no [wm-input.c](file:///home/tcfialho/Documents/poc/maindeck-wm/wm-input.c) (após validação de log).
+
+### P1 — Corretude Estrutural
+- [ ] **6.** **P1.1** — Refatorar o array de toplevels da taskbar ([bar-taskbar.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-taskbar.c)) para slots estáveis (ponteiros alocados via calloc) para evitar ponteiros corrompidos após `memmove`.
+- [ ] **7.** **P1.2** — Limpar `seat->interacted` e `seat->hovered` em `window_destroy_closed` no [wm-handlers.c](file:///home/tcfialho/Documents/poc/maindeck-wm/wm-handlers.c) para evitar use-after-free (UAF).
+- [ ] **8.** **P1.3** — Incluir o bit de `window_is_ignored` na assinatura de dedup do layout (`compute_layout_signature`) no [wm-handlers.c](file:///home/tcfialho/Documents/poc/maindeck-wm/wm-handlers.c).
+
+### P2 — Otimização do Layout do WM
+- [ ] **9.** **P2** — Substituir chamadas O(n²) no layout materializando uma `struct LayoutView` em passada única nos ciclos de layout no [wm-layout.c](file:///home/tcfialho/Documents/poc/maindeck-wm/wm-layout.c).
+
+### P3 — Render e Startup
+- [ ] **10.** **P3.1** — Implementar damage parcial por seção alterada na barra ([bar-surface.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-surface.c)).
+- [ ] **11.** **P3.2** — Cachear `PangoLayout` por toplevel (taskbar) e para o relógio na barra ([bar-render.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-render.c)).
+- [ ] **12.** **P3.3a** — Alterar o redimensionamento da lista de apps no menu para duplicar a capacidade (capacidade ×2) em vez de `napps+1`.
+- [ ] **13.** **P3.3b** — Otimizar parse dos arquivos `.desktop` no menu para parsear in-place no buffer.
+- [ ] **14.** **P3.3d** — Implementar cache serializado em disco (`~/.cache/maindeck/apps.cache`) para o menu.
+- [ ] **15.** **P3.4** — Substituir comparações de string (`strcmp`) por enums carregados no startup para a renderização de status.
+
+### Achados Colaterais
+- [ ] **16.** **C1** — Fazer o ícone de volume ler o volume/mute real do sistema em vez de valores fixados no código ([bar-render.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-render.c)).
+- [ ] **17.** **C2** — Usar o tema de ícones especificado no arquivo de configuração em vez de fallback estático ([bar-config.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-config.c) / [bar-icons.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-icons.c)).
+- [ ] **18.** **C3** — Adicionar suporte a eventos de `NewIcon` e `NewTitle` no tray ([bar-tray.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-tray.c)).
+- [ ] **19.** **C4** — Remover a função morta `make_layout` em [bar-render.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-render.c).
+- [ ] **20.** **C5** — Remover o campo inutilizado `seat->hovered` (ou implementar seu uso efetivo).
+- [ ] **21.** **C6** — Evitar chamada síncrona de `wl_display_roundtrip` dentro do fluxo de render do menu.
+

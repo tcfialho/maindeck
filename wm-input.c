@@ -6,6 +6,10 @@
 #include <xkbcommon/xkbcommon-keysyms.h>
 #include <errno.h>
 #include <limits.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <signal.h>
+#include <string.h>
 
 #include "types.h"
 #include "wm-log.h"
@@ -13,6 +17,8 @@
 #include "wm-layout.h"
 #include "wm-input.h"
 #include "cursor-shape-v1-client-protocol.h"
+
+static pid_t g_menu_pid = -1;
 
 #define HOLD_THRESHOLD_MS 360
 #define DOUBLE_TAP_MS 280
@@ -28,9 +34,32 @@ void close_launcher(void) {
 			+ (now.tv_nsec - last_launcher_spawn.tv_nsec) / 1000000L;
 		if (since_ms < 250) return; // ignore the open's own focus settling
 	}
-	if (fork() == 0) {
-		execlp("pkill", "pkill", "-x", "maindeck-menu", (char *)0);
-		_exit(127);
+
+	bool sent = false;
+	const char *dir = getenv("XDG_RUNTIME_DIR");
+	if (dir) {
+		char sock_path[256];
+		int n = snprintf(sock_path, sizeof(sock_path), "%s/maindeck-menu.sock", dir);
+		if (n > 0 && n < (int)sizeof(sock_path)) {
+			int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+			if (fd >= 0) {
+				struct sockaddr_un addr = { .sun_family = AF_UNIX };
+				if (strlen(sock_path) < sizeof(addr.sun_path)) {
+					strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
+					if (sendto(fd, "C", 1, 0, (struct sockaddr *)&addr, sizeof(addr)) > 0) {
+						sent = true;
+					}
+				} else {
+					LOG_WARN("wm: Unix socket path too long for sun_path");
+				}
+				close(fd);
+			}
+		}
+	}
+
+	if (!sent && g_menu_pid > 0) {
+		kill(g_menu_pid, SIGTERM);
+		g_menu_pid = -1;
 	}
 }
 
@@ -403,7 +432,7 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		spawn_command("kitty");
 		break;
 	case ACTION_SPAWN_LAUNCHER:
-		spawn_command("maindeck-menu");
+		g_menu_pid = spawn_command("maindeck-menu");
 		clock_gettime(CLOCK_MONOTONIC, &last_launcher_spawn);
 		last_launcher_spawn_valid = true;
 		break;

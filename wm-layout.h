@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdbool.h>
+#include <sys/types.h>
 #include "types.h"
 
 size_t window_count(void);
@@ -13,7 +14,7 @@ struct Window *target_window(void);
 void clamp_target(void);
 struct Output *active_output(void);
 struct Box output_box(void);
-void spawn_command(const char *cmd);
+pid_t spawn_command(const char *cmd);
 void spawn_sh(const char *cmd);
 void window_set_string(char **field, const char *value);
 bool valid_identifier(const char *id);

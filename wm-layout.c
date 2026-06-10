@@ -199,11 +199,13 @@ void move_last(struct Window *window) {
 	move_after(window, wm.windows.prev);
 }
 
-void spawn_command(const char *cmd) {
-	if (fork() == 0) {
+pid_t spawn_command(const char *cmd) {
+	pid_t pid = fork();
+	if (pid == 0) {
 		execlp(cmd, cmd, (char *)0);
 		_exit(127);
 	}
+	return pid;
 }
 
 void spawn_sh(const char *cmd) {

@@ -51,6 +51,7 @@ static DBusConnection   *g_conn     = NULL;
 static struct TrayItem   g_items[TRAY_MAX];
 static int               g_item_n   = 0;
 static char              g_host_name[64];
+static char              g_menu_service[128] = "";
 
 /* ------------------------------------------------------------------ */
 /* Parse ":1.27/obj/path" → service + obj_path                         */
@@ -75,24 +76,32 @@ static void parse_sni_service(const char *reg, char *svc, size_t svc_cap,
 /* Read properties from an SNI item                                     */
 /* ------------------------------------------------------------------ */
 
-static void load_item_props(struct TrayItem *it) {
-    DBusMessage *msg = dbus_message_new_method_call(
-        it->service, it->obj_path,
-        "org.freedesktop.DBus.Properties", "GetAll");
-    if (!msg) return;
+struct PropsRequest {
+    char service[128];
+};
 
-    dbus_message_append_args(msg,
-        DBUS_TYPE_STRING, &(const char *){ SNI_ITEM_IFACE },
-        DBUS_TYPE_INVALID);
-
-    DBusError err;
-    dbus_error_init(&err);
-    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
-        g_conn, msg, 1000, &err);
-    dbus_message_unref(msg);
+static void on_props_reply(DBusPendingCall *pending, void *user_data) {
+    struct PropsRequest *req = user_data;
+    DBusMessage *reply = dbus_pending_call_steal_reply(pending);
 
     if (!reply) {
-        if (dbus_error_is_set(&err)) dbus_error_free(&err);
+        dbus_pending_call_unref(pending);
+        return;
+    }
+
+    /* Lookup the item by stable service name */
+    struct TrayItem *it = NULL;
+    for (int i = 0; i < g_item_n; i++) {
+        if (strcmp(g_items[i].service, req->service) == 0) {
+            it = &g_items[i];
+            break;
+        }
+    }
+
+    if (!it) {
+        /* Item was removed before the reply arrived, discard response */
+        dbus_message_unref(reply);
+        dbus_pending_call_unref(pending);
         return;
     }
 
@@ -100,6 +109,7 @@ static void load_item_props(struct TrayItem *it) {
     dbus_message_iter_init(reply, &iter);
     if (dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_ARRAY) {
         dbus_message_unref(reply);
+        dbus_pending_call_unref(pending);
         return;
     }
     dbus_message_iter_recurse(&iter, &arr);
@@ -112,7 +122,6 @@ static void load_item_props(struct TrayItem *it) {
         dbus_message_iter_get_basic(&entry, &key);
         dbus_message_iter_next(&entry);
 
-        /* entry now points to the value (variant) */
         int vtype = dbus_message_iter_get_arg_type(&entry);
 
         if (vtype == DBUS_TYPE_VARIANT) {
@@ -132,17 +141,54 @@ static void load_item_props(struct TrayItem *it) {
         dbus_message_iter_next(&arr);
     }
     dbus_message_unref(reply);
+    dbus_pending_call_unref(pending);
 
-    /* Load icon */
+    /* Load icon surface (TrayItem owns its reference simetrically) */
     if (it->icon_name[0]) {
-        it->icon = bar_icon_get(it->icon_name, ICON_SIZE);
-        if (!it->icon) {
-            /* many SNI icons use reverse-DNS app_id as icon name — try as-is */
-            LOG_WARN("tray: no icon for '%s' (item: %s)", it->icon_name, it->service);
-        }
+        cairo_surface_t *new_icon = bar_icon_get(it->icon_name, ICON_SIZE);
+        if (!new_icon) new_icon = bar_icon_get(it->service, ICON_SIZE);
+        if (new_icon) cairo_surface_reference(new_icon);
+        if (it->icon) cairo_surface_destroy(it->icon);
+        it->icon = new_icon;
     }
+
     LOG_INFO("tray: item %s icon='%s' title='%s'",
              it->service, it->icon_name, it->title);
+    bar_request_redraw(&g_bar);
+}
+
+static void free_props_request(void *user_data) {
+    free(user_data);
+}
+
+static void load_item_props(struct TrayItem *it) {
+    DBusMessage *msg = dbus_message_new_method_call(
+        it->service, it->obj_path,
+        "org.freedesktop.DBus.Properties", "GetAll");
+    if (!msg) return;
+
+    dbus_message_append_args(msg,
+        DBUS_TYPE_STRING, &(const char *){ SNI_ITEM_IFACE },
+        DBUS_TYPE_INVALID);
+
+    DBusPendingCall *pending = NULL;
+    if (dbus_connection_send_with_reply(g_conn, msg, &pending, 1000) && pending) {
+        struct PropsRequest *req = malloc(sizeof(struct PropsRequest));
+        bool ok = false;
+        if (req) {
+            snprintf(req->service, sizeof(req->service), "%s", it->service);
+            if (dbus_pending_call_set_notify(pending, on_props_reply, req, free_props_request)) {
+                ok = true;
+            } else {
+                free(req);
+            }
+        }
+        if (!ok) {
+            dbus_pending_call_cancel(pending);
+            dbus_pending_call_unref(pending);
+        }
+    }
+    dbus_message_unref(msg);
 }
 
 /* ------------------------------------------------------------------ */
@@ -176,6 +222,10 @@ static void remove_item(const char *reg_str) {
 
     for (int i = 0; i < g_item_n; i++) {
         if (strcmp(g_items[i].service, svc) == 0) {
+            if (g_items[i].icon) {
+                cairo_surface_destroy(g_items[i].icon);
+                g_items[i].icon = NULL;
+            }
             /* shift */
             int rem = g_item_n - i - 1;
             if (rem > 0)
@@ -941,6 +991,91 @@ static const struct xdg_surface_listener menu_xdg_surface_listener = {
     .configure = menu_xdg_surface_configure,
 };
 
+struct MenuLayoutRequest {
+    char service[128];
+    int icon_x;
+    int icon_w;
+    uint32_t serial;
+};
+
+static void on_menu_layout_reply(DBusPendingCall *pending, void *user_data) {
+    struct MenuLayoutRequest *req = user_data;
+    DBusMessage *reply = dbus_pending_call_steal_reply(pending);
+
+    if (!reply) {
+        dbus_pending_call_unref(pending);
+        return;
+    }
+
+    /* Lookup the item by stable service name */
+    int idx = -1;
+    for (int i = 0; i < g_item_n; i++) {
+        if (strcmp(g_items[i].service, req->service) == 0) {
+            idx = i;
+            break;
+        }
+    }
+
+    /* If the item was removed or another menu request was started, discard */
+    if (idx == -1 || strcmp(req->service, g_menu_service) != 0) {
+        dbus_message_unref(reply);
+        dbus_pending_call_unref(pending);
+        return;
+    }
+    g_menu_tray_idx = idx; // update index in case of item shift
+
+    parse_menu_layout(reply);
+    dbus_message_unref(reply);
+    dbus_pending_call_unref(pending);
+
+    if (g_menu_item_n == 0) {
+        LOG_WARN("menu: no items from GetLayout");
+        return;
+    }
+
+    menu_measure();
+    int mw = menu_calc_width();
+    int mh = menu_calc_height();
+
+    struct BarState *bar = &g_bar;
+
+    /* Create wl_surface for popup */
+    bar->menu_surface = wl_compositor_create_surface(bar->compositor);
+    bar->menu_xdg_surface = xdg_wm_base_get_xdg_surface(bar->xdg_wm_base, bar->menu_surface);
+    xdg_surface_add_listener(bar->menu_xdg_surface, &menu_xdg_surface_listener, NULL);
+
+    /* Positioner: anchor at icon position on the bar, grow upward */
+    struct xdg_positioner *pos = xdg_wm_base_create_positioner(bar->xdg_wm_base);
+    xdg_positioner_set_size(pos, mw, mh);
+    xdg_positioner_set_anchor_rect(pos, req->icon_x, 0, g_menu_anchor_w, bar->height);
+    xdg_positioner_set_anchor(pos, XDG_POSITIONER_ANCHOR_TOP_LEFT);
+    xdg_positioner_set_gravity(pos, XDG_POSITIONER_GRAVITY_TOP_LEFT);
+    xdg_positioner_set_constraint_adjustment(pos,
+        XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X |
+        XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y);
+
+    bar->menu_popup = xdg_surface_get_popup(bar->menu_xdg_surface, NULL, pos);
+    xdg_positioner_destroy(pos);
+    xdg_popup_add_listener(bar->menu_popup, &menu_popup_listener, NULL);
+
+    /* Attach popup to the layer surface */
+    zwlr_layer_surface_v1_get_popup(bar->layer_surface, bar->menu_popup);
+
+    /* Grab input focus */
+    xdg_popup_grab(bar->menu_popup, bar->seat, req->serial);
+
+    /* Allocate SHM buffer */
+    menu_shm_create(mw, mh);
+    bar->menu_open = true;
+
+    /* Commit so compositor sends configure */
+    wl_surface_commit(bar->menu_surface);
+    wl_display_flush(bar->display);
+
+    LOG_INFO("menu: opened for %s (%d items) %dx%d", req->service, g_menu_item_n, mw, mh);
+    bar_request_redraw(bar);
+}
+
 void bar_tray_open_menu(int idx, int icon_x, int icon_w, uint32_t serial) {
     if (!g_conn || idx < 0 || idx >= g_item_n) return;
     struct BarState *bar = &g_bar;
@@ -958,6 +1093,7 @@ void bar_tray_open_menu(int idx, int icon_x, int icon_w, uint32_t serial) {
     g_menu_serial    = serial;
     g_menu_hover     = -1;
     g_menu_item_n    = 0;
+    snprintf(g_menu_service, sizeof(g_menu_service), "%s", it->service);
 
     /* Build menu path: SNI obj_path + "/Menu" OR read the Menu property */
     char menu_path[256];
@@ -976,64 +1112,27 @@ void bar_tray_open_menu(int idx, int icon_x, int icon_w, uint32_t serial) {
     dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY, "s", &arr);
     dbus_message_iter_close_container(&args, &arr);
 
-    DBusError err;
-    dbus_error_init(&err);
-    DBusMessage *reply = dbus_connection_send_with_reply_and_block(g_conn, msg, 2000, &err);
+    DBusPendingCall *pending = NULL;
+    if (dbus_connection_send_with_reply(g_conn, msg, &pending, 2000) && pending) {
+        struct MenuLayoutRequest *req = malloc(sizeof(struct MenuLayoutRequest));
+        bool ok = false;
+        if (req) {
+            snprintf(req->service, sizeof(req->service), "%s", it->service);
+            req->icon_x = icon_x;
+            req->icon_w = icon_w;
+            req->serial = serial;
+            if (dbus_pending_call_set_notify(pending, on_menu_layout_reply, req, free_props_request)) {
+                ok = true;
+            } else {
+                free(req);
+            }
+        }
+        if (!ok) {
+            dbus_pending_call_cancel(pending);
+            dbus_pending_call_unref(pending);
+        }
+    }
     dbus_message_unref(msg);
-
-    if (!reply) {
-        LOG_WARN("menu: GetLayout failed: %s",
-                 dbus_error_is_set(&err) ? err.message : "no reply");
-        if (dbus_error_is_set(&err)) dbus_error_free(&err);
-        return;
-    }
-
-    parse_menu_layout(reply);
-    dbus_message_unref(reply);
-
-    if (g_menu_item_n == 0) {
-        LOG_WARN("menu: no items from GetLayout");
-        return;
-    }
-
-    menu_measure();
-    int mw = menu_calc_width();
-    int mh = menu_calc_height();
-
-    /* Create wl_surface for popup */
-    bar->menu_surface = wl_compositor_create_surface(bar->compositor);
-    bar->menu_xdg_surface = xdg_wm_base_get_xdg_surface(bar->xdg_wm_base, bar->menu_surface);
-    xdg_surface_add_listener(bar->menu_xdg_surface, &menu_xdg_surface_listener, NULL);
-
-    /* Positioner: anchor at icon position on the bar, grow upward */
-    struct xdg_positioner *pos = xdg_wm_base_create_positioner(bar->xdg_wm_base);
-    xdg_positioner_set_size(pos, mw, mh);
-    xdg_positioner_set_anchor_rect(pos, icon_x, 0, g_menu_anchor_w, bar->height);
-    xdg_positioner_set_anchor(pos, XDG_POSITIONER_ANCHOR_TOP_LEFT);
-    xdg_positioner_set_gravity(pos, XDG_POSITIONER_GRAVITY_TOP_LEFT);
-    xdg_positioner_set_constraint_adjustment(pos,
-        XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X |
-        XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y);
-
-    bar->menu_popup = xdg_surface_get_popup(bar->menu_xdg_surface, NULL, pos);
-    xdg_positioner_destroy(pos);
-    xdg_popup_add_listener(bar->menu_popup, &menu_popup_listener, NULL);
-
-    /* Attach popup to the layer surface */
-    zwlr_layer_surface_v1_get_popup(bar->layer_surface, bar->menu_popup);
-
-    /* Grab input focus */
-    xdg_popup_grab(bar->menu_popup, bar->seat, serial);
-
-    /* Allocate SHM buffer */
-    menu_shm_create(mw, mh);
-    bar->menu_open = true;
-
-    /* Commit so compositor sends configure */
-    wl_surface_commit(bar->menu_surface);
-    wl_display_flush(bar->display);
-
-    LOG_INFO("menu: opened for %s (%d items) %dx%d", it->service, g_menu_item_n, mw, mh);
 }
 
 int bar_tray_menu_row_at(int y) {
@@ -1139,5 +1238,11 @@ void bar_tray_cleanup(void) {
     dbus_connection_remove_filter(g_conn, signal_filter, NULL);
     dbus_connection_unref(g_conn);
     g_conn = NULL;
+    for (int i = 0; i < g_item_n; i++) {
+        if (g_items[i].icon) {
+            cairo_surface_destroy(g_items[i].icon);
+            g_items[i].icon = NULL;
+        }
+    }
     g_item_n = 0;
 }
