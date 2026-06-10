@@ -201,6 +201,7 @@ void process_hold_timers(void) {
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	struct Seat *seat;
+	bool fired_any = false;
 	wl_list_for_each(seat, &wm.seats, link) {
 		if (seat->removed) continue;
 		struct XkbBinding *binding;
@@ -213,8 +214,12 @@ void process_hold_timers(void) {
 				LOG_EVENT("hold fired: action=%d (elapsed=%ldms)", binding->hold_action, elapsed_ms);
 				seat_action(seat, binding->hold_action);
 				clamp_target();
+				fired_any = true;
 			}
 		}
+	}
+	if (fired_any && window_manager_v1 != NULL) {
+		river_window_manager_v1_manage_dirty(window_manager_v1);
 	}
 }
 

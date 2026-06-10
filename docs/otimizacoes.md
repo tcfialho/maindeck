@@ -252,7 +252,7 @@ Use esta lista para marcar os itens à medida que forem implementados e testados
 - [x] **2.** **P0.1.2** — Memoizar a `cairo_surface_t*` no próprio `struct App` (campo `icon_surface`) no menu ([maindeck-menu.c](file:///home/tcfialho/Documents/poc/maindeck-wm/maindeck-menu.c)) resolvida de forma lazy.
 - [x] **3.** **P0.2** — Migrar chamadas bloqueantes de D-Bus (`GetAll`/`GetLayout`) para chamadas assíncronas no tray ([bar-tray.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-tray.c)).
 - [x] **4.** **P0.3** — Substituir fork+exec do `pkill` ao clicar em janelas por envio de datagrama Unix-socket/UDP ou kill direto ao PID no [wm-input.c](file:///home/tcfialho/Documents/poc/maindeck-wm/wm-input.c).
-- [ ] **5.** **P0.4** — Adicionar chamada de `river_window_manager_v1_manage_dirty()` no timeout do timer de hold no [wm-input.c](file:///home/tcfialho/Documents/poc/maindeck-wm/wm-input.c) (após validação de log).
+- [x] **5.** **P0.4** — Adicionar chamada de `river_window_manager_v1_manage_dirty()` no timeout do timer de hold no [wm-input.c](file:///home/tcfialho/Documents/poc/maindeck-wm/wm-input.c) (após validação de log).
 
 ### P1 — Corretude Estrutural
 - [ ] **6.** **P1.1** — Refatorar o array de toplevels da taskbar ([bar-taskbar.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-taskbar.c)) para slots estáveis (ponteiros alocados via calloc) para evitar ponteiros corrompidos após `memmove`.
