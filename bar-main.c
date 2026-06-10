@@ -29,6 +29,7 @@
 #include "bar-config.h"
 #include "bar-icons.h"
 #include "bar-log.h"
+#include "bar-game-mode.h"
 
 /* ------------------------------------------------------------------ */
 /* Global state                                                         */
@@ -242,6 +243,7 @@ int main(void) {
     g_bar.hover_index   = -1;
     g_bar.menu_hover_row = -1;
     g_bar.height    = 32;
+    bar_game_mode_reset_notifications();
 
     /* Load config */
     char cfg_path[256];
@@ -373,25 +375,7 @@ int main(void) {
                     g_bar.wm_fullscreen = on;
                     if ((on || off) && g_bar.render_suppressed != on) {
                         g_bar.render_suppressed = on;
-                        if (!fork()) {
-                            setsid();
-                            if (on) {
-                                execlp("notify-send", "notify-send", "-i", "applications-games",
-                                       "-t", "2000", "Maindeck", "Modo jogo ativado", NULL);
-                            } else {
-                                execlp("notify-send", "notify-send", "-i", "dialog-information",
-                                       "-t", "2000", "Maindeck", "Modo jogo desativado", NULL);
-                            }
-                            _exit(1);
-                        }
-                        if (!fork()) {
-                            setsid();
-                            const char *snd = on
-                                ? "/usr/share/sounds/freedesktop/stereo/complete.oga"
-                                : "/usr/share/sounds/freedesktop/stereo/dialog-information.oga";
-                            execlp("paplay", "paplay", snd, NULL);
-                            _exit(1);
-                        }
+                        bar_game_mode_apply(on);
                         if (!on) {
                             g_bar.dirty_deferred = false;
                             bar_surface_restore();

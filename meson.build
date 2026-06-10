@@ -97,6 +97,7 @@ executable(
   'bar-input.c',
   'bar-config.c',
   'bar-icons.c',
+  'bar-game-mode.c',
   'bar-tray.c',
   bar_protocols,
   toplevel_protocols,

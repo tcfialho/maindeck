@@ -20,6 +20,10 @@ struct Output {
 	struct river_layer_shell_output_v1 *shell_output;
 	bool removed;
 	bool default_set;
+	bool presentation_mode_set;
+	bool scanout_capture_logged;
+	uint32_t presentation_mode;
+	uint32_t capture_session_count;
 	int32_t x, y, width, height;
 	// Área utilizável após subtrair as exclusive zones das layer shells (waybar).
 	// Zero até o primeiro non_exclusive_area chegar — fallback para dimensões do output.
@@ -56,6 +60,8 @@ struct Window {
 	bool minimized; // force-hidden independente do índice; excluído da contagem visível; agrupado na cauda de wm.windows
 	bool applied_fullscreen; // what we last told the server, to act only on edges
 	struct river_output_v1 *fs_output;
+	uint32_t presentation_hint;
+	uint32_t capture_session_count;
 
 	enum BorderState border_state;
 	bool border_focused;

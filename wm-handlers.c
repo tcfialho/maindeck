@@ -92,11 +92,24 @@ static void output_handle_dimensions(void *data, struct river_output_v1 *obj, in
 
 static void output_handle_wl_output(void *data, struct river_output_v1 *obj, uint32_t name) {}
 
+static void output_handle_capture_sessions(void *data, struct river_output_v1 *obj, uint32_t count) {
+	struct Output *output = data;
+	(void)obj;
+	if (output->capture_session_count != count) {
+		LOG_EVENT("output capture sessions: %u", count);
+	}
+	output->capture_session_count = count;
+	if (count == 0) {
+		output->scanout_capture_logged = false;
+	}
+}
+
 static const struct river_output_v1_listener river_output_listener = {
 	.removed = output_handle_removed,
 	.wl_output = output_handle_wl_output,
 	.position = output_handle_position,
 	.dimensions = output_handle_dimensions,
+	.capture_sessions = output_handle_capture_sessions,
 };
 
 static void layer_shell_output_handle_non_exclusive_area(
@@ -370,7 +383,16 @@ static void window_handle_minimize_requested(void *data, struct river_window_v1 
 		window->app_id ? window->app_id : "");
 }
 static void window_handle_unreliable_pid(void *data, struct river_window_v1 *obj, int32_t unreliable_pid) {}
-static void window_handle_presentation_hint(void *data, struct river_window_v1 *obj, uint32_t hint) {}
+static void window_handle_presentation_hint(void *data, struct river_window_v1 *obj, uint32_t hint) {
+	struct Window *window = data;
+	(void)obj;
+	if (hint != RIVER_OUTPUT_V1_PRESENTATION_MODE_VSYNC &&
+	    hint != RIVER_OUTPUT_V1_PRESENTATION_MODE_ASYNC) {
+		LOG_WARN("invalid presentation hint ignored: %u", hint);
+		return;
+	}
+	window->presentation_hint = hint;
+}
 static void window_handle_identifier(void *data, struct river_window_v1 *obj, const char *identifier) {
 	struct Window *window = data;
 	(void)obj;
@@ -383,6 +405,18 @@ static void window_handle_identifier(void *data, struct river_window_v1 *obj, co
 	          window->title ? window->title : "",
 	          window->app_id ? window->app_id : "",
 	          identifier);
+}
+
+static void window_handle_capture_sessions(void *data, struct river_window_v1 *obj, uint32_t count) {
+	struct Window *window = data;
+	(void)obj;
+	if (window->capture_session_count != count) {
+		LOG_EVENT("window capture sessions: %u title=\"%s\" app_id=%s",
+		          count,
+		          window->title ? window->title : "",
+		          window->app_id ? window->app_id : "");
+	}
+	window->capture_session_count = count;
 }
 
 static const struct river_window_v1_listener river_window_listener = {
@@ -404,6 +438,7 @@ static const struct river_window_v1_listener river_window_listener = {
 	.unreliable_pid = window_handle_unreliable_pid,
 	.presentation_hint = window_handle_presentation_hint,
 	.identifier = window_handle_identifier,
+	.capture_sessions = window_handle_capture_sessions,
 };
 
 static void window_destroy_closed(struct Window *window, bool flush_now) {
@@ -503,6 +538,73 @@ static uint64_t compute_layout_signature(void) {
 	return h;
 }
 
+static struct river_output_v1 *window_fullscreen_output(struct Window *window) {
+	if (window->fs_output != NULL) return window->fs_output;
+	struct Output *output = active_output();
+	return output ? output->obj : NULL;
+}
+
+static bool window_controls_output_presentation(struct Window *window, struct Output *output) {
+	return window != NULL &&
+	       output != NULL &&
+	       output->obj != NULL &&
+	       window->fullscreen &&
+	       !window->minimized &&
+	       window->applied_fullscreen &&
+	       window_fullscreen_output(window) == output->obj;
+}
+
+static struct Window *fullscreen_window_for_output(struct Output *output) {
+	struct Window *target = target_window();
+	if (window_controls_output_presentation(target, output)) {
+		return target;
+	}
+
+	struct Window *candidate = NULL;
+	struct Window *window;
+	wl_list_for_each(window, &wm.windows, link) {
+		if (window_controls_output_presentation(window, output)) {
+			candidate = window;
+		}
+	}
+	return candidate;
+}
+
+static void apply_output_presentation_modes(void) {
+	struct Output *output;
+	wl_list_for_each(output, &wm.outputs, link) {
+		if (output->removed || output->obj == NULL) continue;
+
+		struct Window *window = fullscreen_window_for_output(output);
+		if (window == NULL) {
+			output->scanout_capture_logged = false;
+		}
+		uint32_t mode = RIVER_OUTPUT_V1_PRESENTATION_MODE_VSYNC;
+		if (window != NULL && window->presentation_hint == RIVER_OUTPUT_V1_PRESENTATION_MODE_ASYNC) {
+			mode = RIVER_OUTPUT_V1_PRESENTATION_MODE_ASYNC;
+		}
+		if (window != NULL && output->capture_session_count > 0 && !output->scanout_capture_logged) {
+			LOG_EVENT("direct scanout blocked: output capture_sessions=%u window=\"%s\" app_id=%s",
+				output->capture_session_count,
+				window->title ? window->title : "",
+				window->app_id ? window->app_id : "");
+			output->scanout_capture_logged = true;
+		}
+
+		if (output->presentation_mode_set && output->presentation_mode == mode) continue;
+
+		river_output_v1_set_presentation_mode(output->obj, mode);
+		if (mode == RIVER_OUTPUT_V1_PRESENTATION_MODE_ASYNC || output->presentation_mode_set) {
+			LOG_EVENT("presentation mode: %s window=\"%s\" app_id=%s",
+				mode == RIVER_OUTPUT_V1_PRESENTATION_MODE_ASYNC ? "async" : "vsync",
+				window && window->title ? window->title : "",
+				window && window->app_id ? window->app_id : "");
+		}
+		output->presentation_mode = mode;
+		output->presentation_mode_set = true;
+	}
+}
+
 static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *obj) {
 	struct Output *output, *output_tmp;
 	wl_list_for_each_safe(output, output_tmp, &wm.outputs, link) {
@@ -577,6 +679,8 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 	} else {
 		sig = compute_layout_signature();
 	}
+
+	apply_output_presentation_modes();
 
 	if (!have_last_render_sig || sig != last_render_sig) {
 		size_t index = 0;
@@ -694,7 +798,8 @@ static void handle_global(void *data, struct wl_registry *registry, uint32_t nam
 		const char *interface, uint32_t version) {
 	if (strcmp(interface, river_window_manager_v1_interface.name) == 0) {
 		if (version >= 4) {
-			window_manager_v1 = wl_registry_bind(registry, name, &river_window_manager_v1_interface, 4);
+			window_manager_v1 = wl_registry_bind(registry, name, &river_window_manager_v1_interface,
+				version >= 5 ? 5 : 4);
 		}
 	} else if (strcmp(interface, river_xkb_bindings_v1_interface.name) == 0) {
 		xkb_bindings_v1 = wl_registry_bind(registry, name, &river_xkb_bindings_v1_interface, 1);

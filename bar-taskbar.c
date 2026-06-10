@@ -13,6 +13,7 @@
 #include "bar-surface.h"
 #include "bar-icons.h"
 #include "bar-log.h"
+#include "bar-game-mode.h"
 
 static void bar_update_render_suppressed(void) {
     struct BarState *bar = &g_bar;
@@ -30,25 +31,7 @@ static void bar_update_render_suppressed(void) {
     if (any_active_fullscreen != bar->render_suppressed) {
         LOG_INFO("bar: render_suppressed changed from %d to %d", bar->render_suppressed, any_active_fullscreen);
         bar->render_suppressed = any_active_fullscreen;
-        if (!fork()) {
-            setsid();
-            if (any_active_fullscreen) {
-                execlp("notify-send", "notify-send", "-i", "applications-games", "-t", "2000",
-                       "Maindeck", "Modo jogo ativado", NULL);
-            } else {
-                execlp("notify-send", "notify-send", "-i", "dialog-information", "-t", "2000",
-                       "Maindeck", "Modo jogo desativado", NULL);
-            }
-            _exit(1);
-        }
-        if (!fork()) {
-            setsid();
-            const char *snd = any_active_fullscreen
-                ? "/usr/share/sounds/freedesktop/stereo/complete.oga"
-                : "/usr/share/sounds/freedesktop/stereo/dialog-information.oga";
-            execlp("paplay", "paplay", snd, NULL);
-            _exit(1);
-        }
+        bar_game_mode_apply(any_active_fullscreen);
         if (!bar->render_suppressed) {
             bar->dirty_deferred = false;
             bar_surface_restore();

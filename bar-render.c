@@ -30,9 +30,11 @@
 #define ICON_SIZE       18
 #define BTN_PAD         8
 #define BTN_RADIUS      4.0
+#define POWER_BTN_W     34
+#define POWER_ICON_Y_OFFSET 2.5
 
 static PangoFontDescription *s_font_bar = NULL;    /* parseada de bar->config.font */
-static PangoFontDescription *s_font_power = NULL;  /* "sans bold 18" */
+static PangoFontDescription *s_font_power = NULL;  /* "sans bold 15" */
 
 static cairo_surface_t *s_cs[2]   = { NULL, NULL };
 static cairo_t         *s_cr[2]   = { NULL, NULL };
@@ -68,7 +70,7 @@ static void ensure_cairo(struct BarState *bar, void *data) {
     pango_layout_set_font_description(s_lay[b], s_font_bar);
 
     s_lay_power[b] = pango_cairo_create_layout(s_cr[b]);
-    if (!s_font_power) s_font_power = pango_font_description_from_string("sans bold 18");
+    if (!s_font_power) s_font_power = pango_font_description_from_string("sans bold 15");
     pango_layout_set_font_description(s_lay_power[b], s_font_power);
     pango_layout_set_text(s_lay_power[b], "⏻", -1);
 
@@ -462,7 +464,7 @@ static int draw_status(cairo_t *cr, PangoLayout *lay, int h, int x_end) {
         bool hovered = (bar->hover_type == HIT_STATUS) && (bar->hover_index == i);
 
         if (strcmp(mod, "power") == 0) {
-            int pw = 36;
+            int pw = POWER_BTN_W;
             x -= pw + 2;
             if (hovered) {
                 cairo_set_source_rgba(cr, 0.80, 0.15, 0.15, 0.25);
@@ -475,7 +477,9 @@ static int draw_status(cairo_t *cr, PangoLayout *lay, int h, int x_end) {
                 int tw, th;
                 pango_layout_get_pixel_size(pw_lay, &tw, &th);
                 cairo_set_source_rgba(cr, 1.0, 0.35, 0.35, 1.0);
-                cairo_move_to(cr, x + (pw - tw) / 2.0, btn_y + (btn_h - th) / 2.0);
+                cairo_move_to(cr,
+                              x + (pw - tw) / 2.0,
+                              btn_y + (btn_h - th) / 2.0 + POWER_ICON_Y_OFFSET);
                 pango_cairo_show_layout(cr, pw_lay);
             }
             push_hit(HIT_STATUS, i, x, 0, pw, h);
