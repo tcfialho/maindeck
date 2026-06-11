@@ -149,6 +149,8 @@ def find_pids() -> dict[str, int]:
             if not exe_path.exists():
                 continue
             exe = os.readlink(str(exe_path))
+            # Um binário atualizado embaixo de um processo vivo vira "... (deleted)".
+            exe = exe.removesuffix(" (deleted)")
             if exe.endswith("/river") or exe == "river":
                 pids["river"] = pid
             elif exe.endswith("/maindeck-wm") or exe == "maindeck-wm":
