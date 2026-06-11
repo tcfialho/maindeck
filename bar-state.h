@@ -115,7 +115,7 @@ struct BarState {
     int                  cur_buf;
 
     /* Toplevels */
-    struct BarToplevel toplevels[BAR_MAX_TOPLEVELS];
+    struct BarToplevel *toplevels[BAR_MAX_TOPLEVELS];
     int                toplevel_n;
 
     /* Ext toplevels: parallel array by arrival order */

@@ -74,12 +74,14 @@ static void ensure_cairo(struct BarState *bar, void *data) {
          * context / DPI; drop them so they are recreated lazily at the new
          * size and re-shaped on next draw. */
         for (int i = 0; i < bar->toplevel_n; i++) {
-            struct BarToplevel *tl = &bar->toplevels[i];
-            if (tl->layout) { g_object_unref(tl->layout); tl->layout = NULL; }
-            tl->last_title_shaped[0] = '\0';
-            tl->last_width_shaped = -1;
-            tl->last_tw_shaped = -1;
-            tl->last_th_shaped = -1;
+            struct BarToplevel *tl = bar->toplevels[i];
+            if (tl) {
+                if (tl->layout) { g_object_unref(tl->layout); tl->layout = NULL; }
+                tl->last_title_shaped[0] = '\0';
+                tl->last_width_shaped = -1;
+                tl->last_tw_shaped = -1;
+                tl->last_th_shaped = -1;
+            }
         }
     }
 
@@ -280,7 +282,7 @@ static void draw_taskbar(cairo_t *cr, int x_start, int x_end, int h) {
     struct BarState *bar = &g_bar;
     int n = 0;
     for (int i = 0; i < bar->toplevel_n; i++) {
-        if (!bar->toplevels[i].has_parent) n++;
+        if (bar->toplevels[i] && !bar->toplevels[i]->has_parent) n++;
     }
     if (n == 0) return;
 
@@ -295,8 +297,8 @@ static void draw_taskbar(cairo_t *cr, int x_start, int x_end, int h) {
     int x = x_start + 4;
 
     for (int i = 0; i < bar->toplevel_n; i++) {
-        struct BarToplevel *tl = &bar->toplevels[i];
-        if (tl->has_parent) continue;
+        struct BarToplevel *tl = bar->toplevels[i];
+        if (!tl || tl->has_parent) continue;
 
         bool hovered = (bar->hover_type == HIT_TASKBAR) && (bar->hover_index == i);
 
@@ -670,10 +672,14 @@ void bar_render_cleanup(void) {
     s_last_clock_h = -1;
 
     /* Release per-window taskbar layouts still attached to open toplevels
-     * (tl_closed only frees them as windows close individually). */
+     * (tl_closed only frees them as windows close individually) and free the structs. */
     for (int i = 0; i < g_bar.toplevel_n; i++) {
-        struct BarToplevel *tl = &g_bar.toplevels[i];
-        if (tl->layout) { g_object_unref(tl->layout); tl->layout = NULL; }
+        struct BarToplevel *tl = g_bar.toplevels[i];
+        if (tl) {
+            if (tl->layout) { g_object_unref(tl->layout); tl->layout = NULL; }
+            free(tl);
+            g_bar.toplevels[i] = NULL;
+        }
     }
 
     if (s_font_bar) {

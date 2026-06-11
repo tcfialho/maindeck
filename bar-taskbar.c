@@ -21,8 +21,8 @@ static void bar_update_render_suppressed(void) {
     if (bar->wm_fullscreen) return;
     bool any_active_fullscreen = false;
     for (int i = 0; i < bar->toplevel_n; i++) {
-        struct BarToplevel *tl = &bar->toplevels[i];
-        if (!tl->has_parent && tl->activated && tl->fullscreen && !tl->minimized) {
+        struct BarToplevel *tl = bar->toplevels[i];
+        if (tl && !tl->has_parent && tl->activated && tl->fullscreen && !tl->minimized) {
             any_active_fullscreen = true;
             break;
         }
@@ -107,29 +107,30 @@ static void tl_done(void *data,
 static void tl_closed(void *data,
     struct zwlr_foreign_toplevel_handle_v1 *h) {
     struct BarState *bar = &g_bar;
-
-    /* Find by handle pointer — data may be stale after prior shifts */
+    struct BarToplevel *tl = data;
+ 
     int idx = -1;
     for (int i = 0; i < bar->toplevel_n; i++) {
-        if (bar->toplevels[i].zwlr_handle == h) { idx = i; break; }
+        if (bar->toplevels[i] == tl) { idx = i; break; }
     }
-
+ 
     if (idx >= 0) {
-        if (bar->toplevels[idx].layout) {
-            g_object_unref(bar->toplevels[idx].layout);
+        if (tl->layout) {
+            g_object_unref(tl->layout);
         }
+        free(tl);
         int rem = bar->toplevel_n - idx - 1;
-        if (rem > 0)
+        if (rem > 0) {
             memmove(&bar->toplevels[idx], &bar->toplevels[idx+1],
                     (size_t)rem * sizeof(bar->toplevels[0]));
+        }
         bar->toplevel_n--;
-        memset(&bar->toplevels[bar->toplevel_n], 0, sizeof(bar->toplevels[0]));
+        bar->toplevels[bar->toplevel_n] = NULL;
     }
-
+ 
     zwlr_foreign_toplevel_handle_v1_destroy(h);
     bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
     bar_update_render_suppressed();
-    (void)data;
     LOG_INFO("taskbar: toplevel closed, remaining=%d", g_bar.toplevel_n);
 }
 
@@ -168,25 +169,31 @@ static void mgr_toplevel(void *data,
     struct BarState *bar = &g_bar;
     if (bar->toplevel_n >= BAR_MAX_TOPLEVELS) {
         LOG_WARN("taskbar: too many toplevels, ignoring");
+        zwlr_foreign_toplevel_handle_v1_destroy(h);
         return;
     }
-
+ 
     int idx = bar->toplevel_n;
-    struct BarToplevel *tl = &bar->toplevels[idx];
-    memset(tl, 0, sizeof(*tl));
+    struct BarToplevel *tl = calloc(1, sizeof(*tl));
+    if (!tl) {
+        LOG_ERR("taskbar: calloc failed for new toplevel");
+        zwlr_foreign_toplevel_handle_v1_destroy(h);
+        return;
+    }
     tl->zwlr_handle = h;
-
+    bar->toplevels[idx] = tl;
+ 
     /* Lockstep: if ext already arrived at same position, link it */
     if (idx < bar->ext_n) {
         tl->ext_handle = bar->ext_handles[idx];
         snprintf(tl->identifier, sizeof(tl->identifier), "%s", bar->ext_identifiers[idx]);
     }
-
+ 
     bar->toplevel_n++;
     bar_request_redraw_flags(bar, BAR_DIRTY_TASKBAR);
     zwlr_foreign_toplevel_handle_v1_add_listener(h, &tl_listener, tl);
     bar_update_render_suppressed();
-
+ 
     LOG_INFO("taskbar: new toplevel idx=%d (total=%d)", idx, bar->toplevel_n);
 }
 
@@ -219,10 +226,12 @@ static void ext_identifier(void *data,
 
     /* Link to zwlr at same position if it exists */
     if (ext_idx < bar->toplevel_n) {
-        struct BarToplevel *tl = &bar->toplevels[ext_idx];
-        tl->ext_handle = handle;
-        snprintf(tl->identifier, sizeof(tl->identifier), "%s", id ? id : "");
-        LOG_INFO("taskbar: ext identifier=%s linked to zwlr idx=%d", id ? id : "", ext_idx);
+        struct BarToplevel *tl = bar->toplevels[ext_idx];
+        if (tl) {
+            tl->ext_handle = handle;
+            snprintf(tl->identifier, sizeof(tl->identifier), "%s", id ? id : "");
+            LOG_INFO("taskbar: ext identifier=%s linked to zwlr idx=%d", id ? id : "", ext_idx);
+        }
     }
 }
 
@@ -304,26 +313,26 @@ const struct ext_foreign_toplevel_list_v1_listener bar_ext_list_listener = {
 void bar_taskbar_activate(int idx) {
     struct BarState *bar = &g_bar;
     if (idx < 0 || idx >= bar->toplevel_n) return;
-
-    struct BarToplevel *tl = &bar->toplevels[idx];
-    if (!tl->identifier[0]) {
+ 
+    struct BarToplevel *tl = bar->toplevels[idx];
+    if (!tl || !tl->identifier[0]) {
         LOG_WARN("taskbar: no identifier for idx=%d, cannot activate", idx);
         return;
     }
-
+ 
     if (bar->ipc_sock < 0) {
         LOG_WARN("taskbar: IPC socket not connected");
         return;
     }
-
+ 
     char msg[64];
     int  len = snprintf(msg, sizeof(msg), "activate %s", tl->identifier);
-
+ 
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", bar->ipc_path);
-
+ 
     ssize_t sent = sendto(bar->ipc_sock, msg, (size_t)len, 0,
                           (struct sockaddr *)&addr, sizeof(addr));
     if (sent < 0) {
@@ -332,12 +341,12 @@ void bar_taskbar_activate(int idx) {
         LOG_INFO("taskbar: sent '%s' to %s", msg, bar->ipc_path);
     }
 }
-
+ 
 void bar_taskbar_close(int idx) {
     struct BarState *bar = &g_bar;
     if (idx < 0 || idx >= bar->toplevel_n) return;
-    struct BarToplevel *tl = &bar->toplevels[idx];
-    if (tl->zwlr_handle) {
+    struct BarToplevel *tl = bar->toplevels[idx];
+    if (tl && tl->zwlr_handle) {
         zwlr_foreign_toplevel_handle_v1_close(tl->zwlr_handle);
     }
 }
