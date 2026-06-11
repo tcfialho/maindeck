@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <stdbool.h>
@@ -578,6 +579,28 @@ static struct Window *fullscreen_window_for_output(struct Output *output) {
 	return candidate;
 }
 
+static bool window_is_likely_game(struct Window *window) {
+	if (window == NULL) return false;
+	if (window->app_id == NULL) return false;
+
+	// Heuristics:
+	// 1. Steam games: app_id starts with "steam_app_" (e.g. steam_app_12345)
+	if (strncmp(window->app_id, "steam_app_", 10) == 0) return true;
+
+	// 2. Proton/Wine games: app_id ends with ".exe" (e.g. cyberpunk2077.exe)
+	size_t len = strlen(window->app_id);
+	if (len > 4 && strcasecmp(window->app_id + len - 4, ".exe") == 0) return true;
+
+	// 3. Proton/Wine/Lutris prefixes/names: contains "wine", "proton", "retroarch"
+	if (strcasestr(window->app_id, "wine") != NULL) return true;
+	if (strcasestr(window->app_id, "proton") != NULL) return true;
+	if (strcasestr(window->app_id, "retroarch") != NULL) return true;
+	if (strcasestr(window->app_id, "heroic") != NULL) return true;
+	if (strcasestr(window->app_id, "lutris") != NULL) return true;
+
+	return false;
+}
+
 static void apply_output_presentation_modes(void) {
 	struct Output *output;
 	wl_list_for_each(output, &wm.outputs, link) {
@@ -590,7 +613,8 @@ static void apply_output_presentation_modes(void) {
 		uint32_t mode = RIVER_OUTPUT_V1_PRESENTATION_MODE_VSYNC;
 		if (window != NULL &&
 		    (window->presentation_hint == RIVER_OUTPUT_V1_PRESENTATION_MODE_ASYNC ||
-		     g_wm_config.force_tearing_fullscreen)) {
+		     g_wm_config.force_tearing_fullscreen ||
+		     window_is_likely_game(window))) {
 			mode = RIVER_OUTPUT_V1_PRESENTATION_MODE_ASYNC;
 		}
 		if (window != NULL && output->capture_session_count > 0 && !output->scanout_capture_logged) {
