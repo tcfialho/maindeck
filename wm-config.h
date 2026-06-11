@@ -8,6 +8,7 @@
 struct WmConfig {
 	char *floating_app_ids[MAX_FLOAT_APPS];
 	int floating_app_ids_count;
+	bool force_tearing_fullscreen;
 };
 
 void wm_config_load(void);

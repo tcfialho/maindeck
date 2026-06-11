@@ -588,7 +588,9 @@ static void apply_output_presentation_modes(void) {
 			output->scanout_capture_logged = false;
 		}
 		uint32_t mode = RIVER_OUTPUT_V1_PRESENTATION_MODE_VSYNC;
-		if (window != NULL && window->presentation_hint == RIVER_OUTPUT_V1_PRESENTATION_MODE_ASYNC) {
+		if (window != NULL &&
+		    (window->presentation_hint == RIVER_OUTPUT_V1_PRESENTATION_MODE_ASYNC ||
+		     g_wm_config.force_tearing_fullscreen)) {
 			mode = RIVER_OUTPUT_V1_PRESENTATION_MODE_ASYNC;
 		}
 		if (window != NULL && output->capture_session_count > 0 && !output->scanout_capture_logged) {

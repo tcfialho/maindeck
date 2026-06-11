@@ -23,6 +23,19 @@ static int tok_eq(const char *json, jsmntok_t *tok, const char *s) {
 void wm_config_load(void) {
 	// Clean up old config if any
 	wm_config_free();
+	g_wm_config.force_tearing_fullscreen = false;
+
+	bool has_env_override = false;
+	const char *env = getenv("MAINDECK_FORCE_TEARING");
+	if (env != NULL) {
+		if (strcmp(env, "1") == 0 || strcasecmp(env, "true") == 0) {
+			g_wm_config.force_tearing_fullscreen = true;
+			has_env_override = true;
+		} else if (strcmp(env, "0") == 0 || strcasecmp(env, "false") == 0) {
+			g_wm_config.force_tearing_fullscreen = false;
+			has_env_override = true;
+		}
+	}
 
 	char path[512];
 	const char *config_home = getenv("XDG_CONFIG_HOME");
@@ -92,6 +105,18 @@ void wm_config_load(void) {
 					next_idx++;
 				}
 				i = next_idx - 1;
+			}
+		} else if (tokens[i].type == JSMN_STRING && tok_eq(buf, &tokens[i], "force_tearing_fullscreen")) {
+			if (i + 1 < r && (tokens[i + 1].type == JSMN_PRIMITIVE)) {
+				if (!has_env_override) {
+					int len = tokens[i + 1].end - tokens[i + 1].start;
+					if (len == 4 && memcmp(buf + tokens[i + 1].start, "true", 4) == 0) {
+						g_wm_config.force_tearing_fullscreen = true;
+					} else {
+						g_wm_config.force_tearing_fullscreen = false;
+					}
+				}
+				i++;
 			}
 		}
 	}
