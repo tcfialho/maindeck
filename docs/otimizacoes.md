@@ -276,5 +276,5 @@ Use esta lista para marcar os itens à medida que forem implementados e testados
 - [ ] **18.** **C3** — Adicionar suporte a eventos de `NewIcon` e `NewTitle` no tray ([bar-tray.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-tray.c)).
 - [x] **19.** **C4** — Remover a função morta `make_layout` em [bar-render.c](file:///home/tcfialho/Documents/poc/maindeck-wm/bar-render.c).
 - [x] **20.** **C5** — Remover o campo inutilizado `seat->hovered` (ou implementar seu uso efetivo).
-- [ ] **21.** **C6** — Evitar chamada síncrona de `wl_display_roundtrip` dentro do fluxo de render do menu.
+- [x] **21.** **C6** — Evitar chamada síncrona de `wl_display_roundtrip` dentro do fluxo de render do menu.
 

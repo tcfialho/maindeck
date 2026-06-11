@@ -999,21 +999,18 @@ static void ensure_cairo_menu(AppState *app, unsigned char *data) {
     s_cs_w = app->menu_w; s_cs_h = app->menu_h;
 }
 
-static void render(void) {
+static bool render(void) {
     AppState *app = &g_app;
-    if (!app->configured) return;
+    if (!app->configured) return false;
 
     // Seleciona buffer livre
     int b = app->cur_buf;
     if (app->buffer_busy[b]) {
         b = (b == 0) ? 1 : 0;
         if (app->buffer_busy[b]) {
-            // Ambos ocupados? Drena eventos para liberar
-            wl_display_roundtrip(app->display);
-            if (app->buffer_busy[b]) {
-                app->dirty = true;
-                return;
-            }
+            // Ambos ocupados? Não bloqueia com roundtrip, apenas retorna false.
+            // O próximo evento de release do compositor vai acordar o poll e liberar o buffer.
+            return false;
         }
     }
     app->cur_buf = b;
@@ -1116,6 +1113,7 @@ static void render(void) {
     wl_surface_attach(app->menu_surf, app->buffers[b], 0, 0);
     wl_surface_damage_buffer(app->menu_surf, 0, 0, app->menu_w, app->menu_h);
     wl_surface_commit(app->menu_surf);
+    return true;
 }
 
 #if 0
@@ -1834,8 +1832,9 @@ int main(int argc, char **argv) {
 
         // Desenha se mudou algo
         if (g_app.dirty && g_app.configured) {
-            render();
-            g_app.dirty = false;
+            if (render()) {
+                g_app.dirty = false;
+            }
         }
     }
 
