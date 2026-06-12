@@ -162,6 +162,8 @@ void output_maybe_destroy(struct Output *output) {
 }
 
 static void window_destroy_closed(struct Window *window, bool flush_now);
+static void window_designate_floating(struct Window *window, const char *reason,
+                                      bool steal_focus, bool keep_client_size);
 
 static void window_handle_closed(void *data, struct river_window_v1 *obj) {
 	struct Window *window = data;
@@ -177,19 +179,47 @@ static void window_handle_closed(void *data, struct river_window_v1 *obj) {
 	}
 }
 
+// Dentro da tolerância (5%, piso 32px) de uma proposta de tile. Tolerância cobre
+// arredondamento legítimo (célula de terminal etc.) sem engolir desobediência real.
+static bool matches_proposal(int32_t got_w, int32_t got_h, int32_t prop_w, int32_t prop_h) {
+	if (prop_w <= 0 || prop_h <= 0) return false;
+	int32_t dw = got_w - prop_w; if (dw < 0) dw = -dw;
+	int32_t dh = got_h - prop_h; if (dh < 0) dh = -dh;
+	int32_t tol_w = prop_w / 20; if (tol_w < 32) tol_w = 32;
+	int32_t tol_h = prop_h / 20; if (tol_h < 32) tol_h = 32;
+	return dw <= tol_w && dh <= tol_h;
+}
+
 static void window_handle_dimensions(void *data, struct river_window_v1 *obj, int32_t width, int32_t height) {
 	struct Window *window = data;
 	if (window->width != width || window->height != height) {
 		bool first_dims = window->width <= 0 || window->height <= 0;
 		window->width = width;
 		window->height = height;
+
+		if (!window->floating && window->parent == NULL && !window->fullscreen &&
+		    !window->minimized && !window->tile_settled &&
+		    window->tile_proposed_w > 0 && window->tile_proposed_h > 0) {
+			if (matches_proposal(width, height, window->tile_proposed_w, window->tile_proposed_h)) {
+				window->tile_settled = true; // obedeceu 1x: nunca mais reclassifica por mismatch
+			} else if (matches_proposal(width, height, window->tile_proposed_prev_w, window->tile_proposed_prev_h)) {
+				// Resposta atrasada à proposta anterior (relayout no meio): não é
+				// desobediência. Nem settled nem reject; a resposta à atual decide.
+			} else {
+				LOG_EVENT("tile rejected by client: app_id=%s proposed=%dx%d got=%dx%d",
+					window->app_id ? window->app_id : "",
+					window->tile_proposed_w, window->tile_proposed_h, width, height);
+				window_designate_floating(window, "tile-reject", false, true); // mantém o tamanho do cliente
+			}
+		}
+
 		if (window->parent != NULL && !window->closed && window_is_really_visible(window)) {
 			river_window_manager_v1_manage_dirty(window_manager_v1);
 		}
 		// Primeira dimensão de uma flutuante: ela acabou de virar exibível —
 		// garante o foco mesmo que o focus_window anterior (pré-display) tenha
 		// sido ignorado pelo compositor.
-		if (first_dims && window->floating && !window->closed) {
+		if (first_dims && window->floating && !window->autofloat && !window->closed) {
 			wm.pending_float_focus = window;
 			river_window_manager_v1_manage_dirty(window_manager_v1);
 		}
@@ -291,21 +321,30 @@ static void maybe_apply_implicit_parenting_for(struct Window *window, bool title
 	maybe_apply_implicit_parenting();
 }
 
+// steal_focus: true só para a lista manual (comportamento atual preservado).
+// keep_client_size: true quando as dimensões atuais do cliente já são o tamanho desejado.
+static void window_designate_floating(struct Window *window, const char *reason,
+                                      bool steal_focus, bool keep_client_size) {
+	if (window->floating || window->parent != NULL || window->closed) return;
+	window->floating = true;
+	window->autofloat = !steal_focus;
+	window->floating_size_proposed = keep_client_size;
+	move_last(window);
+	LOG_EVENT("window designated as floating (%s): app_id=%s title=\"%s\" hint=%dx%d..%dx%d size=%dx%d",
+		reason, window->app_id ? window->app_id : "",
+		window->title ? window->title : "",
+		window->min_width, window->min_height, window->max_width, window->max_height,
+		window->width, window->height);
+	if (steal_focus) wm.pending_float_focus = window;
+	river_window_manager_v1_manage_dirty(window_manager_v1);
+}
+
 static void window_handle_app_id(void *data, struct river_window_v1 *obj, const char *app_id) {
 	struct Window *window = data;
 	window_set_string(&window->app_id, app_id);
 
-	if (window_should_float(app_id) && !window->floating) {
-		window->floating = true;
-		move_last(window);
-		LOG_EVENT("window designated as floating: app_id=%s title=\"%s\"",
-		          app_id ? app_id : "", window->title ? window->title : "");
-
-		// Foco adiado para o próximo manage_start: focus_window é window
-		// management state e só pode ser feito dentro da manage sequence.
-		wm.pending_float_focus = window;
-
-		river_window_manager_v1_manage_dirty(window_manager_v1);
+	if (window_should_float(app_id)) {
+		window_designate_floating(window, "config-list", true, false);
 	}
 
 	maybe_apply_implicit_parenting_for(window, true);
@@ -321,10 +360,25 @@ static void window_handle_title(void *data, struct river_window_v1 *obj, const c
 
 static void window_handle_dimensions_hint(void *data, struct river_window_v1 *obj, int32_t min_width, int32_t min_height, int32_t max_width, int32_t max_height) {
 	struct Window *window = data;
-	window->min_width = min_width;
-	window->min_height = min_height;
-	window->max_width = max_width;
-	window->max_height = max_height;
+	if (window->min_width != min_width || window->min_height != min_height ||
+	    window->max_width != max_width || window->max_height != max_height) {
+		window->min_width = min_width;
+		window->min_height = min_height;
+		window->max_width = max_width;
+		window->max_height = max_height;
+		LOG_EVENT("dimensions hint: app_id=%s title=\"%s\" min=%dx%d max=%dx%d",
+			window->app_id ? window->app_id : "",
+			window->title ? window->title : "",
+			min_width, min_height, max_width, max_height);
+
+		struct Box out = output_box();
+		bool capped_w = window->max_width  > 0 && window->max_width  < out.width;
+		bool capped_h = window->max_height > 0 && window->max_height < out.height;
+		if ((capped_w || capped_h) &&
+		    !window->floating && window->parent == NULL && !window->fullscreen) {
+			window_designate_floating(window, "hint-capped", false, false);
+		}
+	}
 }
 static void window_handle_parent(void *data, struct river_window_v1 *obj, struct river_window_v1 *parent) {
 	struct Window *window = data;
@@ -343,6 +397,11 @@ static void window_handle_parent(void *data, struct river_window_v1 *obj, struct
 	window->implicit_parent = false;
 	window->transient_size_proposed = false;
 
+	if (becomes_child) {
+		window->floating = false;
+		window->autofloat = false;
+	}
+
 	if (!was_child && becomes_child) {
 		// Was a root window occupying a slot in the list; move to tail so it
 		// no longer shifts other root windows' indices.
@@ -351,6 +410,11 @@ static void window_handle_parent(void *data, struct river_window_v1 *obj, struct
 		          window->title ? window->title : "",
 		          new_parent->title ? new_parent->title : "");
 	} else if (was_child && !becomes_child) {
+		window->tile_settled = false;
+		window->tile_proposed_w = 0;
+		window->tile_proposed_h = 0;
+		window->tile_proposed_prev_w = 0;
+		window->tile_proposed_prev_h = 0;
 		// Was a child, now becomes an independent root window: insert as new MAIN.
 		wl_list_remove(&window->link);
 		md_insert_new_window(window);

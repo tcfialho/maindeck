@@ -53,6 +53,14 @@ struct Window {
 	char *app_id;
 	char *title;
 	char *identifier; /* river_window.identifier — único por janela, usado para taskbar activate */
+	bool autofloat;              // virou floating por heurística (não rouba foco)
+	bool tile_settled;           // já obedeceu uma proposta de tile (≈ tolerância); nunca mais reclassifica por mismatch
+	bool floating_clamped;       // clamp de flutuante grande já foi feito (1x só)
+	// Duas últimas propostas de tile (0 = nenhuma). Duas porque uma janela lenta
+	// pode responder à proposta anterior depois de um relayout já ter registrado
+	// uma nova — essa resposta atrasada não é desobediência.
+	int32_t tile_proposed_w, tile_proposed_h;
+	int32_t tile_proposed_prev_w, tile_proposed_prev_h;
 
 	// Client-requested fullscreen (e.g. a game). Separate from wm.maximized
 	// (Super+Up), which only fills the usable area. Fullscreen covers the whole

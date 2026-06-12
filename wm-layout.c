@@ -560,25 +560,6 @@ void window_manage_layout(struct Window *window, size_t index, const struct Layo
 		return;
 	}
 
-	if (window->floating) {
-		river_window_v1_use_ssd(window->obj);
-		river_window_v1_set_tiled(window->obj, RIVER_WINDOW_V1_EDGES_NONE);
-		// Sem propose_dimensions o river nunca envia o configure inicial e a
-		// janela nunca é exibida ("The window will not be displayed until the
-		// first dimensions event is received").
-		if (!window->floating_size_proposed) {
-			int32_t fw = (view->output.width * 9) / 10;
-			int32_t fh = (view->output.height * 9) / 10;
-			river_window_v1_propose_dimensions(window->obj,
-				fw > 0 ? fw : 0, fh > 0 ? fh : 0);
-			window->floating_size_proposed = true;
-			LOG_EVENT("floating dimensions proposed: app_id=%s %dx%d",
-				window->app_id ? window->app_id : "", fw, fh);
-		}
-		window->new = false;
-		return;
-	}
-
 	// Client-requested fullscreen: the compositor owns position/dimensions, so
 	// we must NOT propose_dimensions/set_tiled. Issue fullscreen()/exit on the
 	// transition edge (both are manage-sequence-only requests).
@@ -611,6 +592,36 @@ void window_manage_layout(struct Window *window, size_t index, const struct Layo
 		window->applied_fullscreen = false;
 	}
 
+	if (window->floating) {
+		river_window_v1_use_ssd(window->obj);
+		river_window_v1_set_tiled(window->obj, RIVER_WINDOW_V1_EDGES_NONE);
+		// Sem propose_dimensions o river nunca envia o configure inicial e a
+		// janela nunca é exibida ("The window will not be displayed until the
+		// first dimensions event is received").
+		if (!window->floating_size_proposed) {
+			// (0,0): o cliente decide o próprio tamanho (protocolo permite explicitamente).
+			river_window_v1_propose_dimensions(window->obj, 0, 0);
+			window->floating_size_proposed = true;
+			LOG_EVENT("floating natural dimensions proposed: app_id=%s",
+				window->app_id ? window->app_id : "");
+		}
+		if (!window->floating_clamped && window->width > 0 && window->height > 0) {
+			int32_t cap_w = (view->output.width  * 9) / 10;
+			int32_t cap_h = (view->output.height * 9) / 10;
+			if (window->width > cap_w || window->height > cap_h) {
+				river_window_v1_propose_dimensions(window->obj,
+					window->width > cap_w ? cap_w : window->width,
+					window->height > cap_h ? cap_h : window->height);
+				window->floating_clamped = true;
+				LOG_EVENT("floating clamped: app_id=%s %dx%d -> cap %dx%d",
+					window->app_id ? window->app_id : "",
+					window->width, window->height, cap_w, cap_h);
+			}
+		}
+		window->new = false;
+		return;
+	}
+
 	// Minimized: force-hidden in render; nothing to size/tile here. Checked AFTER
 	// the fullscreen exit-reconcile so minimize-from-fullscreen still issues exit.
 	if (window->minimized) { window->new = false; return; }
@@ -623,6 +634,14 @@ void window_manage_layout(struct Window *window, size_t index, const struct Layo
 	river_window_v1_use_ssd(window->obj);
 	river_window_v1_set_tiled(window->obj, all_edges());
 	river_window_v1_propose_dimensions(window->obj, width > 1 ? width : 1, height > 1 ? height : 1);
+	// Histórico das 2 últimas propostas; rotaciona só quando a proposta muda.
+	int32_t nw = width > 1 ? width : 1, nh = height > 1 ? height : 1;
+	if (nw != window->tile_proposed_w || nh != window->tile_proposed_h) {
+		window->tile_proposed_prev_w = window->tile_proposed_w;
+		window->tile_proposed_prev_h = window->tile_proposed_h;
+		window->tile_proposed_w = nw;
+		window->tile_proposed_h = nh;
+	}
 	window->new = false;
 }
 
@@ -663,6 +682,15 @@ void window_render_layout(struct Window *window, size_t index, const struct Layo
 		window_apply_borders(window, BORDER_NONE);
 		return;
 	}
+	// Fullscreen window: compositor owns geometry; just show it, no borders,
+	// node on top (so it's the top fullscreen window — anything above it in the
+	// render order, like waybar, keeps drawing; see place_top handling).
+	if (window->fullscreen) {
+		window_set_visible(window, true);
+		window_apply_borders(window, BORDER_NONE);
+		wm_place_top(window->node);
+		return;
+	}
 	if (window->floating) {
 		window_set_visible(window, true);
 		window_apply_borders(window, BORDER_NONE);
@@ -674,15 +702,6 @@ void window_render_layout(struct Window *window, size_t index, const struct Layo
 			if (cy < view->output.y) cy = view->output.y;
 			river_node_v1_set_position(window->node, cx, cy);
 		}
-		wm_place_top(window->node);
-		return;
-	}
-	// Fullscreen window: compositor owns geometry; just show it, no borders,
-	// node on top (so it's the top fullscreen window — anything above it in the
-	// render order, like waybar, keeps drawing; see place_top handling).
-	if (window->fullscreen) {
-		window_set_visible(window, true);
-		window_apply_borders(window, BORDER_NONE);
 		wm_place_top(window->node);
 		return;
 	}
