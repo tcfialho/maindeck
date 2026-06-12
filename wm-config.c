@@ -24,6 +24,7 @@ void wm_config_load(void) {
 	// Clean up old config if any
 	wm_config_free();
 	g_wm_config.force_tearing_fullscreen = false;
+	g_wm_config.screenshot_command = strdup("grim -g \"$(slurp)\" - | satty --filename -");
 
 	bool has_env_override = false;
 	const char *env = getenv("MAINDECK_FORCE_TEARING");
@@ -118,6 +119,20 @@ void wm_config_load(void) {
 				}
 				i++;
 			}
+		} else if (tokens[i].type == JSMN_STRING && tok_eq(buf, &tokens[i], "screenshot_command")) {
+			if (i + 1 < r && tokens[i + 1].type == JSMN_STRING) {
+				int len = tokens[i + 1].end - tokens[i + 1].start;
+				char *str = malloc((size_t)len + 1);
+				if (str != NULL) {
+					memcpy(str, buf + tokens[i + 1].start, (size_t)len);
+					str[len] = '\0';
+					if (g_wm_config.screenshot_command != NULL) {
+						free(g_wm_config.screenshot_command);
+					}
+					g_wm_config.screenshot_command = str;
+				}
+				i++;
+			}
 		}
 	}
 
@@ -142,4 +157,8 @@ void wm_config_free(void) {
 		g_wm_config.floating_app_ids[i] = NULL;
 	}
 	g_wm_config.floating_app_ids_count = 0;
+	if (g_wm_config.screenshot_command != NULL) {
+		free(g_wm_config.screenshot_command);
+		g_wm_config.screenshot_command = NULL;
+	}
 }

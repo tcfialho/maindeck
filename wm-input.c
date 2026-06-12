@@ -16,6 +16,7 @@
 #include "wm-state.h"
 #include "wm-layout.h"
 #include "wm-input.h"
+#include "wm-config.h"
 #include "cursor-shape-v1-client-protocol.h"
 
 static pid_t g_menu_pid = -1;
@@ -502,7 +503,11 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		spawn_sh("sudo -n systemctl restart sddm 2>/dev/null || loginctl terminate-session \"$XDG_SESSION_ID\"");
 		break;
 	case ACTION_SPAWN_SCREENSHOT:
-		spawn_sh("grim -g \"$(slurp)\" - | swappy -f -");
+		if (g_wm_config.screenshot_command != NULL) {
+			spawn_sh(g_wm_config.screenshot_command);
+		} else {
+			spawn_sh("grim -g \"$(slurp)\" - | satty --filename -");
+		}
 		break;
 	}
 }
