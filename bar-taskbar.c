@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/wait.h>
 
@@ -104,31 +105,41 @@ static void tl_done(void *data,
     bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
 }
 
+/* Remove a entrada idx da taskbar, destruindo o proxy zwlr e liberando o slot. */
+static void taskbar_remove_entry(int idx) {
+    struct BarState *bar = &g_bar;
+    struct BarToplevel *tl = bar->toplevels[idx];
+    if (tl->layout) {
+        g_object_unref(tl->layout);
+    }
+    if (tl->zwlr_handle) {
+        zwlr_foreign_toplevel_handle_v1_destroy(tl->zwlr_handle);
+    }
+    free(tl);
+    int rem = bar->toplevel_n - idx - 1;
+    if (rem > 0) {
+        memmove(&bar->toplevels[idx], &bar->toplevels[idx+1],
+                (size_t)rem * sizeof(bar->toplevels[0]));
+    }
+    bar->toplevel_n--;
+    bar->toplevels[bar->toplevel_n] = NULL;
+}
+
 static void tl_closed(void *data,
     struct zwlr_foreign_toplevel_handle_v1 *h) {
     struct BarState *bar = &g_bar;
     struct BarToplevel *tl = data;
- 
+
     int idx = -1;
     for (int i = 0; i < bar->toplevel_n; i++) {
         if (bar->toplevels[i] == tl) { idx = i; break; }
     }
- 
+
     if (idx >= 0) {
-        if (tl->layout) {
-            g_object_unref(tl->layout);
-        }
-        free(tl);
-        int rem = bar->toplevel_n - idx - 1;
-        if (rem > 0) {
-            memmove(&bar->toplevels[idx], &bar->toplevels[idx+1],
-                    (size_t)rem * sizeof(bar->toplevels[0]));
-        }
-        bar->toplevel_n--;
-        bar->toplevels[bar->toplevel_n] = NULL;
+        taskbar_remove_entry(idx); /* destrói o proxy (tl->zwlr_handle == h) */
+    } else {
+        zwlr_foreign_toplevel_handle_v1_destroy(h);
     }
- 
-    zwlr_foreign_toplevel_handle_v1_destroy(h);
     bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
     bar_update_render_suppressed();
     LOG_INFO("taskbar: toplevel closed, remaining=%d", g_bar.toplevel_n);
@@ -181,6 +192,7 @@ static void mgr_toplevel(void *data,
         return;
     }
     tl->zwlr_handle = h;
+    clock_gettime(CLOCK_MONOTONIC, &tl->created);
     bar->toplevels[idx] = tl;
  
     /* Lockstep: if ext already arrived at same position, link it */
@@ -349,4 +361,101 @@ void bar_taskbar_close(int idx) {
     if (tl && tl->zwlr_handle) {
         zwlr_foreign_toplevel_handle_v1_close(tl->zwlr_handle);
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Ceifador de fantasmas                                                */
+/*                                                                      */
+/* O compositor pode vazar handles de foreign-toplevel para janelas que */
+/* morreram antes do primeiro map (ex.: o diálogo zenity do protonfixes */
+/* ao abrir jogos na Steam). A entrada fica na taskbar para sempre: não */
+/* é clicável (o WM não conhece o identifier) e acumula a cada launch.  */
+/* O WM publica o conjunto de identifiers vivos a cada manage; qualquer */
+/* entrada pareada ausente desse conjunto é fantasma e é removida.      */
+/* ------------------------------------------------------------------ */
+
+#define GHOST_MIN_AGE_SEC 3
+
+static bool wm_set_contains(const char *id) {
+    struct BarState *bar = &g_bar;
+    for (int i = 0; i < bar->wm_set_n; i++) {
+        if (strcmp(bar->wm_set_ids[i], id) == 0) return true;
+    }
+    return false;
+}
+
+/* Remove também o lado ext do par, para manter os arrays em lockstep. */
+static void taskbar_remove_ext_by_identifier(const char *id) {
+    struct BarState *bar = &g_bar;
+    for (int i = 0; i < bar->ext_n; i++) {
+        if (strcmp(bar->ext_identifiers[i], id) != 0) continue;
+        if (bar->ext_handles[i]) {
+            ext_foreign_toplevel_handle_v1_destroy(bar->ext_handles[i]);
+        }
+        int rem = bar->ext_n - i - 1;
+        if (rem > 0) {
+            memmove(&bar->ext_handles[i], &bar->ext_handles[i+1],
+                    (size_t)rem * sizeof(bar->ext_handles[0]));
+            memmove(&bar->ext_identifiers[i], &bar->ext_identifiers[i+1],
+                    (size_t)rem * sizeof(bar->ext_identifiers[0]));
+        }
+        bar->ext_n--;
+        return;
+    }
+}
+
+void bar_taskbar_prune_ghosts(void) {
+    struct BarState *bar = &g_bar;
+    if (!bar->wm_set_valid) return;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    bool removed = false;
+    for (int i = 0; i < bar->toplevel_n; i++) {
+        struct BarToplevel *tl = bar->toplevels[i];
+        if (!tl || !tl->identifier[0]) continue;
+        /* Guardas de corrida: só poda entradas com idade mínima e com base
+         * num conjunto recebido DEPOIS da criação da entrada — janela recém-
+         * aberta nunca é podada por um conjunto que ainda não a conhecia. */
+        if (now.tv_sec - tl->created.tv_sec < GHOST_MIN_AGE_SEC) continue;
+        if (bar->wm_set_time.tv_sec < tl->created.tv_sec ||
+            (bar->wm_set_time.tv_sec == tl->created.tv_sec &&
+             bar->wm_set_time.tv_nsec <= tl->created.tv_nsec)) continue;
+        if (wm_set_contains(tl->identifier)) continue;
+
+        LOG_WARN("taskbar: removendo fantasma \"%s\" app_id=%s id=%s (desconhecido pelo WM)",
+            tl->title, tl->app_id, tl->identifier);
+        char id[33];
+        snprintf(id, sizeof(id), "%s", tl->identifier);
+        taskbar_remove_entry(i);
+        taskbar_remove_ext_by_identifier(id);
+        removed = true;
+        i--;
+    }
+    if (removed) {
+        bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
+        bar_update_render_suppressed();
+    }
+}
+
+/* msg: "windows id1 id2 ..." (ou só "windows" = nenhuma janela viva). */
+void bar_taskbar_set_wm_windows(const char *msg) {
+    struct BarState *bar = &g_bar;
+    const char *p = msg + 7; /* depois de "windows" */
+    int n = 0;
+    while (*p != '\0' && n < BAR_MAX_TOPLEVELS) {
+        while (*p == ' ' || *p == '\n') p++;
+        if (*p == '\0') break;
+        const char *start = p;
+        while (*p != '\0' && *p != ' ' && *p != '\n') p++;
+        size_t len = (size_t)(p - start);
+        if (len > 0 && len <= 32) {
+            memcpy(bar->wm_set_ids[n], start, len);
+            bar->wm_set_ids[n][len] = '\0';
+            n++;
+        }
+    }
+    bar->wm_set_n = n;
+    bar->wm_set_valid = true;
+    clock_gettime(CLOCK_MONOTONIC, &bar->wm_set_time);
+    bar_taskbar_prune_ghosts();
 }

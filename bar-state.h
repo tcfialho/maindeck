@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <time.h>
 
 #include <wayland-client.h>
 #include <cairo/cairo.h>
@@ -27,6 +28,7 @@
 struct BarToplevel {
     struct zwlr_foreign_toplevel_handle_v1 *zwlr_handle;
     struct ext_foreign_toplevel_handle_v1  *ext_handle;
+    struct timespec created; /* CLOCK_MONOTONIC — guarda de corrida do ceifador */
     char   identifier[33];
     char   title[256];
     char   app_id[128];
@@ -122,6 +124,13 @@ struct BarState {
     struct ext_foreign_toplevel_handle_v1 *ext_handles[BAR_MAX_TOPLEVELS];
     char ext_identifiers[BAR_MAX_TOPLEVELS][33];
     int  ext_n;
+
+    /* Conjunto de janelas vivas segundo o WM (ceifador de fantasmas).
+     * Atualizado via "windows id1 id2 ..." no notify socket. */
+    char wm_set_ids[BAR_MAX_TOPLEVELS][33];
+    int  wm_set_n;
+    bool wm_set_valid;
+    struct timespec wm_set_time;
 
     /* Bar geometry */
     int width, height;

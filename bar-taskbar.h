@@ -13,4 +13,8 @@ extern const struct ext_foreign_toplevel_list_v1_listener     bar_ext_list_liste
 void bar_taskbar_activate(int idx);
 void bar_taskbar_close(int idx);
 
+/* Ceifador de fantasmas: conjunto de janelas vivas publicado pelo WM. */
+void bar_taskbar_set_wm_windows(const char *msg);
+void bar_taskbar_prune_ghosts(void);
+
 #endif /* BAR_TASKBAR_H */

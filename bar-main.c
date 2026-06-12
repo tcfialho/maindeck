@@ -354,6 +354,7 @@ int main(void) {
             /* Timer fired — minute tick */
             wl_display_cancel_read(g_bar.display);
             bar_status_tick();
+            bar_taskbar_prune_ghosts(); /* fantasmas nascidos com a sessão ociosa */
             timer_ms = ms_until_next_minute();
         } else {
             if (pfds[0].revents & POLLIN) {
@@ -365,24 +366,30 @@ int main(void) {
             if (tray_fd >= 0 && (pfds[1].revents & POLLIN))
                 bar_tray_dispatch();
             if (notify_fd >= 0 && (pfds[2].revents & POLLIN)) {
-                char buf[32];
+                char buf[4096];
                 ssize_t n = recv(notify_fd, buf, sizeof(buf) - 1, 0);
                 if (n > 0) {
                     buf[n] = '\0';
-                    bool on = (strncmp(buf, "fullscreen_on", 13) == 0);
-                    bool off = (strncmp(buf, "fullscreen_off", 14) == 0);
-                    LOG_INFO("main: notify received: %s", buf);
-                    g_bar.wm_fullscreen = on;
-                    if ((on || off) && g_bar.render_suppressed != on) {
-                        g_bar.render_suppressed = on;
-                        bar_game_mode_apply(on);
-                        if (!on) {
-                            g_bar.dirty_deferred = false;
-                            bar_surface_restore();
-                        } else {
-                            g_bar.dirty = false;
-                            g_bar.dirty_deferred = true;
-                            bar_surface_destroy();
+                    if (strncmp(buf, "windows", 7) == 0 &&
+                        (buf[7] == '\0' || buf[7] == ' ' || buf[7] == '\n')) {
+                        /* Conjunto de janelas vivas do WM → poda fantasmas */
+                        bar_taskbar_set_wm_windows(buf);
+                    } else {
+                        bool on = (strncmp(buf, "fullscreen_on", 13) == 0);
+                        bool off = (strncmp(buf, "fullscreen_off", 14) == 0);
+                        LOG_INFO("main: notify received: %s", buf);
+                        g_bar.wm_fullscreen = on;
+                        if ((on || off) && g_bar.render_suppressed != on) {
+                            g_bar.render_suppressed = on;
+                            bar_game_mode_apply(on);
+                            if (!on) {
+                                g_bar.dirty_deferred = false;
+                                bar_surface_restore();
+                            } else {
+                                g_bar.dirty = false;
+                                g_bar.dirty_deferred = true;
+                                bar_surface_destroy();
+                            }
                         }
                     }
                 }

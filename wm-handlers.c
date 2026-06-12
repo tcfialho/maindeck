@@ -33,7 +33,7 @@
 #include "wm-handlers.h"
 #include "wm-config.h"
 
-static void wm_notify_bar_fullscreen(bool on) {
+static void wm_notify_bar_send(const char *msg, size_t len) {
 	const char *dir = getenv("XDG_RUNTIME_DIR");
 	if (dir == NULL || dir[0] == '\0') return;
 	char path[108];
@@ -42,9 +42,30 @@ static void wm_notify_bar_fullscreen(bool on) {
 	if (fd < 0) return;
 	struct sockaddr_un addr = { .sun_family = AF_UNIX };
 	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
-	const char *msg = on ? "fullscreen_on" : "fullscreen_off";
-	sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&addr, sizeof(addr));
+	sendto(fd, msg, len, 0, (struct sockaddr *)&addr, sizeof(addr));
 	close(fd);
+}
+
+static void wm_notify_bar_fullscreen(bool on) {
+	const char *msg = on ? "fullscreen_on" : "fullscreen_off";
+	wm_notify_bar_send(msg, strlen(msg));
+}
+
+// Publica para a barra o conjunto de identifiers das janelas vivas. A barra
+// usa isso para podar entradas fantasma: toplevels que o compositor ainda
+// anuncia (handles vazados de janelas que morreram antes do map, ex.: zenity
+// do protonfixes) mas que não existem mais para o WM.
+static void wm_notify_bar_windows(void) {
+	char msg[4096];
+	size_t off = (size_t)snprintf(msg, sizeof(msg), "windows");
+	struct Window *window;
+	wl_list_for_each(window, &wm.windows, link) {
+		if (window->closed || window->identifier == NULL || window->identifier[0] == '\0') continue;
+		int n = snprintf(msg + off, sizeof(msg) - off, " %s", window->identifier);
+		if (n < 0 || (size_t)n >= sizeof(msg) - off) return; // não envia conjunto truncado
+		off += (size_t)n;
+	}
+	wm_notify_bar_send(msg, off);
 }
 
 static void clear_loading_notification(void) {
@@ -724,6 +745,8 @@ static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *o
 		log_state();
 		wm.focus_dirty = false;
 	}
+
+	wm_notify_bar_windows();
 
 	river_window_manager_v1_manage_finish(window_manager_v1);
 }
