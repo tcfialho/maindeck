@@ -159,9 +159,17 @@ static void window_handle_closed(void *data, struct river_window_v1 *obj) {
 static void window_handle_dimensions(void *data, struct river_window_v1 *obj, int32_t width, int32_t height) {
 	struct Window *window = data;
 	if (window->width != width || window->height != height) {
+		bool first_dims = window->width <= 0 || window->height <= 0;
 		window->width = width;
 		window->height = height;
 		if (window->parent != NULL && !window->closed && window_is_really_visible(window)) {
+			river_window_manager_v1_manage_dirty(window_manager_v1);
+		}
+		// Primeira dimensão de uma flutuante: ela acabou de virar exibível —
+		// garante o foco mesmo que o focus_window anterior (pré-display) tenha
+		// sido ignorado pelo compositor.
+		if (first_dims && window->floating && !window->closed) {
+			wm.pending_float_focus = window;
 			river_window_manager_v1_manage_dirty(window_manager_v1);
 		}
 	}
@@ -272,14 +280,9 @@ static void window_handle_app_id(void *data, struct river_window_v1 *obj, const 
 		LOG_EVENT("window designated as floating: app_id=%s title=\"%s\"",
 		          app_id ? app_id : "", window->title ? window->title : "");
 
-		// Focus it immediately on all seats!
-		struct Seat *seat;
-		wl_list_for_each(seat, &wm.seats, link) {
-			if (seat->removed) continue;
-			river_seat_v1_clear_focus(seat->obj);
-			river_seat_v1_focus_window(seat->obj, window->obj);
-			seat->focused = window;
-		}
+		// Foco adiado para o próximo manage_start: focus_window é window
+		// management state e só pode ser feito dentro da manage sequence.
+		wm.pending_float_focus = window;
 
 		river_window_manager_v1_manage_dirty(window_manager_v1);
 	}
@@ -452,6 +455,9 @@ static void window_destroy_closed(struct Window *window, bool flush_now) {
 	}
 	if (wm.last_placed_top_node == window->node) {
 		wm.last_placed_top_node = NULL;
+	}
+	if (wm.pending_float_focus == window) {
+		wm.pending_float_focus = NULL;
 	}
 	struct Window *w;
 	wl_list_for_each(w, &wm.windows, link) {
@@ -659,6 +665,20 @@ static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *o
 		seat_manage(seat);
 	}
 	apply_pending_taskbar_activation();
+	if (wm.pending_float_focus != NULL) {
+		struct Window *float_focus = wm.pending_float_focus;
+		wm.pending_float_focus = NULL;
+		if (!float_focus->closed && float_focus->floating) {
+			wl_list_for_each(seat, &wm.seats, link) {
+				if (seat->removed) continue;
+				river_seat_v1_clear_focus(seat->obj);
+				river_seat_v1_focus_window(seat->obj, float_focus->obj);
+				seat->focused = float_focus;
+			}
+			LOG_EVENT("floating focus applied: app_id=%s",
+				float_focus->app_id ? float_focus->app_id : "");
+		}
+	}
 	clamp_target();
 
 	struct Output *primary = NULL;
@@ -728,9 +748,9 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 		size_t index = 0;
 		struct Window *window;
 		wl_list_for_each(window, &wm.windows, link) {
-			if (window->parent != NULL) continue;
+			if (window->parent != NULL || window->floating) continue;
 			window_render_layout(window, index, &view);
-			if (!window->floating && !window->minimized) {
+			if (!window->minimized) {
 				index++;
 			}
 		}
@@ -739,6 +759,12 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 		}
 		wl_list_for_each(window, &wm.windows, link) {
 			if (window->parent == NULL) continue;
+			window_render_layout(window, 0, &view);
+		}
+		// Flutuantes por último: camada mais alta, acima do alvo tiled e dos
+		// children (ex.: satty anotando por cima de um diálogo do WPS).
+		wl_list_for_each(window, &wm.windows, link) {
+			if (window->parent != NULL || !window->floating) continue;
 			window_render_layout(window, 0, &view);
 		}
 		last_render_sig = sig;

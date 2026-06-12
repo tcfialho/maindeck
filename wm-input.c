@@ -444,6 +444,11 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		last_launcher_spawn_valid = true;
 		break;
 	case ACTION_CLOSE_TARGET: {
+		// Flutuante focada (ex.: satty) fecha primeiro; o alvo tiled fica como está.
+		if (seat->focused != NULL && seat->focused->floating && !seat->focused->closed) {
+			river_window_v1_close(seat->focused->obj);
+			break;
+		}
 		struct Window *target = target_window();
 		if (target != NULL) {
 			river_window_v1_close(target->obj);

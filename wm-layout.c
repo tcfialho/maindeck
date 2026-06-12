@@ -257,6 +257,22 @@ static struct Window *window_by_identifier(const char *id) {
 }
 
 static void activate_window_from_taskbar(struct Window *window) {
+	// Flutuantes não têm índice MainDeck (window_index = -1): ativa por foco.
+	if (window->floating) {
+		window->minimized = false;
+		move_last(window); // topo entre as flutuantes + muda a assinatura → re-render
+		struct Seat *seat;
+		wl_list_for_each(seat, &wm.seats, link) {
+			if (seat->removed) continue;
+			river_seat_v1_clear_focus(seat->obj);
+			river_seat_v1_focus_window(seat->obj, window->obj);
+			seat->focused = window;
+		}
+		LOG_EVENT("taskbar activate floating: app_id=%s identifier=%s",
+			window->app_id ? window->app_id : "",
+			window->identifier ? window->identifier : "");
+		return;
+	}
 	int32_t idx = window_index(window);
 	if (idx < 0) return;
 	if (window->minimized) {
@@ -547,6 +563,18 @@ void window_manage_layout(struct Window *window, size_t index, const struct Layo
 	if (window->floating) {
 		river_window_v1_use_ssd(window->obj);
 		river_window_v1_set_tiled(window->obj, RIVER_WINDOW_V1_EDGES_NONE);
+		// Sem propose_dimensions o river nunca envia o configure inicial e a
+		// janela nunca é exibida ("The window will not be displayed until the
+		// first dimensions event is received").
+		if (!window->floating_size_proposed) {
+			int32_t fw = (view->output.width * 9) / 10;
+			int32_t fh = (view->output.height * 9) / 10;
+			river_window_v1_propose_dimensions(window->obj,
+				fw > 0 ? fw : 0, fh > 0 ? fh : 0);
+			window->floating_size_proposed = true;
+			LOG_EVENT("floating dimensions proposed: app_id=%s %dx%d",
+				window->app_id ? window->app_id : "", fw, fh);
+		}
 		window->new = false;
 		return;
 	}
@@ -638,6 +666,14 @@ void window_render_layout(struct Window *window, size_t index, const struct Layo
 	if (window->floating) {
 		window_set_visible(window, true);
 		window_apply_borders(window, BORDER_NONE);
+		// Centraliza na área útil assim que as dimensões reais são conhecidas.
+		if (window->width > 0 && window->height > 0) {
+			int32_t cx = view->output.x + (view->output.width - window->width) / 2;
+			int32_t cy = view->output.y + (view->output.height - window->height) / 2;
+			if (cx < view->output.x) cx = view->output.x;
+			if (cy < view->output.y) cy = view->output.y;
+			river_node_v1_set_position(window->node, cx, cy);
+		}
 		wm_place_top(window->node);
 		return;
 	}

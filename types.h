@@ -47,6 +47,7 @@ struct Window {
 	bool transient_size_proposed;
 	bool implicit_parent;
 	bool floating;
+	bool floating_size_proposed;
 	int32_t width, height;
 	int32_t min_width, min_height, max_width, max_height;
 	char *app_id;
@@ -134,6 +135,9 @@ struct WindowManager {
 	bool maximized;
 	bool focus_dirty;
 	struct river_node_v1 *last_placed_top_node;
+	// Flutuante a focar no próximo manage_start (focus_window é window
+	// management state e só pode ser feito dentro da manage sequence).
+	struct Window *pending_float_focus;
 };
 
 struct DeviceState {
