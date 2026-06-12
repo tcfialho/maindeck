@@ -176,27 +176,43 @@ def print_report(
     after: dict[str, ProcSample],
     duration: float,
 ) -> None:
-    print(f"\n--- Resource Consumption Report ({duration:.2f}s sampling window) ---")
-    print(
-        "Process         | PID    | CPU%  | RSS (MB)  | PSS (MB)  | VSZ (MB)  | "
-        "FDs | Threads | Private Dirty"
-    )
-    print("-" * 108)
-
+    rows = []
     for name in sorted(before.keys()):
         b = before[name]
         a = after[name]
-        cpu_percent = get_cpu_percent(b, a, duration)
-        rss_mb = a.rss_kb / 1024.0
-        pss_mb = a.pss_kb / 1024.0
-        vsz_mb = a.vsz_kb / 1024.0
-        priv_dirty_mb = a.private_dirty_kb / 1024.0
+        rows.append({
+            "Process":     name,
+            "PID":         str(pids.get(name, 0)),
+            "CPU%":        f"{get_cpu_percent(b, a, duration):.2f}%",
+            "RSS MB":      f"{a.rss_kb / 1024:.2f}",
+            "PSS MB":      f"{a.pss_kb / 1024:.2f}",
+            "VSZ MB":      f"{a.vsz_kb / 1024:.2f}",
+            "Priv Dirty":  f"{a.private_dirty_kb / 1024:.2f}",
+            "FDs":         str(a.fd_count),
+            "Thds":        str(a.thread_count),
+            "rMB":         f"{(a.read_bytes - b.read_bytes) / 1048576:.2f}",
+            "wMB":         f"{(a.write_bytes - b.write_bytes) / 1048576:.2f}",
+            "syscr":       str(a.syscr - b.syscr),
+            "syscw":       str(a.syscw - b.syscw),
+            "volCS":       str(a.voluntary_cs - b.voluntary_cs),
+            "nvolCS":      str(a.nonvoluntary_cs - b.nonvoluntary_cs),
+        })
 
-        print(
-            f"{name:<15} | {pids.get(name, 0):<6} | {cpu_percent:>5.2f}% | {rss_mb:>8.2f} | "
-            f"{pss_mb:>8.2f} | {vsz_mb:>8.2f} | {a.fd_count:>3} | {a.thread_count:>7} | "
-            f"{priv_dirty_mb:>13.2f}"
-        )
+    cols = ["Process", "PID", "CPU%", "RSS MB", "PSS MB", "VSZ MB",
+            "Priv Dirty", "FDs", "Thds", "rMB", "wMB", "syscr", "syscw", "volCS", "nvolCS"]
+    widths = {c: len(c) for c in cols}
+    for row in rows:
+        for c in cols:
+            widths[c] = max(widths[c], len(row[c]))
+
+    header = "  ".join(c.ljust(widths[c]) for c in cols).rstrip()
+    sep    = "─" * len(header)
+
+    print(f"\n({duration:.0f}s window)")
+    print(header)
+    print(sep)
+    for row in rows:
+        print("  ".join(row[c].ljust(widths[c]) for c in cols).rstrip())
 
 
 class Sampler:

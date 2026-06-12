@@ -24,6 +24,12 @@ ninja -C build
 river -c ./build/maindeck-wm
 ```
 
+## Tools
+
+- `tools/benchmark-wm.py`: nested benchmark for `maindeck-wm` and `maindeck-bar`.
+- `tools/measure-consumption.py`: quick live-session sampler for `river`, `maindeck-wm`,
+  `maindeck-bar`, and `maindeck-menu`.
+
 ## Visual feedback
 
 - **Borders:** only the focused window (`ALVO`) draws a border (yellow).
