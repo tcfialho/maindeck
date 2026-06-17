@@ -1747,14 +1747,12 @@ window.addEventListener('resize', () => {
 });
 
 /* ===================================================================
-   INITIAL STATE: open Chrome as initial MAIN window
+   INITIAL STATE: chrome=MAIN, files=DECK, term=hidden
    =================================================================== */
-openApp('chrome');
-openApp('files');  // files becomes MAIN, chrome goes to DECK
-// Reverse to match natural order: chrome=MAIN, files=DECK
 wm.windows = [
   { id: 'chrome', title: 'Google — Chromium', appId: 'chromium' },
   { id: 'files',  title: 'Home — Arquivos',   appId: 'pcmanfm' },
+  { id: 'term',   title: 'kitty',              appId: 'kitty' },
 ];
 wm.target_index = 0;
 wm.maximized = false;
