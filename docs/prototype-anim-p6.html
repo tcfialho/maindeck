@@ -1355,6 +1355,8 @@ function actionSwapMainDeck() {
 
   // 2. Faz o swap de estado
   const tmp = wm.windows[0]; wm.windows[0] = wm.windows[1]; wm.windows[1] = tmp;
+  // foco segue a janela: se estava em 0, agora está em 1 e vice-versa
+  wm.target_index = wm.target_index === 0 ? 1 : 0;
 
   // 3. Aplica geometria final sem transition (ainda congelado)
   const desktop = document.getElementById('desktop');
@@ -1366,17 +1368,17 @@ function actionSwapMainDeck() {
   const wDeck = deckWidth - Math.floor(GAP / 2);
   const deckX = mainWidth + Math.floor(GAP / 2);
 
-  // Posição "antes" (invertida — main estava onde deck fica e vice-versa)
-  if (mainEl) { mainEl.style.left = deckX+'px'; mainEl.style.width = wDeck+'px'; }
-  if (deckEl) { deckEl.style.left = '0px';      deckEl.style.width = wMain+'px'; }
+  // Posição "antes" (posições de partida originais das janelas)
+  if (mainEl) { mainEl.style.left = '0px';      mainEl.style.width = wMain+'px'; }
+  if (deckEl) { deckEl.style.left = deckX+'px';  deckEl.style.width = wDeck+'px'; }
 
   // 4. Reabilita transition e anima para posição correta no próximo frame
   requestAnimationFrame(() => {
-    if (mainEl) { mainEl.style.transition = ''; mainEl.style.left = '0px';       mainEl.style.width = wMain+'px'; mainEl.style.height = H+'px'; }
-    if (deckEl) { deckEl.style.transition = ''; deckEl.style.left = deckX+'px';  deckEl.style.width = wDeck+'px'; deckEl.style.height = H+'px'; }
-    // Atualiza foco
-    if (mainEl) mainEl.classList.toggle('focused', wm.target_index === 0);
-    if (deckEl) deckEl.classList.toggle('focused', wm.target_index === 1);
+    if (mainEl) { mainEl.style.transition = ''; mainEl.style.left = deckX+'px';  mainEl.style.width = wDeck+'px'; mainEl.style.height = H+'px'; }
+    if (deckEl) { deckEl.style.transition = ''; deckEl.style.left = '0px';       deckEl.style.width = wMain+'px'; deckEl.style.height = H+'px'; }
+    // Atualiza foco (foco acompanha a janela física)
+    if (mainEl) mainEl.classList.toggle('focused', wm.target_index === 1);
+    if (deckEl) deckEl.classList.toggle('focused', wm.target_index === 0);
     renderTaskbar();
   });
   showToast('Swap MAIN ↔ DECK');
