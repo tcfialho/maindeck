@@ -668,6 +668,60 @@ html, body {
 }
 
 /* ===================================================================
+   P6 — "Best of" combinado
+   Spawn/close: fade+scale (P1)
+   Toggle foco:  scale pulse (P3)
+   Deck next/prev: slide lateral (P2/P5)
+   Swap MAIN↔DECK: grow/shrink para cada lado (P4) — sem ghost
+   Maximize/restore: scale+opacity (P3)
+   Menu: slide-up (P1)
+   =================================================================== */
+
+/* Janelas visíveis: transition em geometria para swap suave */
+.window {
+  transition:
+    left   0.20s ease-in-out,
+    top    0.20s ease-in-out,
+    width  0.20s ease-in-out,
+    height 0.20s ease-in-out,
+    border-bottom-color 0.10s;
+}
+
+/* Spawn: fade-in + scale */
+@keyframes p6Spawn {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+/* Close: fade-out + scale */
+@keyframes p6Close {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(0.96); }
+}
+/* Toggle foco: pulse sutil (P3) */
+@keyframes p6Pulse {
+  0%   { transform: scale(1); }
+  50%  { transform: scale(1.008); }
+  100% { transform: scale(1); }
+}
+/* Deck slide: entra/sai pela lateral */
+@keyframes p6SlideInRight  { from { opacity:0; transform:translateX(18px); } to { opacity:1; transform:translateX(0); } }
+@keyframes p6SlideInLeft   { from { opacity:0; transform:translateX(-18px); } to { opacity:1; transform:translateX(0); } }
+/* Maximize: scale+opacity */
+@keyframes p6Expand  { from { opacity:0.5; transform:scale(0.93); } to { opacity:1; transform:scale(1); } }
+@keyframes p6Retract { from { opacity:1; transform:scale(1); } to { opacity:0.6; transform:scale(0.95); } }
+/* Menu slide-up */
+@keyframes p6MenuUp { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+
+.window.anim-spawn        { animation: p6Spawn       0.14s ease-out forwards; }
+.window.anim-close        { animation: p6Close       0.09s ease-out forwards; pointer-events:none; }
+.window.anim-pulse        { animation: p6Pulse       0.14s ease-in-out forwards; }
+.window.anim-slide-right  { animation: p6SlideInRight 0.17s ease-out forwards; }
+.window.anim-slide-left   { animation: p6SlideInLeft  0.17s ease-out forwards; }
+.window.anim-maximize     { animation: p6Expand      0.20s cubic-bezier(0.2,0,0,1) forwards; }
+.window.anim-restore      { animation: p6Retract     0.16s ease-out forwards; }
+#start-menu.open          { animation: p6MenuUp      0.16s ease-out both; transform-origin: bottom left; }
+
+/* ===================================================================
    KEYBOARD LOCK OVERLAY
    Exibido até o usuário clicar — necessário para user gesture antes
    de requestFullscreen() + navigator.keyboard.lock()
@@ -1048,6 +1102,21 @@ const APPS = {
 const GAP = 12;
 const BORDER = 3; /* CSS border already applied as var(--border) */
 
+/* P6: layout sem transição (chamado quando NÃO queremos animar geometria) */
+function applyLayoutNoTransition() {
+  Object.keys(APPS).forEach(id => {
+    const el = document.getElementById('win-' + id);
+    if (el) el.style.transition = 'none';
+  });
+  applyLayout();
+  requestAnimationFrame(() => {
+    Object.keys(APPS).forEach(id => {
+      const el = document.getElementById('win-' + id);
+      if (el) el.style.transition = '';
+    });
+  });
+}
+
 function applyLayout() {
   const desktop = document.getElementById('desktop');
   const W = desktop.clientWidth;
@@ -1216,28 +1285,33 @@ function openApp(id) {
   if (!app) return;
 
   wm.windows.unshift({ id, title: app.title, appId: app.appId });
-  wm.target_index = 0; // new window becomes MAIN and gets focus
+  wm.target_index = 0;
   wm.maximized = false;
-
-  applyLayout();
+  applyLayoutNoTransition();
   renderTaskbar();
+  animClass(document.getElementById('win-' + id), 'anim-spawn', 140);
 }
 
 function closeWindow(id) {
   const idx = wm.windows.findIndex(w => w.id === id);
   if (idx < 0) return;
-  wm.windows.splice(idx, 1);
-
-  // Clamp target_index
-  if (wm.target_index >= wm.windows.length) {
-    wm.target_index = Math.max(0, wm.windows.length - 1);
+  const el = document.getElementById('win-' + id);
+  const doClose = () => {
+    const i = wm.windows.findIndex(w => w.id === id);
+    if (i < 0) return;
+    wm.windows.splice(i, 1);
+    if (wm.target_index >= wm.windows.length) wm.target_index = Math.max(0, wm.windows.length - 1);
+    if (wm.target_index > 1) wm.target_index = 1;
+    wm.maximized = false;
+    applyLayoutNoTransition();
+    renderTaskbar();
+  };
+  if (el && idx < 2) {
+    animClass(el, 'anim-close', 90);
+    setTimeout(doClose, 90);
+  } else {
+    doClose();
   }
-  // Can only target 0 or 1
-  if (wm.target_index > 1) wm.target_index = 1;
-
-  wm.maximized = false;
-  applyLayout();
-  renderTaskbar();
 }
 
 function closeWindowByIdx(idx) {
@@ -1246,60 +1320,91 @@ function closeWindowByIdx(idx) {
   closeWindow(id);
 }
 
-/* ACTION_TOGGLE_TARGET: switch target between 0 and 1 */
+function animClass(el, cls, duration) {
+  if (!el) return;
+  el.classList.remove(cls);
+  void el.offsetWidth;
+  el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), duration);
+}
+
+/* ACTION_TOGGLE_TARGET — pulse P3 na janela que ganha foco */
 function actionToggleTarget() {
   if (wm.windows.length < 2) return;
   wm.target_index = wm.target_index === 0 ? 1 : 0;
-  applyLayout();
+  applyLayoutNoTransition();
   renderTaskbar();
+  const focused = wm.windows[wm.target_index];
+  if (focused) animClass(document.getElementById('win-' + focused.id), 'anim-pulse', 140);
   showToast('Toggle target → ' + (wm.target_index === 0 ? 'MAIN' : 'DECK'));
 }
 
-/* ACTION_SWAP_MAIN_DECK: swap window at 0 and 1 */
+/* ACTION_SWAP_MAIN_DECK — geometria animada via CSS transition (P4)
+   As janelas crescem/encolhem para cada lado sem ghost:
+   gravamos posições atuais, fazemos o swap no estado, depois deixamos
+   a transition CSS animar de onde estavam para onde ficaram. */
 function actionSwapMainDeck() {
   if (wm.windows.length < 2) return;
-  const tmp = wm.windows[0];
-  wm.windows[0] = wm.windows[1];
-  wm.windows[1] = tmp;
-  // foco segue a janela: se estava em 0, agora está em 1 e vice-versa
-  wm.target_index = wm.target_index === 0 ? 1 : 0;
-  applyLayout();
-  renderTaskbar();
+
+  const mainEl = document.getElementById('win-' + wm.windows[0].id);
+  const deckEl = document.getElementById('win-' + wm.windows[1].id);
+
+  // 1. Congela posição atual (sem transition)
+  if (mainEl) mainEl.style.transition = 'none';
+  if (deckEl) deckEl.style.transition = 'none';
+
+  // 2. Faz o swap de estado
+  const tmp = wm.windows[0]; wm.windows[0] = wm.windows[1]; wm.windows[1] = tmp;
+
+  // 3. Aplica geometria final sem transition (ainda congelado)
+  const desktop = document.getElementById('desktop');
+  const W = desktop.clientWidth;
+  const H = desktop.clientHeight;
+  const mainWidth = Math.floor(W * 2 / 3);
+  const deckWidth = W - mainWidth;
+  const wMain = mainWidth - Math.floor(GAP / 2);
+  const wDeck = deckWidth - Math.floor(GAP / 2);
+  const deckX = mainWidth + Math.floor(GAP / 2);
+
+  // Posição "antes" (invertida — main estava onde deck fica e vice-versa)
+  if (mainEl) { mainEl.style.left = deckX+'px'; mainEl.style.width = wDeck+'px'; }
+  if (deckEl) { deckEl.style.left = '0px';      deckEl.style.width = wMain+'px'; }
+
+  // 4. Reabilita transition e anima para posição correta no próximo frame
+  requestAnimationFrame(() => {
+    if (mainEl) { mainEl.style.transition = ''; mainEl.style.left = '0px';       mainEl.style.width = wMain+'px'; mainEl.style.height = H+'px'; }
+    if (deckEl) { deckEl.style.transition = ''; deckEl.style.left = deckX+'px';  deckEl.style.width = wDeck+'px'; deckEl.style.height = H+'px'; }
+    // Atualiza foco
+    if (mainEl) mainEl.classList.toggle('focused', wm.target_index === 0);
+    if (deckEl) deckEl.classList.toggle('focused', wm.target_index === 1);
+    renderTaskbar();
+  });
   showToast('Swap MAIN ↔ DECK');
 }
 
-/* ACTION_DECK_NEXT — mirrors md_deck_next() in wm-layout.c:399
-   Takes current DECK (index 1), moves it to end of list.
-   The window that was at index 2 slides up to index 1 (new DECK).
-   Sets target_index=1. */
+/* ACTION_DECK_NEXT — slide do novo DECK entrando pela direita */
 function actionDeckNext() {
-  if (wm.windows.length <= 2) {
-    showToast('Sem janela invisível à direita');
-    return;
-  }
-  // Remove deck (index 1) and push to end
+  if (wm.windows.length <= 2) { showToast('Sem janela invisível à direita'); return; }
   const [deck] = wm.windows.splice(1, 1);
   wm.windows.push(deck);
   wm.target_index = 1;
-  applyLayout();
+  applyLayoutNoTransition();
   renderTaskbar();
+  const newDeckEl = document.getElementById('win-' + wm.windows[1].id);
+  if (newDeckEl) animClass(newDeckEl, 'anim-slide-right', 170);
   showToast('Deck → próximo');
 }
 
-/* ACTION_DECK_PREV — mirrors md_deck_prev() in wm-layout.c:412
-   Takes last visible window (index vis-1), inserts after MAIN (→ becomes index 1).
-   Old DECK slides down. Sets target_index=1. */
+/* ACTION_DECK_PREV — slide do novo DECK entrando pela esquerda */
 function actionDeckPrev() {
-  if (wm.windows.length <= 2) {
-    showToast('Sem janela invisível à esquerda');
-    return;
-  }
-  // Take last window and move it to index 1 (after MAIN)
+  if (wm.windows.length <= 2) { showToast('Sem janela invisível à esquerda'); return; }
   const [last] = wm.windows.splice(wm.windows.length - 1, 1);
   wm.windows.splice(1, 0, last);
   wm.target_index = 1;
-  applyLayout();
+  applyLayoutNoTransition();
   renderTaskbar();
+  const newDeckEl = document.getElementById('win-' + wm.windows[1].id);
+  if (newDeckEl) animClass(newDeckEl, 'anim-slide-left', 170);
   showToast('Deck → anterior');
 }
 
@@ -1328,20 +1433,24 @@ function actionPromoteTargetToMain() {
   showToast('Promovido a MAIN');
 }
 
-/* ACTION_MAXIMIZE_TARGET: fill usable area */
+/* ACTION_MAXIMIZE_TARGET */
 function actionMaximize() {
   if (wm.windows.length === 0) return;
   wm.maximized = true;
-  applyLayout();
+  applyLayoutNoTransition();
   renderTaskbar();
+  const target = wm.windows[wm.target_index] || wm.windows[0];
+  if (target) animClass(document.getElementById('win-' + target.id), 'anim-maximize', 200);
   showToast('Maximizado');
 }
 
 /* ACTION_RESTORE */
 function actionRestore() {
   wm.maximized = false;
-  applyLayout();
+  applyLayoutNoTransition();
   renderTaskbar();
+  const target = wm.windows[wm.target_index] || wm.windows[0];
+  if (target) animClass(document.getElementById('win-' + target.id), 'anim-restore', 160);
   showToast('Restaurado');
 }
 
@@ -1367,13 +1476,14 @@ function activateWindow(idx) {
   if (idx < 0 || idx >= wm.windows.length) return;
   wm.target_index = idx < 2 ? idx : 0;
   if (idx >= 2) {
-    // Bring hidden window to front
     const [win] = wm.windows.splice(idx, 1);
     wm.windows.unshift(win);
     wm.target_index = 0;
   }
-  applyLayout();
+  applyLayoutNoTransition();
   renderTaskbar();
+  const focused = wm.windows[wm.target_index];
+  if (focused) animClass(document.getElementById('win-' + focused.id), 'anim-pulse', 140);
 }
 
 /* ===================================================================

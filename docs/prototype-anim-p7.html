@@ -668,6 +668,37 @@ html, body {
 }
 
 /* ===================================================================
+   P7 — "Dois idiomas separados"
+   Layout (swap, maximize) = geometria. Conteúdo (spawn, close, deck) = fade.
+   =================================================================== */
+/* Spawn/close */
+@keyframes p7Spawn  { from { opacity:0; transform:scale(0.97); } to { opacity:1; transform:scale(1); } }
+@keyframes p7Close  { from { opacity:1; transform:scale(1); } to { opacity:0; transform:scale(0.96); } }
+/* Foco pulse */
+@keyframes p7Pulse  { 0%{transform:scale(1)} 50%{transform:scale(1.007)} 100%{transform:scale(1)} }
+/* Deck fade */
+@keyframes p7FadeIn { from { opacity:0; } to { opacity:1; } }
+/* Maximize */
+@keyframes p7Expand  { from { opacity:0.5; transform:scale(0.93); } to { opacity:1; transform:scale(1); } }
+@keyframes p7Retract { from { opacity:1; transform:scale(1); } to { opacity:0.6; transform:scale(0.94); } }
+/* Menu */
+@keyframes p7MenuUp { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+
+/* Swap usa CSS transition na geometria */
+.window {
+  transition: left .20s ease-in-out, top .20s ease-in-out,
+              width .20s ease-in-out, height .20s ease-in-out,
+              border-bottom-color .10s;
+}
+.window.anim-spawn   { animation: p7Spawn  .14s ease-out forwards; }
+.window.anim-close   { animation: p7Close  .09s ease-out forwards; pointer-events:none; }
+.window.anim-pulse   { animation: p7Pulse  .14s ease-in-out forwards; }
+.window.anim-fadein  { animation: p7FadeIn .13s ease-out forwards; }
+.window.anim-expand  { animation: p7Expand  .18s cubic-bezier(.2,0,0,1) forwards; }
+.window.anim-retract { animation: p7Retract .15s ease-out forwards; }
+#start-menu.open     { animation: p7MenuUp .16s ease-out both; transform-origin:bottom left; }
+
+/* ===================================================================
    KEYBOARD LOCK OVERLAY
    Exibido até o usuário clicar — necessário para user gesture antes
    de requestFullscreen() + navigator.keyboard.lock()
@@ -1211,33 +1242,28 @@ function openApp(id) {
     }
   }
 
-  // New window: insert at head
   const app = APPS[id];
   if (!app) return;
-
   wm.windows.unshift({ id, title: app.title, appId: app.appId });
-  wm.target_index = 0; // new window becomes MAIN and gets focus
-  wm.maximized = false;
-
-  applyLayout();
-  renderTaskbar();
+  wm.target_index = 0; wm.maximized = false;
+  noAnim(() => { applyLayout(); renderTaskbar(); });
+  animClass(document.getElementById('win-'+id), 'anim-spawn', 140);
 }
 
 function closeWindow(id) {
   const idx = wm.windows.findIndex(w => w.id === id);
   if (idx < 0) return;
-  wm.windows.splice(idx, 1);
-
-  // Clamp target_index
-  if (wm.target_index >= wm.windows.length) {
-    wm.target_index = Math.max(0, wm.windows.length - 1);
-  }
-  // Can only target 0 or 1
-  if (wm.target_index > 1) wm.target_index = 1;
-
-  wm.maximized = false;
-  applyLayout();
-  renderTaskbar();
+  const el = document.getElementById('win-'+id);
+  const doClose = () => {
+    const i = wm.windows.findIndex(w => w.id === id); if (i < 0) return;
+    wm.windows.splice(i, 1);
+    if (wm.target_index >= wm.windows.length) wm.target_index = Math.max(0, wm.windows.length-1);
+    if (wm.target_index > 1) wm.target_index = 1;
+    wm.maximized = false;
+    noAnim(() => { applyLayout(); renderTaskbar(); });
+  };
+  if (el && idx < 2) { animClass(el, 'anim-close', 90); setTimeout(doClose, 90); }
+  else doClose();
 }
 
 function closeWindowByIdx(idx) {
@@ -1246,60 +1272,86 @@ function closeWindowByIdx(idx) {
   closeWindow(id);
 }
 
-/* ACTION_TOGGLE_TARGET: switch target between 0 and 1 */
+function animClass(el, cls, ms) {
+  if (!el) return;
+  el.classList.remove(cls); void el.offsetWidth;
+  el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), ms);
+}
+function noAnim(fn) {
+  Object.keys(APPS).forEach(id => {
+    const e = document.getElementById('win-'+id);
+    if (e) e.style.transition = 'none';
+  });
+  fn();
+  requestAnimationFrame(() => Object.keys(APPS).forEach(id => {
+    const e = document.getElementById('win-'+id);
+    if (e) e.style.transition = '';
+  }));
+}
+function swapGeom() {
+  /* P7 swap: anima geometria via CSS transition */
+  const mainEl = document.getElementById('win-' + wm.windows[0].id);
+  const deckEl = document.getElementById('win-' + wm.windows[1].id);
+  const desktop = document.getElementById('desktop');
+  const W = desktop.clientWidth, H = desktop.clientHeight;
+  const mw = Math.floor(W*2/3), dw = W - mw;
+  const wM = mw - Math.floor(GAP/2), wD = dw - Math.floor(GAP/2), dX = mw + Math.floor(GAP/2);
+  // congela
+  if (mainEl) mainEl.style.transition = 'none';
+  if (deckEl) deckEl.style.transition = 'none';
+  // posição "antes" (invertida)
+  if (mainEl) { mainEl.style.left = dX+'px'; mainEl.style.width = wD+'px'; mainEl.style.height = H+'px'; }
+  if (deckEl) { deckEl.style.left = '0px';   deckEl.style.width = wM+'px'; deckEl.style.height = H+'px'; }
+  // anima para posição correta
+  requestAnimationFrame(() => {
+    if (mainEl) { mainEl.style.transition = ''; mainEl.style.left = '0px';  mainEl.style.width = wM+'px'; }
+    if (deckEl) { deckEl.style.transition = ''; deckEl.style.left = dX+'px'; deckEl.style.width = wD+'px'; }
+    if (mainEl) mainEl.classList.toggle('focused', wm.target_index === 0);
+    if (deckEl) deckEl.classList.toggle('focused', wm.target_index === 1);
+    renderTaskbar();
+  });
+}
+
+/* ACTION_TOGGLE_TARGET */
 function actionToggleTarget() {
   if (wm.windows.length < 2) return;
   wm.target_index = wm.target_index === 0 ? 1 : 0;
-  applyLayout();
-  renderTaskbar();
+  noAnim(() => { applyLayout(); renderTaskbar(); });
+  const f = wm.windows[wm.target_index];
+  if (f) animClass(document.getElementById('win-'+f.id), 'anim-pulse', 140);
   showToast('Toggle target → ' + (wm.target_index === 0 ? 'MAIN' : 'DECK'));
 }
 
-/* ACTION_SWAP_MAIN_DECK: swap window at 0 and 1 */
+/* ACTION_SWAP_MAIN_DECK — geometria animada, sem ghost */
 function actionSwapMainDeck() {
   if (wm.windows.length < 2) return;
-  const tmp = wm.windows[0];
-  wm.windows[0] = wm.windows[1];
-  wm.windows[1] = tmp;
-  // foco segue a janela: se estava em 0, agora está em 1 e vice-versa
-  wm.target_index = wm.target_index === 0 ? 1 : 0;
-  applyLayout();
-  renderTaskbar();
+  const tmp = wm.windows[0]; wm.windows[0] = wm.windows[1]; wm.windows[1] = tmp;
+  swapGeom();
   showToast('Swap MAIN ↔ DECK');
 }
 
-/* ACTION_DECK_NEXT — mirrors md_deck_next() in wm-layout.c:399
-   Takes current DECK (index 1), moves it to end of list.
-   The window that was at index 2 slides up to index 1 (new DECK).
-   Sets target_index=1. */
+/* ACTION_DECK_NEXT — fade-in do novo deck */
 function actionDeckNext() {
-  if (wm.windows.length <= 2) {
-    showToast('Sem janela invisível à direita');
-    return;
-  }
-  // Remove deck (index 1) and push to end
+  if (wm.windows.length <= 2) { showToast('Sem janela invisível à direita'); return; }
   const [deck] = wm.windows.splice(1, 1);
   wm.windows.push(deck);
   wm.target_index = 1;
-  applyLayout();
-  renderTaskbar();
+  noAnim(() => { applyLayout(); renderTaskbar(); });
+  const nd = wm.windows[1];
+  if (nd) animClass(document.getElementById('win-'+nd.id), 'anim-fadein', 130);
   showToast('Deck → próximo');
 }
 
-/* ACTION_DECK_PREV — mirrors md_deck_prev() in wm-layout.c:412
-   Takes last visible window (index vis-1), inserts after MAIN (→ becomes index 1).
-   Old DECK slides down. Sets target_index=1. */
+/* ACTION_DECK_PREV — fade-in do novo deck */
 function actionDeckPrev() {
-  if (wm.windows.length <= 2) {
-    showToast('Sem janela invisível à esquerda');
-    return;
-  }
-  // Take last window and move it to index 1 (after MAIN)
+  if (wm.windows.length <= 2) { showToast('Sem janela invisível à esquerda'); return; }
   const [last] = wm.windows.splice(wm.windows.length - 1, 1);
   wm.windows.splice(1, 0, last);
   wm.target_index = 1;
-  applyLayout();
-  renderTaskbar();
+  noAnim(() => { applyLayout(); renderTaskbar(); });
+  const nd = wm.windows[1];
+  if (nd) animClass(document.getElementById('win-'+nd.id), 'anim-fadein', 130);
   showToast('Deck → anterior');
 }
 
@@ -1328,20 +1380,22 @@ function actionPromoteTargetToMain() {
   showToast('Promovido a MAIN');
 }
 
-/* ACTION_MAXIMIZE_TARGET: fill usable area */
+/* ACTION_MAXIMIZE_TARGET */
 function actionMaximize() {
   if (wm.windows.length === 0) return;
   wm.maximized = true;
-  applyLayout();
-  renderTaskbar();
+  noAnim(() => { applyLayout(); renderTaskbar(); });
+  const t = wm.windows[wm.target_index] || wm.windows[0];
+  if (t) animClass(document.getElementById('win-'+t.id), 'anim-expand', 180);
   showToast('Maximizado');
 }
 
 /* ACTION_RESTORE */
 function actionRestore() {
   wm.maximized = false;
-  applyLayout();
-  renderTaskbar();
+  noAnim(() => { applyLayout(); renderTaskbar(); });
+  const t = wm.windows[wm.target_index] || wm.windows[0];
+  if (t) animClass(document.getElementById('win-'+t.id), 'anim-retract', 150);
   showToast('Restaurado');
 }
 

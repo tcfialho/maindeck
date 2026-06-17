@@ -668,6 +668,27 @@ html, body {
 }
 
 /* ===================================================================
+   P4 — "Tiling WM nativo" (só layout, sem frescura)
+   Usa opacity+visibility em vez de display:none para preservar transitions
+   =================================================================== */
+.window {
+  transition:
+    left        0.18s ease-in-out,
+    top         0.18s ease-in-out,
+    width       0.18s ease-in-out,
+    height      0.18s ease-in-out,
+    opacity     0.12s ease-in-out,
+    border-bottom-color 0.10s;
+  opacity: 1;
+  pointer-events: auto;
+}
+.window.win-hidden {
+  opacity: 0;
+  pointer-events: none;
+  left: -9999px !important;
+}
+
+/* ===================================================================
    KEYBOARD LOCK OVERLAY
    Exibido até o usuário clicar — necessário para user gesture antes
    de requestFullscreen() + navigator.keyboard.lock()
@@ -1055,50 +1076,36 @@ function applyLayout() {
 
   const visibleIds = wm.windows.slice(0, 2).filter(Boolean);
 
-  // Hide all first
+  // Hide all first (P4: usa win-hidden para preservar CSS transitions)
   Object.keys(APPS).forEach(id => {
     const el = document.getElementById('win-' + id);
-    if (el) el.style.display = 'none';
+    if (el) { el.classList.add('win-hidden'); el.style.display = 'flex'; }
   });
 
   if (visibleIds.length === 0) return;
 
-  /* Maximized: target fills usable area (not client fullscreen which covers bar too) */
+  /* Maximized: target fills usable area */
   if (wm.maximized) {
     const target = visibleIds[wm.target_index] || visibleIds[0];
     if (!target) return;
     const el = document.getElementById('win-' + target.id);
     if (el) {
-      el.style.display = 'flex';
-      el.style.left = '0';
-      el.style.top = '0';
-      el.style.width = W + 'px';
-      el.style.height = H + 'px';
+      el.classList.remove('win-hidden');
+      el.style.left = '0'; el.style.top = '0';
+      el.style.width = W + 'px'; el.style.height = H + 'px';
       el.classList.add('focused');
     }
-    // Other visible windows hidden behind
-    visibleIds.forEach((w, i) => {
-      if (w.id !== target.id) {
-        const oel = document.getElementById('win-' + w.id);
-        if (oel) oel.style.display = 'none';
-      }
-    });
     return;
   }
 
   if (visibleIds.length === 1) {
-    /* Single window: fills usable area */
     const el = document.getElementById('win-' + visibleIds[0].id);
     if (el) {
-      el.style.display = 'flex';
+      el.classList.remove('win-hidden');
       setWinGeom(el, 0, 0, W, H);
       el.classList.add('focused');
     }
   } else {
-    /* Two windows: MAIN 2/3 left, DECK 1/3 right — matches layout_view_init:
-       main_width = (W*2)/3; deck_width = W - main_width;
-       w_main = main_width - GAP/2; w_deck = deck_width - GAP/2;
-       deck starts at x = main_width + GAP/2 */
     const mainWidth = Math.floor(W * 2 / 3);
     const deckWidth = W - mainWidth;
     const wMain = mainWidth - Math.floor(GAP / 2);
@@ -1108,14 +1115,8 @@ function applyLayout() {
     const mainEl = document.getElementById('win-' + visibleIds[0].id);
     const deckEl = document.getElementById('win-' + visibleIds[1].id);
 
-    if (mainEl) {
-      mainEl.style.display = 'flex';
-      setWinGeom(mainEl, 0, 0, wMain, H);
-    }
-    if (deckEl) {
-      deckEl.style.display = 'flex';
-      setWinGeom(deckEl, deckX, 0, wDeck, H);
-    }
+    if (mainEl) { mainEl.classList.remove('win-hidden'); setWinGeom(mainEl, 0, 0, wMain, H); }
+    if (deckEl) { deckEl.classList.remove('win-hidden'); setWinGeom(deckEl, deckX, 0, wDeck, H); }
 
     /* Focus: active has blue 3px border, inactive has transparent border */
     visibleIds.forEach((w, i) => {
@@ -1129,18 +1130,11 @@ function applyLayout() {
     });
   }
 
-  /* Hidden windows (2+) */
-  wm.windows.slice(2).forEach(w => {
-    const el = document.getElementById('win-' + w.id);
-    if (el) el.style.display = 'none';
-  });
+  /* Hidden windows (2+) — win-hidden já aplicado no bloco "Hide all first" acima */
 }
 
 function setWinGeom(el, x, y, w, h) {
-  /* In the real WM: river_node_set_position(x + BORDER_WIDTH, y + BORDER_WIDTH)
-     and set_dimensions(w - BORDER_WIDTH*2, h - BORDER_WIDTH*2).
-     Here BORDER_WIDTH=3 but CSS border is only bottom=2px, so we just position normally
-     and let the bottom border be decorative. */
+  /* P4: usa visibility+opacity em vez de display:none para não quebrar CSS transitions */
   el.style.left = x + 'px';
   el.style.top = y + 'px';
   el.style.width = w + 'px';
@@ -1261,7 +1255,6 @@ function actionSwapMainDeck() {
   const tmp = wm.windows[0];
   wm.windows[0] = wm.windows[1];
   wm.windows[1] = tmp;
-  // foco segue a janela: se estava em 0, agora está em 1 e vice-versa
   wm.target_index = wm.target_index === 0 ? 1 : 0;
   applyLayout();
   renderTaskbar();

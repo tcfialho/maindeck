@@ -668,6 +668,31 @@ html, body {
 }
 
 /* ===================================================================
+   P9 — "Slide direcional coerente"
+   Direita=próximo/frente, Esquerda=anterior/trás, Cima=abrir, Baixo=fechar
+   =================================================================== */
+@keyframes p9InRight  { from{opacity:0;transform:translateX(100%);} to{opacity:1;transform:translateX(0);} }
+@keyframes p9OutRight { from{opacity:1;transform:translateX(0);} to{opacity:0;transform:translateX(100%);} }
+@keyframes p9InLeft   { from{opacity:0;transform:translateX(-100%);} to{opacity:1;transform:translateX(0);} }
+@keyframes p9OutLeft  { from{opacity:1;transform:translateX(0);} to{opacity:0;transform:translateX(-100%);} }
+@keyframes p9InUp     { from{opacity:0;transform:translateY(-24px);} to{opacity:1;transform:translateY(0);} }
+@keyframes p9OutDown  { from{opacity:1;transform:translateY(0);} to{opacity:0;transform:translateY(24px);} }
+@keyframes p9Expand   { from{opacity:0.4;transform:scale(0.92);} to{opacity:1;transform:scale(1);} }
+@keyframes p9Retract  { from{opacity:1;transform:scale(1);} to{opacity:0.4;transform:scale(0.92);} }
+@keyframes p9MenuUp   { from{opacity:0;transform:translateY(12px);} to{opacity:1;transform:translateY(0);} }
+
+.window { overflow:hidden; }
+.window.anim-in-right  { animation: p9InRight  .18s ease-out forwards; }
+.window.anim-out-right { animation: p9OutRight .14s ease-in  forwards; pointer-events:none; }
+.window.anim-in-left   { animation: p9InLeft   .18s ease-out forwards; }
+.window.anim-out-left  { animation: p9OutLeft  .14s ease-in  forwards; pointer-events:none; }
+.window.anim-in-up     { animation: p9InUp     .16s ease-out forwards; }
+.window.anim-out-down  { animation: p9OutDown  .12s ease-in  forwards; pointer-events:none; }
+.window.anim-expand    { animation: p9Expand   .22s cubic-bezier(.2,0,0,1) forwards; }
+.window.anim-retract   { animation: p9Retract  .18s ease-out forwards; }
+#start-menu.open       { animation: p9MenuUp   .16s ease-out both; transform-origin:bottom left; }
+
+/* ===================================================================
    KEYBOARD LOCK OVERLAY
    Exibido até o usuário clicar — necessário para user gesture antes
    de requestFullscreen() + navigator.keyboard.lock()
@@ -1211,33 +1236,25 @@ function openApp(id) {
     }
   }
 
-  // New window: insert at head
-  const app = APPS[id];
-  if (!app) return;
-
+  const app = APPS[id]; if (!app) return;
   wm.windows.unshift({ id, title: app.title, appId: app.appId });
-  wm.target_index = 0; // new window becomes MAIN and gets focus
-  wm.maximized = false;
-
-  applyLayout();
-  renderTaskbar();
+  wm.target_index = 0; wm.maximized = false;
+  noAnim(() => { applyLayout(); renderTaskbar(); });
+  animClass(document.getElementById('win-'+id), 'anim-in-up', 160);
 }
 
 function closeWindow(id) {
-  const idx = wm.windows.findIndex(w => w.id === id);
-  if (idx < 0) return;
-  wm.windows.splice(idx, 1);
-
-  // Clamp target_index
-  if (wm.target_index >= wm.windows.length) {
-    wm.target_index = Math.max(0, wm.windows.length - 1);
-  }
-  // Can only target 0 or 1
-  if (wm.target_index > 1) wm.target_index = 1;
-
-  wm.maximized = false;
-  applyLayout();
-  renderTaskbar();
+  const idx = wm.windows.findIndex(w => w.id === id); if (idx < 0) return;
+  const el = document.getElementById('win-'+id);
+  const doClose = () => {
+    const i = wm.windows.findIndex(w => w.id === id); if (i < 0) return;
+    wm.windows.splice(i, 1);
+    if (wm.target_index >= wm.windows.length) wm.target_index = Math.max(0, wm.windows.length-1);
+    if (wm.target_index > 1) wm.target_index = 1;
+    wm.maximized = false; noAnim(() => { applyLayout(); renderTaskbar(); });
+  };
+  if (el && idx < 2) { animClass(el, 'anim-out-down', 120); setTimeout(doClose, 120); }
+  else doClose();
 }
 
 function closeWindowByIdx(idx) {
@@ -1246,60 +1263,64 @@ function closeWindowByIdx(idx) {
   closeWindow(id);
 }
 
-/* ACTION_TOGGLE_TARGET: switch target between 0 and 1 */
+function animClass(el, cls, ms) {
+  if (!el) return;
+  el.classList.remove(cls); void el.offsetWidth;
+  el.classList.add(cls); setTimeout(() => el.classList.remove(cls), ms);
+}
+function noAnim(fn) {
+  Object.keys(APPS).forEach(id => { const e = document.getElementById('win-'+id); if (e) e.style.transition='none'; });
+  fn();
+  requestAnimationFrame(() => Object.keys(APPS).forEach(id => { const e = document.getElementById('win-'+id); if (e) e.style.transition=''; }));
+}
+
+/* P9: toggle = sem animação, só borda */
 function actionToggleTarget() {
   if (wm.windows.length < 2) return;
   wm.target_index = wm.target_index === 0 ? 1 : 0;
-  applyLayout();
-  renderTaskbar();
+  noAnim(() => { applyLayout(); renderTaskbar(); });
   showToast('Toggle target → ' + (wm.target_index === 0 ? 'MAIN' : 'DECK'));
 }
 
-/* ACTION_SWAP_MAIN_DECK: swap window at 0 and 1 */
+/* P9: swap = MAIN sai pela direita, DECK sai pela esquerda; entram pelos lados opostos */
 function actionSwapMainDeck() {
   if (wm.windows.length < 2) return;
-  const tmp = wm.windows[0];
-  wm.windows[0] = wm.windows[1];
-  wm.windows[1] = tmp;
-  // foco segue a janela: se estava em 0, agora está em 1 e vice-versa
-  wm.target_index = wm.target_index === 0 ? 1 : 0;
-  applyLayout();
-  renderTaskbar();
+  const aEl = document.getElementById('win-'+wm.windows[0].id);
+  const bEl = document.getElementById('win-'+wm.windows[1].id);
+  animClass(aEl, 'anim-out-right', 140);
+  animClass(bEl, 'anim-out-left',  140);
+  setTimeout(() => {
+    const tmp = wm.windows[0]; wm.windows[0] = wm.windows[1]; wm.windows[1] = tmp;
+    noAnim(() => { applyLayout(); renderTaskbar(); });
+    animClass(document.getElementById('win-'+wm.windows[0].id), 'anim-in-left',  180);
+    animClass(document.getElementById('win-'+wm.windows[1].id), 'anim-in-right', 180);
+  }, 140);
   showToast('Swap MAIN ↔ DECK');
 }
 
-/* ACTION_DECK_NEXT — mirrors md_deck_next() in wm-layout.c:399
-   Takes current DECK (index 1), moves it to end of list.
-   The window that was at index 2 slides up to index 1 (new DECK).
-   Sets target_index=1. */
+/* P9: deck next = deck atual sai direita, novo entra pela direita */
 function actionDeckNext() {
-  if (wm.windows.length <= 2) {
-    showToast('Sem janela invisível à direita');
-    return;
-  }
-  // Remove deck (index 1) and push to end
-  const [deck] = wm.windows.splice(1, 1);
-  wm.windows.push(deck);
-  wm.target_index = 1;
-  applyLayout();
-  renderTaskbar();
+  if (wm.windows.length <= 2) { showToast('Sem janela invisível à direita'); return; }
+  const oldEl = document.getElementById('win-'+wm.windows[1].id);
+  animClass(oldEl, 'anim-out-right', 140);
+  setTimeout(() => {
+    const [deck] = wm.windows.splice(1, 1); wm.windows.push(deck); wm.target_index = 1;
+    noAnim(() => { applyLayout(); renderTaskbar(); });
+    animClass(document.getElementById('win-'+wm.windows[1].id), 'anim-in-right', 180);
+  }, 140);
   showToast('Deck → próximo');
 }
 
-/* ACTION_DECK_PREV — mirrors md_deck_prev() in wm-layout.c:412
-   Takes last visible window (index vis-1), inserts after MAIN (→ becomes index 1).
-   Old DECK slides down. Sets target_index=1. */
+/* P9: deck prev = deck atual sai esquerda, novo entra pela esquerda */
 function actionDeckPrev() {
-  if (wm.windows.length <= 2) {
-    showToast('Sem janela invisível à esquerda');
-    return;
-  }
-  // Take last window and move it to index 1 (after MAIN)
-  const [last] = wm.windows.splice(wm.windows.length - 1, 1);
-  wm.windows.splice(1, 0, last);
-  wm.target_index = 1;
-  applyLayout();
-  renderTaskbar();
+  if (wm.windows.length <= 2) { showToast('Sem janela invisível à esquerda'); return; }
+  const oldEl = document.getElementById('win-'+wm.windows[1].id);
+  animClass(oldEl, 'anim-out-left', 140);
+  setTimeout(() => {
+    const [last] = wm.windows.splice(wm.windows.length-1, 1); wm.windows.splice(1,0,last); wm.target_index = 1;
+    noAnim(() => { applyLayout(); renderTaskbar(); });
+    animClass(document.getElementById('win-'+wm.windows[1].id), 'anim-in-left', 180);
+  }, 140);
   showToast('Deck → anterior');
 }
 
@@ -1328,20 +1349,19 @@ function actionPromoteTargetToMain() {
   showToast('Promovido a MAIN');
 }
 
-/* ACTION_MAXIMIZE_TARGET: fill usable area */
 function actionMaximize() {
   if (wm.windows.length === 0) return;
   wm.maximized = true;
-  applyLayout();
-  renderTaskbar();
+  noAnim(() => { applyLayout(); renderTaskbar(); });
+  const t = wm.windows[wm.target_index] || wm.windows[0];
+  if (t) animClass(document.getElementById('win-'+t.id), 'anim-expand', 220);
   showToast('Maximizado');
 }
-
-/* ACTION_RESTORE */
 function actionRestore() {
   wm.maximized = false;
-  applyLayout();
-  renderTaskbar();
+  noAnim(() => { applyLayout(); renderTaskbar(); });
+  const t = wm.windows[wm.target_index] || wm.windows[0];
+  if (t) animClass(document.getElementById('win-'+t.id), 'anim-retract', 180);
   showToast('Restaurado');
 }
 

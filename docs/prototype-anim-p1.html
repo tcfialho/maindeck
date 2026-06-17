@@ -668,6 +668,40 @@ html, body {
 }
 
 /* ===================================================================
+   P1 — "Seco com propósito"
+   =================================================================== */
+@keyframes focusPulse {
+  0%   { box-shadow: 0 0 0 0 rgba(37,99,235,0); }
+  40%  { box-shadow: 0 0 0 5px rgba(37,99,235,0.5); }
+  100% { box-shadow: 0 0 0 0 rgba(37,99,235,0); }
+}
+.window.anim-focus { animation: focusPulse 0.22s ease-out forwards; }
+
+@keyframes winSpawn {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.window.anim-spawn { animation: winSpawn 0.14s ease-out forwards; }
+
+@keyframes winClose {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(0.96); }
+}
+.window.anim-close { animation: winClose 0.09s ease-out forwards; pointer-events: none; }
+
+@keyframes maxExpand {
+  from { transform: scale(0.95); opacity: 0.6; }
+  to   { transform: scale(1);    opacity: 1; }
+}
+.window.anim-maximize { animation: maxExpand 0.15s ease-out forwards; }
+
+@keyframes menuSlideUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+#start-menu.open { animation: menuSlideUp 0.16s ease-out both; }
+
+/* ===================================================================
    KEYBOARD LOCK OVERLAY
    Exibido até o usuário clicar — necessário para user gesture antes
    de requestFullscreen() + navigator.keyboard.lock()
@@ -1216,28 +1250,34 @@ function openApp(id) {
   if (!app) return;
 
   wm.windows.unshift({ id, title: app.title, appId: app.appId });
-  wm.target_index = 0; // new window becomes MAIN and gets focus
+  wm.target_index = 0;
   wm.maximized = false;
 
   applyLayout();
   renderTaskbar();
+  const el = document.getElementById('win-' + id);
+  if (el) animClass(el, 'anim-spawn', 140);
 }
 
 function closeWindow(id) {
   const idx = wm.windows.findIndex(w => w.id === id);
   if (idx < 0) return;
-  wm.windows.splice(idx, 1);
-
-  // Clamp target_index
-  if (wm.target_index >= wm.windows.length) {
-    wm.target_index = Math.max(0, wm.windows.length - 1);
+  const el = document.getElementById('win-' + id);
+  const doClose = () => {
+    wm.windows.splice(wm.windows.findIndex(w => w.id === id), 1);
+    if (wm.target_index >= wm.windows.length)
+      wm.target_index = Math.max(0, wm.windows.length - 1);
+    if (wm.target_index > 1) wm.target_index = 1;
+    wm.maximized = false;
+    applyLayout();
+    renderTaskbar();
+  };
+  if (el && idx < 2) {
+    animClass(el, 'anim-close', 90);
+    setTimeout(doClose, 90);
+  } else {
+    doClose();
   }
-  // Can only target 0 or 1
-  if (wm.target_index > 1) wm.target_index = 1;
-
-  wm.maximized = false;
-  applyLayout();
-  renderTaskbar();
 }
 
 function closeWindowByIdx(idx) {
@@ -1246,12 +1286,25 @@ function closeWindowByIdx(idx) {
   closeWindow(id);
 }
 
+function animClass(el, cls, duration) {
+  el.classList.remove(cls);
+  void el.offsetWidth;
+  el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), duration);
+}
+
 /* ACTION_TOGGLE_TARGET: switch target between 0 and 1 */
 function actionToggleTarget() {
   if (wm.windows.length < 2) return;
   wm.target_index = wm.target_index === 0 ? 1 : 0;
   applyLayout();
   renderTaskbar();
+  // pulse na janela que ganhou foco
+  const focused = wm.windows[wm.target_index];
+  if (focused) {
+    const el = document.getElementById('win-' + focused.id);
+    if (el) animClass(el, 'anim-focus', 220);
+  }
   showToast('Toggle target → ' + (wm.target_index === 0 ? 'MAIN' : 'DECK'));
 }
 
@@ -1261,7 +1314,6 @@ function actionSwapMainDeck() {
   const tmp = wm.windows[0];
   wm.windows[0] = wm.windows[1];
   wm.windows[1] = tmp;
-  // foco segue a janela: se estava em 0, agora está em 1 e vice-versa
   wm.target_index = wm.target_index === 0 ? 1 : 0;
   applyLayout();
   renderTaskbar();
@@ -1334,6 +1386,11 @@ function actionMaximize() {
   wm.maximized = true;
   applyLayout();
   renderTaskbar();
+  const target = wm.windows[wm.target_index] || wm.windows[0];
+  if (target) {
+    const el = document.getElementById('win-' + target.id);
+    if (el) animClass(el, 'anim-maximize', 150);
+  }
   showToast('Maximizado');
 }
 
