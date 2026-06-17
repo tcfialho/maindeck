@@ -952,7 +952,7 @@ html, body {
   <div><span class="key">Ctrl+Enter</span> spawn terminal</div>
   <div><span class="key">Ctrl+Del</span> fechar janela</div>
   <div><span class="key">Ctrl+Shift</span> toggle maximize</div>
-  <div><span class="key">F19 / Win</span> abrir menu</div>
+  <div><span class="key">Ctrl</span> / <span class="key">F19</span> abrir menu</div>
   <div class="note">Super real é capturado pelo compositor</div>
 </div>
 
@@ -1461,9 +1461,12 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  // F19: SPAWN_LAUNCHER (toggle menu) — keyd maps lone Win → F19
-  if (key === 'F19' && !e.repeat) {
-    toggleMenu();
+  // F19 ou Ctrl sozinho: SPAWN_LAUNCHER (toggle menu) — keyd maps lone Win → F19
+  if ((key === 'F19' || (key === 'Control' && !shift)) && !e.repeat) {
+    if (!keydownState['menu']) {
+      keydownState['menu'] = true;
+      toggleMenu();
+    }
     return;
   }
 
@@ -1490,6 +1493,9 @@ document.addEventListener('keyup', (e) => {
   }
   if ((key === 'Shift' || key === 'Control') && keydownState['Ctrl+Shift']) {
     keydownState['Ctrl+Shift'] = false;
+  }
+  if (key === 'Control') {
+    keydownState['menu'] = false;
   }
 });
 
