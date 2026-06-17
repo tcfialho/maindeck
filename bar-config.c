@@ -40,6 +40,7 @@ static void config_defaults(struct BarConfig *cfg) {
     snprintf(cfg->icon_theme, sizeof(cfg->icon_theme), "hicolor");
     snprintf(cfg->clock_fmt,  sizeof(cfg->clock_fmt),  "%%H:%%M  %%d/%%m/%%Y");
     snprintf(cfg->power_exec, sizeof(cfg->power_exec), "");
+    snprintf(cfg->volume_exec, sizeof(cfg->volume_exec), "pwvucontrol");
 }
 
 /* ------------------------------------------------------------------ */
@@ -181,6 +182,16 @@ int bar_config_load(const char *path, struct BarConfig *cfg) {
             for (int k = 0; k < obj_size && i+1 < n; k++) {
                 if (tok_eq(json, &toks[i], "exec"))
                     tok_str(json, &toks[i+1], cfg->power_exec, sizeof(cfg->power_exec));
+                i += 2;
+            }
+        } else if (tok_eq(json, &toks[i], "volume")) {
+            i++;
+            if (i >= n || toks[i].type != JSMN_OBJECT) continue;
+            int obj_size = toks[i].size;
+            i++;
+            for (int k = 0; k < obj_size && i+1 < n; k++) {
+                if (tok_eq(json, &toks[i], "exec"))
+                    tok_str(json, &toks[i+1], cfg->volume_exec, sizeof(cfg->volume_exec));
                 i += 2;
             }
         } else if (tok_eq(json, &toks[i], "clock")) {

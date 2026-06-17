@@ -209,7 +209,7 @@ static void ptr_button(void *data, struct wl_pointer *ptr,
                 setsid();
                 const char *home = getenv("HOME");
                 if (home) chdir(home);
-                execlp("pavucontrol", "pavucontrol", NULL);
+                execlp("/bin/sh", "sh", "-c", cfg->volume_exec, NULL);
                 _exit(127);
             }
         }

@@ -30,6 +30,7 @@ struct BarConfig {
     char icon_theme[64];
     char clock_fmt[64];
     char power_exec[512];
+    char volume_exec[512];
 
     struct BarQLButton ql[BAR_MAX_QL];
     int  ql_count;
