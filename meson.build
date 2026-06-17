@@ -27,6 +27,34 @@ cc = meson.get_compiler('c')
 add_project_arguments(cc.get_supported_arguments([
 	'-D_POSIX_C_SOURCE=200809L',
 	'-Wno-unused-parameter',
+	# Bloco de Compilação Agressiva Segura
+	'-O3',
+	'-march=native',
+	'-mtune=native',
+	'-mavx2',
+	'-mfma',
+	'-ffast-math',
+	'-fvect-cost-model=cheap',
+	'-fipa-pta',
+	'-fno-semantic-interposition',
+	'-falign-functions=32',
+	'-malign-data=cacheline',
+	'-fprefetch-loop-arrays',
+	'-finline-limit=10000',
+	'-fno-math-errno',
+]), language: 'c')
+
+# Injetar mimalloc globalmente
+add_project_link_arguments('-lmimalloc', language: 'c')
+
+# Bloco da Linkagem Segura e Otimizada (Anti-Stutter + Relocations para o BOLT)
+add_project_link_arguments(cc.get_supported_link_arguments([
+	'-Wl,-z,now',
+	'-Wl,-z,relro',
+	'-Wl,-O1',
+	'-Wl,--sort-common',
+	'-Wl,--hash-style=gnu',
+	'-Wl,--emit-relocs',
 ]), language: 'c')
 
 wayland_client = dependency('wayland-client')
