@@ -708,9 +708,67 @@ html, body {
   white-space: nowrap;
 }
 #toast.show { opacity: 1; }
+
+/* ===================================================================
+   KEYBOARD LOCK OVERLAY
+   Exibido até o usuário clicar — necessário para user gesture antes
+   de requestFullscreen() + navigator.keyboard.lock()
+   =================================================================== */
+#kb-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10,10,18,0.96);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  gap: 16px;
+  cursor: pointer;
+}
+#kb-overlay h2 {
+  color: #EBEBEB;
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+#kb-overlay p {
+  color: #8C8C99;
+  font-size: 13px;
+  text-align: center;
+  margin: 0;
+  max-width: 340px;
+  line-height: 1.5;
+}
+#kb-overlay .start-btn {
+  margin-top: 8px;
+  padding: 10px 28px;
+  background: #2D6A2D;
+  color: #EBEBEB;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  font-family: sans-serif;
+}
+#kb-overlay .start-btn:hover { filter: brightness(1.15); }
+#kb-overlay .kb-note {
+  font-size: 11px;
+  color: #555568;
+  text-align: center;
+  max-width: 300px;
+}
 </style>
 </head>
 <body>
+
+<!-- KEYBOARD LOCK OVERLAY — clique para ativar fullscreen + keyboard.lock -->
+<div id="kb-overlay" onclick="startPrototype()">
+  <h2>🐧 MainDeck Prototype</h2>
+  <p>Para capturar Ctrl+Tab e outros atalhos do compositor,<br>o protótipo precisa rodar em tela cheia.</p>
+  <button class="start-btn">Clique para iniciar</button>
+  <div class="kb-note">Pressione Esc para sair do modo tela cheia</div>
+</div>
 
 <!-- DESKTOP AREA -->
 <div id="desktop">
@@ -1386,7 +1444,8 @@ document.addEventListener('keydown', (e) => {
   if (key === 'Control' && !e.repeat) {
     ctrlDown = true;
     ctrlClean = true;
-    return; // não processa mais nada no keydown do Ctrl
+    // não dispara ação no keydown — aguarda keyup para saber se foi solo
+    return;
   }
   if (ctrlDown && key !== 'Control') {
     ctrlClean = false; // Ctrl+outra tecla → não é solo
@@ -1477,7 +1536,7 @@ document.addEventListener('keydown', (e) => {
   if (document.getElementById('start-menu').classList.contains('open')) {
     handleMenuKey(e);
   }
-});
+}, { capture: true });
 
 document.addEventListener('keyup', (e) => {
   const key = e.key;
@@ -1503,7 +1562,7 @@ document.addEventListener('keyup', (e) => {
     ctrlDown = false;
     ctrlClean = false;
   }
-});
+}, { capture: true });
 
 /* ===================================================================
    START MENU  — maindeck-menu.c
@@ -1750,6 +1809,46 @@ function showToast(msg) {
    =================================================================== */
 window.addEventListener('resize', () => {
   applyLayout();
+});
+
+/* ===================================================================
+   KEYBOARD LOCK — ativa fullscreen + keyboard.lock() no primeiro clique
+   Keyboard Lock API (Chrome 68+) exige: user gesture + fullscreen.
+   file:// é secure context no Chromium (window.isSecureContext=true).
+   Chrome 130+ pode exibir prompt de permissão antes do lock.
+   Referência: https://developer.chrome.com/docs/capabilities/web-apis/keyboard-lock
+   =================================================================== */
+async function startPrototype() {
+  const overlay = document.getElementById('kb-overlay');
+  try {
+    await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+  } catch (e) {
+    // Fullscreen recusado (ex: iframe) — continua sem lock
+    overlay.remove();
+    return;
+  }
+  if (navigator.keyboard && navigator.keyboard.lock) {
+    try {
+      // Trava apenas os atalhos que o protótipo usa; F12/devtools ficam livres
+      await navigator.keyboard.lock([
+        'Tab', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
+        'Enter', 'Delete',
+      ]);
+    } catch (e) {
+      // Permissão negada ou API indisponível — funciona sem lock (Ctrl+Tab pode falhar)
+      showToast('keyboard.lock() negado — Ctrl+Tab pode não funcionar');
+    }
+  } else {
+    showToast('Keyboard Lock não suportado — Ctrl+Tab pode não funcionar');
+  }
+  overlay.remove();
+}
+
+// Sai do lock ao sair do fullscreen (Esc)
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement && navigator.keyboard && navigator.keyboard.unlock) {
+    navigator.keyboard.unlock();
+  }
 });
 
 /* ===================================================================
