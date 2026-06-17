@@ -1371,20 +1371,26 @@ function handleTabTap() {
    Prototype substitutes Super → Alt (captured by compositor)
    =================================================================== */
 const keydownState = {};
+/* ctrlClean: true enquanto Ctrl está pressionado e nenhuma outra tecla foi
+   acionada junto — espelha o comportamento do keyd overload(meta, f19):
+   só dispara a ação solo (menu) se Ctrl for solto sem combo. */
+let ctrlDown = false;
+let ctrlClean = false;
 
 document.addEventListener('keydown', (e) => {
-  // Don't interfere with typing in inputs (except our known ones)
-  if (document.activeElement !== document.body &&
-      document.activeElement !== document.getElementById('term-output') &&
-      !document.activeElement.classList.contains('google-search') &&
-      document.activeElement.tagName !== 'INPUT' &&
-      document.activeElement !== document.getElementById('menu-search')) {
-    // If focused on term area
-  }
-
   const ctrl = e.ctrlKey;
   const shift = e.shiftKey;
   const key = e.key;
+
+  // Rastreia Ctrl solo: marca clean no press, suja em qualquer combo
+  if (key === 'Control' && !e.repeat) {
+    ctrlDown = true;
+    ctrlClean = true;
+    return; // não processa mais nada no keydown do Ctrl
+  }
+  if (ctrlDown && key !== 'Control') {
+    ctrlClean = false; // Ctrl+outra tecla → não é solo
+  }
 
   // Prevent Ctrl combos from triggering browser shortcuts
   if (ctrl) e.preventDefault();
@@ -1461,12 +1467,9 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  // F19 ou Ctrl sozinho: SPAWN_LAUNCHER (toggle menu) — keyd maps lone Win → F19
-  if ((key === 'F19' || (key === 'Control' && !shift)) && !e.repeat) {
-    if (!keydownState['menu']) {
-      keydownState['menu'] = true;
-      toggleMenu();
-    }
+  // F19: SPAWN_LAUNCHER (keysym interno do keyd, mantido por compatibilidade)
+  if (key === 'F19' && !e.repeat) {
+    toggleMenu();
     return;
   }
 
@@ -1494,8 +1497,11 @@ document.addEventListener('keyup', (e) => {
   if ((key === 'Shift' || key === 'Control') && keydownState['Ctrl+Shift']) {
     keydownState['Ctrl+Shift'] = false;
   }
+  // Ctrl solto limpo (sem combo) → abre/fecha menu, igual ao overload(meta,f19) do keyd
   if (key === 'Control') {
-    keydownState['menu'] = false;
+    if (ctrlClean) toggleMenu();
+    ctrlDown = false;
+    ctrlClean = false;
   }
 });
 
