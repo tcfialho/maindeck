@@ -668,35 +668,78 @@ html, body {
 }
 
 /* ===================================================================
-   P7 — "Dois idiomas separados"
-   Layout (swap, maximize) = geometria. Conteúdo (spawn, close, deck) = fade.
+   P5 — "Cinematográfico" (spring, blur, stagger)
    =================================================================== */
-/* Spawn/close */
-@keyframes p7Spawn  { from { opacity:0; transform:scale(0.97); } to { opacity:1; transform:scale(1); } }
-@keyframes p7Close  { from { opacity:1; transform:scale(1); } to { opacity:0; transform:scale(0.96); } }
-/* Foco pulse */
-@keyframes p7Pulse  { 0%{transform:scale(1)} 50%{transform:scale(1.007)} 100%{transform:scale(1)} }
-/* Deck fade */
-@keyframes p7FadeIn { from { opacity:0; } to { opacity:1; } }
-/* Maximize */
-@keyframes p7Expand  { from { opacity:0.5; transform:scale(0.93); } to { opacity:1; transform:scale(1); } }
-@keyframes p7Retract { from { opacity:1; transform:scale(1); } to { opacity:0.6; transform:scale(0.94); } }
-/* Menu */
-@keyframes p7MenuUp { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
-
-/* Swap usa CSS transition na geometria */
-.window {
-  transition: left .20s ease-in-out, top .20s ease-in-out,
-              width .20s ease-in-out, height .20s ease-in-out,
-              border-bottom-color .10s;
+@keyframes springExpand {
+  0%   { transform: scale(0.88); opacity:0.4; }
+  65%  { transform: scale(1.025); opacity:1; }
+  82%  { transform: scale(0.994); }
+  100% { transform: scale(1); }
 }
-.window.anim-spawn   { animation: p7Spawn  .14s ease-out forwards; }
-.window.anim-close   { animation: p7Close  .09s ease-out forwards; pointer-events:none; }
-.window.anim-pulse   { animation: p7Pulse  .14s ease-in-out forwards; }
-.window.anim-fadein  { animation: p7FadeIn .13s ease-out forwards; }
-.window.anim-expand  { animation: p7Expand  .18s cubic-bezier(.2,0,0,1) forwards; }
-.window.anim-retract { animation: p7Retract .15s ease-out forwards; }
-#start-menu.open     { animation: p7MenuUp .16s ease-out both; transform-origin:bottom left; }
+@keyframes springRetract {
+  0%   { transform: scale(1); opacity:1; }
+  40%  { transform: scale(1.015); }
+  100% { transform: scale(0.88); opacity:0.3; }
+}
+@keyframes blurSpawn {
+  from { opacity:0; transform: scale(0.90); filter: blur(8px); }
+  to   { opacity:1; transform: scale(1);    filter: blur(0); }
+}
+@keyframes blurClose {
+  from { opacity:1; transform: scale(1);    filter: blur(0); }
+  to   { opacity:0; transform: scale(0.90); filter: blur(8px); }
+}
+/* P5.1 — FOCO POR ELEVAÇÃO/PROFUNDIDADE (substitui o glow azul).
+   A janela focada "vem à frente": levanta de leve (translateY/scale) e projeta
+   uma sombra dramática; depois assenta mantendo uma sombra de destaque.
+   Dramático via depth, não via brilho — combina com a pegada cinematográfica. */
+@keyframes liftIn {
+  0%   { transform: translateY(0)    scale(1);     box-shadow: 0 0 0 rgba(0,0,0,0); }
+  55%  { transform: translateY(-6px) scale(1.012); box-shadow: 0 18px 40px rgba(0,0,0,0.55); }
+  100% { transform: translateY(0)    scale(1);     box-shadow: 0 8px 24px rgba(0,0,0,0.40); }
+}
+/* sombra persistente de "janela em foco" (fica enquanto for o alvo) */
+.window.depth-focus { box-shadow: 0 8px 24px rgba(0,0,0,0.40); z-index: 5; }
+
+@keyframes cardFlip {
+  0%   { transform: rotateY(0deg); }
+  30%  { transform: rotateY(-4deg); }
+  70%  { transform: rotateY(4deg); }
+  100% { transform: rotateY(0deg); }
+}
+@keyframes menuStagger {
+  from { opacity:0; transform: translateY(14px); }
+  to   { opacity:1; transform: translateY(0); }
+}
+
+.window { perspective: 1200px; }
+.window.anim-maximize { animation: springExpand  0.28s cubic-bezier(0.2,0,0,1) forwards; }
+.window.anim-restore  { animation: springRetract 0.25s cubic-bezier(0.2,0,0,1) forwards; }
+.window.anim-spawn    { animation: blurSpawn     0.20s ease-out forwards; }
+.window.anim-close    { animation: blurClose     0.12s ease-out forwards; pointer-events:none; }
+.window.anim-lift     { animation: liftIn        0.26s cubic-bezier(0.2,0,0,1) forwards; }
+.window.anim-flip     { animation: cardFlip      0.25s ease-in-out forwards; }
+
+#start-menu.open .menu-item {
+  opacity: 0;
+  animation: menuStagger 0.18s ease-out forwards;
+}
+/* stagger: cada item atrasa 18ms */
+#start-menu.open .menu-item:nth-child(1)  { animation-delay: 0ms; }
+#start-menu.open .menu-item:nth-child(2)  { animation-delay: 18ms; }
+#start-menu.open .menu-item:nth-child(3)  { animation-delay: 36ms; }
+#start-menu.open .menu-item:nth-child(4)  { animation-delay: 54ms; }
+#start-menu.open .menu-item:nth-child(5)  { animation-delay: 72ms; }
+#start-menu.open .menu-item:nth-child(6)  { animation-delay: 90ms; }
+#start-menu.open .menu-item:nth-child(7)  { animation-delay: 108ms; }
+#start-menu.open .menu-item:nth-child(8)  { animation-delay: 126ms; }
+#start-menu.open .menu-item:nth-child(9)  { animation-delay: 144ms; }
+#start-menu.open .menu-item:nth-child(10) { animation-delay: 162ms; }
+#start-menu.open .menu-item:nth-child(11) { animation-delay: 180ms; }
+#start-menu.open .menu-item:nth-child(12) { animation-delay: 198ms; }
+
+@keyframes menuBgIn { from { opacity:0; transform: translateY(10px) scale(0.97); } to { opacity:1; transform: translateY(0) scale(1); } }
+#start-menu.open { animation: menuBgIn 0.18s ease-out both; transform-origin: bottom left; }
 
 /* ===================================================================
    KEYBOARD LOCK OVERLAY
@@ -1165,6 +1208,9 @@ function applyLayout() {
     const el = document.getElementById('win-' + w.id);
     if (el) el.style.display = 'none';
   });
+
+  // P5.1: a sombra de destaque sempre acompanha o alvo visível
+  setDepthFocus();
 }
 
 function setWinGeom(el, x, y, w, h) {
@@ -1242,28 +1288,34 @@ function openApp(id) {
     }
   }
 
+  // New window: insert at head
   const app = APPS[id];
   if (!app) return;
+
   wm.windows.unshift({ id, title: app.title, appId: app.appId });
-  wm.target_index = 0; wm.maximized = false;
-  noAnim(() => { applyLayout(); renderTaskbar(); });
-  animClass(document.getElementById('win-'+id), 'anim-spawn', 140);
+  wm.target_index = 0;
+  wm.maximized = false;
+  applyLayout(); renderTaskbar();
+  animClass(document.getElementById('win-' + id), 'anim-spawn', 200);
 }
 
 function closeWindow(id) {
   const idx = wm.windows.findIndex(w => w.id === id);
   if (idx < 0) return;
-  const el = document.getElementById('win-'+id);
+  const el = document.getElementById('win-' + id);
   const doClose = () => {
-    const i = wm.windows.findIndex(w => w.id === id); if (i < 0) return;
+    const i = wm.windows.findIndex(w => w.id === id);
+    if (i < 0) return;
     wm.windows.splice(i, 1);
-    if (wm.target_index >= wm.windows.length) wm.target_index = Math.max(0, wm.windows.length-1);
+    if (wm.target_index >= wm.windows.length) wm.target_index = Math.max(0, wm.windows.length - 1);
     if (wm.target_index > 1) wm.target_index = 1;
     wm.maximized = false;
-    noAnim(() => { applyLayout(); renderTaskbar(); });
+    applyLayout(); renderTaskbar();
   };
-  if (el && idx < 2) { animClass(el, 'anim-close', 90); setTimeout(doClose, 90); }
-  else doClose();
+  if (el && idx < 2) {
+    animClass(el, 'anim-close', 120);
+    setTimeout(doClose, 120);
+  } else { doClose(); }
 }
 
 function closeWindowByIdx(idx) {
@@ -1272,88 +1324,72 @@ function closeWindowByIdx(idx) {
   closeWindow(id);
 }
 
-function animClass(el, cls, ms) {
+function animClass(el, cls, duration) {
   if (!el) return;
-  el.classList.remove(cls); void el.offsetWidth;
+  el.classList.remove(cls);
+  void el.offsetWidth;
   el.classList.add(cls);
-  setTimeout(() => el.classList.remove(cls), ms);
+  setTimeout(() => el.classList.remove(cls), duration);
 }
-function noAnim(fn) {
-  Object.keys(APPS).forEach(id => {
-    const e = document.getElementById('win-'+id);
-    if (e) e.style.transition = 'none';
-  });
-  fn();
-  requestAnimationFrame(() => Object.keys(APPS).forEach(id => {
-    const e = document.getElementById('win-'+id);
-    if (e) e.style.transition = '';
-  }));
-}
-function swapGeom() {
-  /* P7 swap: anima geometria via CSS transition */
-  const mainEl = document.getElementById('win-' + wm.windows[0].id);
-  const deckEl = document.getElementById('win-' + wm.windows[1].id);
-  const desktop = document.getElementById('desktop');
-  const W = desktop.clientWidth, H = desktop.clientHeight;
-  const mw = Math.floor(W*2/3), dw = W - mw;
-  const wM = mw - Math.floor(GAP/2), wD = dw - Math.floor(GAP/2), dX = mw + Math.floor(GAP/2);
-  // congela
-  if (mainEl) mainEl.style.transition = 'none';
-  if (deckEl) deckEl.style.transition = 'none';
-  // posição "antes" (invertida)
-  if (mainEl) { mainEl.style.left = dX+'px'; mainEl.style.width = wD+'px'; mainEl.style.height = H+'px'; }
-  if (deckEl) { deckEl.style.left = '0px';   deckEl.style.width = wM+'px'; deckEl.style.height = H+'px'; }
-  // anima para posição correta
-  requestAnimationFrame(() => {
-    if (mainEl) { mainEl.style.transition = ''; mainEl.style.left = '0px';  mainEl.style.width = wM+'px'; }
-    if (deckEl) { deckEl.style.transition = ''; deckEl.style.left = dX+'px'; deckEl.style.width = wD+'px'; }
-    if (mainEl) mainEl.classList.toggle('focused', wm.target_index === 0);
-    if (deckEl) deckEl.classList.toggle('focused', wm.target_index === 1);
-    renderTaskbar();
+
+/* P5.1: mantém a sombra de destaque só na janela-alvo visível */
+function setDepthFocus() {
+  const visible = wm.windows.slice(0, 2);
+  visible.forEach((w, i) => {
+    const el = document.getElementById('win-' + w.id);
+    if (!el) return;
+    el.classList.toggle('depth-focus', i === wm.target_index && !wm.maximized);
   });
 }
 
-/* ACTION_TOGGLE_TARGET */
+/* ACTION_TOGGLE_TARGET — P5.1: foco "levanta" à frente (elevação + sombra) */
 function actionToggleTarget() {
   if (wm.windows.length < 2) return;
   wm.target_index = wm.target_index === 0 ? 1 : 0;
-  noAnim(() => { applyLayout(); renderTaskbar(); });
-  const f = wm.windows[wm.target_index];
-  if (f) animClass(document.getElementById('win-'+f.id), 'anim-pulse', 140);
+  applyLayout(); renderTaskbar();
+  setDepthFocus();
+  const focused = wm.windows[wm.target_index];
+  if (focused) animClass(document.getElementById('win-' + focused.id), 'anim-lift', 260);
   showToast('Toggle target → ' + (wm.target_index === 0 ? 'MAIN' : 'DECK'));
 }
 
-/* ACTION_SWAP_MAIN_DECK — geometria animada, sem ghost */
+/* ACTION_SWAP_MAIN_DECK */
 function actionSwapMainDeck() {
   if (wm.windows.length < 2) return;
-  const tmp = wm.windows[0]; wm.windows[0] = wm.windows[1]; wm.windows[1] = tmp;
-  // foco segue a janela: se estava em 0, agora está em 1 e vice-versa
-  wm.target_index = wm.target_index === 0 ? 1 : 0;
-  swapGeom();
+  const mainEl = document.getElementById('win-' + wm.windows[0].id);
+  const deckEl = document.getElementById('win-' + wm.windows[1].id);
+  if (mainEl) animClass(mainEl, 'anim-flip', 250);
+  if (deckEl) animClass(deckEl, 'anim-flip', 250);
+  setTimeout(() => {
+    const tmp = wm.windows[0]; wm.windows[0] = wm.windows[1]; wm.windows[1] = tmp;
+    // foco segue a janela: se estava em 0, agora está em 1 e vice-versa
+    wm.target_index = wm.target_index === 0 ? 1 : 0;
+    applyLayout(); renderTaskbar();
+  }, 125);
   showToast('Swap MAIN ↔ DECK');
 }
 
-/* ACTION_DECK_NEXT — fade-in do novo deck */
+/* ACTION_DECK_NEXT */
 function actionDeckNext() {
   if (wm.windows.length <= 2) { showToast('Sem janela invisível à direita'); return; }
   const [deck] = wm.windows.splice(1, 1);
   wm.windows.push(deck);
   wm.target_index = 1;
-  noAnim(() => { applyLayout(); renderTaskbar(); });
-  const nd = wm.windows[1];
-  if (nd) animClass(document.getElementById('win-'+nd.id), 'anim-fadein', 130);
+  applyLayout(); renderTaskbar();
+  const newDeck = wm.windows[1];
+  if (newDeck) animClass(document.getElementById('win-' + newDeck.id), 'anim-spawn', 200);
   showToast('Deck → próximo');
 }
 
-/* ACTION_DECK_PREV — fade-in do novo deck */
+/* ACTION_DECK_PREV */
 function actionDeckPrev() {
   if (wm.windows.length <= 2) { showToast('Sem janela invisível à esquerda'); return; }
   const [last] = wm.windows.splice(wm.windows.length - 1, 1);
   wm.windows.splice(1, 0, last);
   wm.target_index = 1;
-  noAnim(() => { applyLayout(); renderTaskbar(); });
-  const nd = wm.windows[1];
-  if (nd) animClass(document.getElementById('win-'+nd.id), 'anim-fadein', 130);
+  applyLayout(); renderTaskbar();
+  const newDeck = wm.windows[1];
+  if (newDeck) animClass(document.getElementById('win-' + newDeck.id), 'anim-spawn', 200);
   showToast('Deck → anterior');
 }
 
@@ -1386,18 +1422,18 @@ function actionPromoteTargetToMain() {
 function actionMaximize() {
   if (wm.windows.length === 0) return;
   wm.maximized = true;
-  noAnim(() => { applyLayout(); renderTaskbar(); });
-  const t = wm.windows[wm.target_index] || wm.windows[0];
-  if (t) animClass(document.getElementById('win-'+t.id), 'anim-expand', 180);
+  applyLayout(); renderTaskbar();
+  const target = wm.windows[wm.target_index] || wm.windows[0];
+  if (target) animClass(document.getElementById('win-' + target.id), 'anim-maximize', 280);
   showToast('Maximizado');
 }
 
 /* ACTION_RESTORE */
 function actionRestore() {
   wm.maximized = false;
-  noAnim(() => { applyLayout(); renderTaskbar(); });
-  const t = wm.windows[wm.target_index] || wm.windows[0];
-  if (t) animClass(document.getElementById('win-'+t.id), 'anim-retract', 150);
+  applyLayout(); renderTaskbar();
+  const target = wm.windows[wm.target_index] || wm.windows[0];
+  if (target) animClass(document.getElementById('win-' + target.id), 'anim-restore', 250);
   showToast('Restaurado');
 }
 

@@ -1341,6 +1341,8 @@ function actionSwapMainDeck() {
   if (deckEl) animClass(deckEl, 'anim-flip', 250);
   setTimeout(() => {
     const tmp = wm.windows[0]; wm.windows[0] = wm.windows[1]; wm.windows[1] = tmp;
+    // foco segue a janela: se estava em 0, agora está em 1 e vice-versa
+    wm.target_index = wm.target_index === 0 ? 1 : 0;
     applyLayout(); renderTaskbar();
   }, 125);
   showToast('Swap MAIN ↔ DECK');

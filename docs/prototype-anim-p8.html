@@ -1293,6 +1293,8 @@ function actionSwapMainDeck() {
   animClass(document.getElementById('win-'+bId), 'anim-fadeout', 80);
   setTimeout(() => {
     const tmp = wm.windows[0]; wm.windows[0] = wm.windows[1]; wm.windows[1] = tmp;
+    // foco segue a janela: se estava em 0, agora está em 1 e vice-versa
+    wm.target_index = wm.target_index === 0 ? 1 : 0;
     noAnim(() => { applyLayout(); renderTaskbar(); });
     animClass(document.getElementById('win-'+wm.windows[0].id), 'anim-fadein', 100);
     animClass(document.getElementById('win-'+wm.windows[1].id), 'anim-fadein', 100);
