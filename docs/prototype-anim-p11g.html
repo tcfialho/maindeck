@@ -1,0 +1,2290 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MainDeck Prototype P11g — inverso (escala em grupo, slide sozinha · abre da direita)</title>
+<style>
+/* ===================================================================
+   ROOT VARIABLES — extraídas de bar-render.c macros
+   COL_BG = 0.11,0.11,0.14 = #1C1C24
+   COL_TEXT = 0.92,0.92,0.92 = #EBEBEB
+   COL_TEXT_DIM = 0.55,0.55,0.60 = #8C8C99
+   COL_SEPARATOR = 0.25,0.25,0.30 = #404040 @0.8
+   COL_ACTIVE accent = #2E5CB3
+   Taskbar grad top = rgba(56,56,77,0.9)   (0.22,0.22,0.30)
+   Taskbar grad bot = rgba(33,33,43,0.9)   (0.13,0.13,0.17)
+   Window border active = #2563eb          (37,99,235)
+   Gap = 12px, Border = 3px
+   Bar height = 32px
+   =================================================================== */
+:root {
+  --bar-h: 32px;
+  --col-bg: #1C1C24;
+  --col-text: #EBEBEB;
+  --col-text-dim: #8C8C99;
+  --col-sep: rgba(64,64,77,0.8);
+  --col-btn-hover: rgba(77,77,97,0.55);
+  --col-active: #2E5CB3;
+  --col-active-ul: rgba(77,146,255,1.0);   /* 0.30,0.57,1.0 */
+  --col-border-focus: #2563eb;
+  --gap: 12px;
+  --border: 3px;
+  --btn-radius: 4px;
+  --icon-size: 18px;
+  --btn-pad: 8px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%; height: 100%;
+  background: #111118;
+  font-family: sans-serif;
+  font-size: 13px;
+  color: var(--col-text);
+  overflow: hidden;
+  user-select: none;
+}
+
+/* ===================================================================
+   DESKTOP AREA
+   =================================================================== */
+#desktop {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  bottom: var(--bar-h);
+  background: #0e0e14;
+  overflow: hidden;
+}
+
+/* ===================================================================
+   WINDOW TILES  — wm-layout.c
+   MAIN = 2/3 width, DECK = 1/3, GAP=12, BORDER_WIDTH=3
+   BORDER_WIDTH is used for X/Y offset and size reduction only —
+   NOT as a visual border on all sides.
+   Active window: 2px blue bottom-only underline (#2563eb)
+   Inactive: EDGES_NONE (no border at all)
+   =================================================================== */
+.window {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  border: none;
+  border-bottom: 2px solid transparent;  /* inactive = invisible */
+  border-radius: 2px;
+  overflow: hidden;
+  transition: border-bottom-color 0.08s;
+  background: #1a1a22;
+  /* BORDER_WIDTH=3 offset is accounted in JS positioning */
+}
+
+.window.focused {
+  border-bottom-color: var(--col-border-focus);  /* #2563eb = chan(37,99,235) */
+}
+
+.window.maximized {
+  top: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  z-index: 10;
+}
+
+/* Title bar of simulated app */
+.win-titlebar {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.win-traffic {
+  display: flex; gap: 5px;
+}
+.win-dot {
+  width: 11px; height: 11px; border-radius: 50%;
+  cursor: pointer;
+}
+.win-dot.close { background: #ff5f57; }
+.win-dot.min   { background: #febc2e; }
+.win-dot.max   { background: #28c840; }
+
+.win-title {
+  flex: 1;
+  text-align: center;
+  font-size: 11px;
+  color: var(--col-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.win-content {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+
+/* ===================================================================
+   CHROME WINDOW CONTENT
+   =================================================================== */
+.chrome-bar {
+  height: 36px;
+  background: #202124;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  gap: 6px;
+}
+
+.chrome-tabs {
+  display: flex;
+  align-items: flex-end;
+  height: 100%;
+  gap: 2px;
+}
+
+.chrome-tab {
+  height: 28px;
+  padding: 0 12px;
+  background: #3c4043;
+  border-radius: 8px 8px 0 0;
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  gap: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chrome-tab.active { background: #292a2d; }
+
+.chrome-tab-favicon {
+  width: 14px; height: 14px;
+  border-radius: 2px;
+  background: #4285f4;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 8px; color: white; font-weight: bold;
+}
+
+.chrome-omnibar {
+  height: 32px;
+  background: #292a2d;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  gap: 8px;
+  border-bottom: 1px solid #3c4043;
+}
+
+.chrome-nav-btns { display: flex; gap: 4px; }
+.chrome-nav-btn {
+  width: 28px; height: 28px;
+  border: none; background: transparent;
+  color: #9aa0a6; font-size: 16px;
+  cursor: pointer; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+}
+.chrome-nav-btn:hover { background: rgba(255,255,255,0.08); }
+
+.chrome-url-bar {
+  flex: 1;
+  height: 26px;
+  background: #1a1a1a;
+  border: 1px solid #3c4043;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 12px;
+  color: #e8eaed;
+  gap: 6px;
+}
+.chrome-url-icon { color: #5f6368; font-size: 11px; }
+.chrome-url-text { flex: 1; }
+.chrome-favicon-big { width: 16px; height: 16px; background: #4285f4; border-radius: 2px; }
+
+.chrome-page {
+  background: white;
+  color: #202124;
+  height: calc(100% - 68px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px 20px 20px;
+  gap: 20px;
+  overflow: auto;
+}
+
+.google-logo {
+  font-size: 48px;
+  font-weight: bold;
+  letter-spacing: -2px;
+}
+.g-blue { color: #4285f4; }
+.g-red { color: #ea4335; }
+.g-yellow { color: #fbbc05; }
+.g-green { color: #34a853; }
+
+.google-search {
+  width: 100%;
+  max-width: 420px;
+  height: 40px;
+  border: 1px solid #dfe1e5;
+  border-radius: 24px;
+  padding: 0 20px;
+  font-size: 14px;
+  outline: none;
+  color: #202124;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+.google-search:focus { border-color: #4285f4; box-shadow: 0 0 0 2px rgba(66,133,244,0.2); }
+
+/* ===================================================================
+   PCMANFM FILE MANAGER
+   =================================================================== */
+.fm-toolbar {
+  height: 34px;
+  background: #252530;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  gap: 4px;
+  border-bottom: 1px solid #33334a;
+}
+.fm-btn {
+  height: 26px;
+  padding: 0 8px;
+  border: none;
+  background: transparent;
+  color: var(--col-text-dim);
+  cursor: pointer;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.fm-btn:hover { background: var(--col-btn-hover); color: var(--col-text); }
+
+.fm-path-bar {
+  flex: 1;
+  height: 24px;
+  background: #1a1a26;
+  border: 1px solid #3a3a55;
+  border-radius: 3px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: #a0a0cc;
+  display: flex; align-items: center;
+}
+
+.fm-layout {
+  display: flex;
+  height: calc(100% - 34px);
+}
+
+.fm-sidebar {
+  width: 130px;
+  background: #1f1f2b;
+  border-right: 1px solid #2d2d40;
+  padding: 8px 0;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.fm-sidebar-item {
+  padding: 5px 12px;
+  font-size: 11px;
+  color: var(--col-text-dim);
+  cursor: pointer;
+  display: flex; align-items: center; gap: 7px;
+  border-radius: 3px;
+  margin: 1px 4px;
+}
+.fm-sidebar-item:hover { background: rgba(255,255,255,0.06); color: var(--col-text); }
+.fm-sidebar-item.active { background: rgba(46,92,179,0.35); color: var(--col-text); }
+
+.fm-files {
+  flex: 1;
+  background: #1a1a26;
+  padding: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 6px;
+  overflow-y: auto;
+}
+
+.fm-file {
+  width: 72px;
+  height: 80px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: center;
+}
+.fm-file:hover { background: rgba(255,255,255,0.07); }
+.fm-file.selected { background: rgba(46,92,179,0.45); }
+
+.fm-file-icon {
+  font-size: 28px;
+  line-height: 1;
+}
+.fm-file-name {
+  font-size: 10px;
+  color: var(--col-text);
+  word-break: break-word;
+  line-height: 1.2;
+  max-width: 68px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* ===================================================================
+   KITTY TERMINAL
+   =================================================================== */
+.term-content {
+  background: #0a0a0f;
+  color: #c0c0d0;
+  padding: 8px 10px;
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.term-prompt { color: #7ec8e3; }
+.term-path   { color: #a9e07d; }
+.term-dollar { color: #c0c0d0; }
+.term-cmd    { color: #f8f8f8; }
+.term-output { color: #888; }
+.term-error  { color: #ff5555; }
+.term-cursor {
+  display: inline-block;
+  width: 8px; height: 14px;
+  background: #c0c0d0;
+  animation: blink 1s step-end infinite;
+  vertical-align: text-bottom;
+  margin-left: 2px;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ===================================================================
+   TASKBAR  — bar-render.c / bar-surface.c
+   Anchor: BOTTOM | LEFT | RIGHT, exclusive_zone = 32
+   Layer: TOP (not BOTTOM as summarized earlier — bar-surface.c line 101)
+   =================================================================== */
+#bar {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: var(--bar-h);
+  background: var(--col-bg);
+  display: flex;
+  align-items: stretch;
+  z-index: 100;
+  overflow: hidden;
+}
+
+/* QL section */
+#ql-section {
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* Tux start button: bg=#2D6A2D, width=2x */
+.ql-btn {
+  height: 28px;
+  border: none;
+  border-radius: var(--btn-radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0 var(--btn-pad);
+  color: var(--col-text);
+  background: transparent;
+  transition: background 0.08s;
+  flex-shrink: 0;
+}
+
+.ql-btn:hover { background: var(--col-btn-hover); }
+.ql-btn.has-bg:hover { filter: brightness(1.18); }
+
+/* No pseudo-element gap — gap is a real div in HTML (bar-render.c:L271: if (i==0) x+=10) */
+
+/* Separator */
+.sep {
+  width: 1px;
+  margin: 4px 3px;
+  background: var(--col-sep);
+  flex-shrink: 0;
+}
+
+/* Taskbar center */
+#taskbar {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  padding: 2px 4px;
+  gap: 2px;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.tb-btn {
+  height: 28px;
+  max-width: 160px;
+  min-width: 32px;
+  padding: 0 var(--btn-pad);
+  border: 1px solid rgba(140,140,165,0.5);
+  border-radius: var(--btn-radius);
+  background: linear-gradient(
+    to bottom,
+    rgba(56,56,77,0.9) 0%,
+    rgba(33,33,43,0.9) 100%
+  );
+  color: var(--col-text);
+  cursor: pointer;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.08s;
+  flex: 1;
+  position: relative;
+}
+
+.tb-btn:hover {
+  background: linear-gradient(
+    to bottom,
+    rgba(82,82,107,1.0) 0%,
+    rgba(46,46,61,1.0) 100%
+  );
+}
+
+/* Active underline — blue 2px bottom  (0.30,0.57,1.0) */
+.tb-btn.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 3px;
+  right: 3px;
+  height: 2px;
+  background: rgba(77,146,255,1.0);
+  border-radius: 1px;
+}
+
+.tb-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.tb-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+/* Status section (right-to-left: power, clock, battery, volume) */
+#status-section {
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.status-item {
+  height: 28px;
+  padding: 0 var(--btn-pad);
+  border-radius: var(--btn-radius);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--col-text);
+  white-space: nowrap;
+}
+.status-item:hover { background: var(--col-btn-hover); }
+
+.power-btn {
+  width: 34px;
+  justify-content: center;
+  color: rgba(255,89,89,1.0);   /* 1.0,0.35,0.35 */
+  font-size: 15px;
+  font-weight: bold;
+}
+.power-btn:hover { background: rgba(204,38,38,0.25); }
+
+/* ===================================================================
+   START MENU  — maindeck-menu.c
+   Size 320×480, anchor BOTTOM+LEFT, margin (0,0,2,2)
+   bg = rgba(0.11,0.11,0.14,1) = #1C1C24 approx
+   border = rgba(0.22,0.22,0.30,1) = #383847
+   rounded 10px
+   =================================================================== */
+#start-menu {
+  position: absolute;
+  bottom: calc(var(--bar-h) + 2px);
+  left: 2px;
+  width: 320px;
+  height: 480px;
+  background: rgba(28,28,36,1.0);
+  border: 1px solid rgba(56,56,71,1.0);
+  border-radius: 10px;
+  display: none;
+  flex-direction: column;
+  z-index: 200;
+  overflow: hidden;
+}
+#start-menu.open { display: flex; }
+
+/* Search box: y=12, x=12, w=296, h=34, rounded=6px */
+#menu-search-wrap {
+  margin: 12px 12px 0;
+  height: 34px;
+  background: rgba(17,17,27,1.0);
+  border: 1px solid rgba(56,56,77,0.7);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  gap: 6px;
+  flex-shrink: 0;
+}
+#menu-search-wrap.focused { border-color: #4285f4; }
+
+#menu-search-icon { color: var(--col-text-dim); font-size: 13px; }
+
+#menu-search {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--col-text);
+  font-size: 12px;
+  font-family: sans-serif;
+}
+#menu-search::placeholder { color: var(--col-text-dim); }
+
+/* List: starts at y=56 (12+34+10=56), items 34px tall */
+#menu-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+  margin-top: 8px;
+}
+#menu-list::-webkit-scrollbar { width: 4px; }
+#menu-list::-webkit-scrollbar-thumb { background: #333344; border-radius: 2px; }
+
+.menu-item {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 0 12px;
+  cursor: pointer;
+  border-radius: 5px;
+  margin: 0 4px;
+}
+.menu-item:hover, .menu-item.selected {
+  background: rgba(56,56,77,1.0);
+}
+
+.menu-icon {
+  width: 18px;
+  height: 18px;
+  font-size: 16px;
+  display: flex; align-items: center; justify-content: center;
+  margin-left: 2px;   /* icon at x=20: padding-left(12) + margin-left(2) + icon(18) = ends at x=32... */
+  margin-right: 8px;  /* gap to text: icon_end(38) → text_x(46) = 8px — maindeck-menu.c icon=x+20, text=x+46, icon_w=18 */
+  flex-shrink: 0;
+}
+
+.menu-label {
+  font-size: 12px;
+  color: var(--col-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ===================================================================
+   KEY LEGEND OVERLAY
+   =================================================================== */
+#legend {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: rgba(10,10,20,0.92);
+  border: 1px solid #2a2a3a;
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 10px;
+  color: var(--col-text-dim);
+  z-index: 300;
+  line-height: 1.6;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+}
+#legend strong {
+  display: block;
+  color: var(--col-text);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+#legend span.key {
+  background: #252535;
+  border: 1px solid #3a3a55;
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-family: monospace;
+  color: #aaa;
+  font-size: 10px;
+}
+#legend .note {
+  color: #666;
+  margin-top: 4px;
+  font-size: 9px;
+}
+
+/* ===================================================================
+   P11 — "Consolidado + Minimizar + Switch maximizado" (continuação do P10)
+   Igual ao P10, mas agora maximizado o "trocar app" (Ctrl+Tab / Ctrl+Tab+Tab /
+   Ctrl+←/→) faz um SLIDE DE TELA CHEIA (carrossel full-bleed) em vez do pulinho
+   de 28px do deck. Ver bloco "P11 — slide de TELA CHEIA" abaixo.
+   ---
+   P10 — "Consolidado + Minimizar" (continuação do P9)
+   Base de layout = P4.1 (janelas crescem/encolhem ocupando o espaço de
+   verdade via transição de geometria). Sobre ela montamos:
+     - ABRIR        = P4.1  (janela nasce em scale .86 + fade; reflow das demais)
+     - MAXIMIZAR/RESTAURAR = P4.1 (alvo cresce p/ tela cheia; a outra encolhe no lugar)
+     - SWAP main↔deck (Ctrl+hold+Tab) = P8 (geometria animada, freeze+invert+rAF)
+     - DECK SWITCH (Ctrl+Tab+Tab)     = P2.3 (antiga sai deslizando, nova entra deslizando)
+     - FOCO (Ctrl+Tab)                = P2.3 (nudge lateral mínimo na janela que foca)
+     - FECHAR (Ctrl+F4)              = P2.3 (alvo desliza p/ esquerda + fade)
+   NOVO no P10:
+     - MINIMIZAR (Ctrl+hold+↓)     = parquear de verdade; desce p/ a barra (pilha LIFO)
+     - DES-MINIMIZAR (Ctrl+hold+↑) = pop da pilha (última guardada) → sobe como MAIN
+     - Ctrl+↑/↓ TAP seguem maximizar/restaurar (tela cheia); o eixo "barra" é o HOLD.
+   As ações de keyframe (deck/foco) rodam dentro de noAnim() para suspender a
+   transição de geometria persistente e não "deslizar" o reposicionamento.
+   =================================================================== */
+.window {
+  transition:
+    left        0.20s ease-in-out,
+    top         0.20s ease-in-out,
+    width       0.20s ease-in-out,
+    height      0.20s ease-in-out,
+    transform   0.18s ease-in-out,
+    opacity     0.16s ease-in-out,
+    border-bottom-color 0.10s;
+  opacity: 1;
+  transform: scale(1);
+  transform-origin: center center;
+  pointer-events: auto;
+}
+/* Janela oculta: encolhe no lugar e some. NÃO mexe em left (sem deslize/fantasma).
+   scale 0.86 para o "diminui" ser sentido (não um shrink imperceptível). */
+.window.win-hidden {
+  opacity: 0;
+  transform: scale(0.86);
+  pointer-events: none;
+}
+/* Depois que a transição de saída termina, a janela é realmente tirada de cena
+   (display:none aplicado via JS) para não capturar cliques nem reaparecer. */
+
+/* -------------------------------------------------------------------
+   P2.3 keyframes — deck switch, foco (nudge) e fechar.
+   As variantes RIGHT deslizam p/ a borda direita da tela (recortadas pelo
+   #desktop overflow:hidden) — nunca cruzam o main.
+   As variantes LEFT deslizam em direção ao main; por isso o clip-path VIAJA
+   junto com o translate (inset esquerdo = |translateX|), fixando a borda
+   esquerda visível exatamente na divisão main↔deck. Assim o efeito fica
+   confinado à área do deck e não "surge por cima do main". (P11 fix)
+   ------------------------------------------------------------------- */
+@keyframes p9DeckOutRight { from { transform:translateX(0);    opacity:1; clip-path:inset(0); } to { transform:translateX(28px);  opacity:0; clip-path:inset(0); } }
+@keyframes p9DeckOutLeft  { from { transform:translateX(0);    opacity:1; clip-path:inset(0 0 0 0); }    to { transform:translateX(-28px); opacity:0; clip-path:inset(0 0 0 28px); } }
+@keyframes p9DeckInRight  { from { transform:translateX(28px); opacity:0; clip-path:inset(0); } to { transform:translateX(0);     opacity:1; clip-path:inset(0); } }
+@keyframes p9DeckInLeft   { from { transform:translateX(-28px);opacity:0; clip-path:inset(0 0 0 28px); } to { transform:translateX(0);     opacity:1; clip-path:inset(0 0 0 0); } }
+@keyframes p9CloseSlide   { from { transform:translateX(0);    opacity:1; clip-path:inset(0 0 0 0); } to { transform:translateX(-45%);  opacity:0; clip-path:inset(0 0 0 45%); } }
+@keyframes p9NudgeRight   { 0%{transform:translateX(0);} 45%{transform:translateX(8px);}  100%{transform:translateX(0);} }
+@keyframes p9NudgeLeft    { 0%{transform:translateX(0);} 45%{transform:translateX(-8px);} 100%{transform:translateX(0);} }
+
+.window.anim-deck-out-right { animation: p9DeckOutRight 0.13s ease-in  forwards; pointer-events:none; }
+.window.anim-deck-out-left  { animation: p9DeckOutLeft  0.13s ease-in  forwards; pointer-events:none; }
+.window.anim-deck-in-right  { animation: p9DeckInRight  0.20s ease-out forwards; }
+.window.anim-deck-in-left   { animation: p9DeckInLeft   0.20s ease-out forwards; }
+.window.anim-close-slide    { animation: p9CloseSlide   0.18s ease-in  forwards; pointer-events:none; }
+.window.anim-nudge-right    { animation: p9NudgeRight   0.16s ease-out forwards; }
+.window.anim-nudge-left     { animation: p9NudgeLeft    0.16s ease-out forwards; }
+
+/* -------------------------------------------------------------------
+   P10 — minimizar / des-minimizar (para/da barra).
+   Linguagem própria, distinta do fechar (que é lateral): a janela desce
+   em direção à barra encolhendo (origem na base) + fade. Restaurar é o
+   espelho: sobe da barra crescendo.
+   ------------------------------------------------------------------- */
+@keyframes p10Minimize   { from { transform:translateY(0) scale(1); opacity:1; } to { transform:translateY(60px) scale(0.55); opacity:0; } }
+@keyframes p10Unminimize { from { transform:translateY(60px) scale(0.55); opacity:0; } to { transform:translateY(0) scale(1); opacity:1; } }
+
+.window.anim-minimize   { transform-origin: bottom center; animation: p10Minimize   0.20s ease-in  forwards; pointer-events:none; }
+.window.anim-unminimize { transform-origin: bottom center; animation: p10Unminimize 0.22s ease-out forwards; }
+
+/* Botão de janela minimizada na taskbar: apagado + marcador "▾", sem o
+   sublinhado de ativo — distingue de uma janela só enfileirada no deck. */
+.tb-btn.minimized { opacity: 0.5; font-style: italic; }
+.tb-btn.minimized:hover { opacity: 0.8; }
+
+/* -------------------------------------------------------------------
+   P11 — slide de TELA CHEIA para "trocar app" maximizado.
+   Quando maximizado, alternar a janela visível (Ctrl+Tab / Ctrl+Tab+Tab /
+   Ctrl+←/→) faz um carrossel full-bleed: a nova entra inteira por um lado e a
+   antiga sai inteira pelo outro — em vez do pulinho de 28px do deck.
+   ------------------------------------------------------------------- */
+@keyframes p11FsInRight  { from { transform: translateX(100%);  } to { transform: translateX(0); } }
+@keyframes p11FsInLeft   { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+@keyframes p11FsOutLeft  { from { transform: translateX(0); } to { transform: translateX(-100%); } }
+@keyframes p11FsOutRight { from { transform: translateX(0); } to { transform: translateX(100%); } }
+
+.window.anim-fs-in-right  { animation: p11FsInRight  0.24s cubic-bezier(0.4,0,0.2,1) forwards; }
+.window.anim-fs-in-left   { animation: p11FsInLeft   0.24s cubic-bezier(0.4,0,0.2,1) forwards; }
+.window.anim-fs-out-left  { animation: p11FsOutLeft  0.24s cubic-bezier(0.4,0,0.2,1) forwards; pointer-events:none; }
+.window.anim-fs-out-right { animation: p11FsOutRight 0.24s cubic-bezier(0.4,0,0.2,1) forwards; pointer-events:none; }
+
+/* -------------------------------------------------------------------
+   P11a — ABRIR: a janela nova entra deslizando 45% da ESQUERDA → direita
+   + fade. É o FECHAR ao contrário (o fechar sai 45% p/ esquerda): abre vindo
+   da esquerda, fecha indo p/ esquerda — eixo consistente. Como a janela nova
+   vai pro slot MAIN (à esquerda), entrar pela esquerda vai p/ a borda da tela,
+   sem cruzar o deck. Slide puro, sem clip. Substitui o "crescer" do 4.1.
+   ------------------------------------------------------------------- */
+@keyframes p11aOpenSlide { from { transform:translateX(45%); opacity:0; } to { transform:translateX(0); opacity:1; } }
+.window.anim-open-slide { animation: p11aOpenSlide 0.18s ease-out forwards; }
+
+/* -------------------------------------------------------------------
+   P11c — "context-switch": SLIDE quando há vizinhas (entra/sai da fileira,
+   funde com o reflow), ESCALA quando a janela está sozinha (1ª que abre / última
+   que fecha — sem reflow competindo, a tela materializa/colapsa).
+   - Abrir sozinha: NÃO aplica o slide → mantém o "crescer" natural do showWin (4.1).
+   - Fechar a última: encolhe no lugar + fade (espelho do crescer).
+   ------------------------------------------------------------------- */
+@keyframes p11cCloseShrink { from { transform:scale(1); opacity:1; } to { transform:scale(0.86); opacity:0; } }
+.window.anim-close-shrink { animation: p11cCloseShrink 0.18s ease-in forwards; pointer-events:none; }
+
+/* ===================================================================
+   KEYBOARD LOCK OVERLAY
+   Exibido até o usuário clicar — necessário para user gesture antes
+   de requestFullscreen() + navigator.keyboard.lock()
+   =================================================================== */
+#kb-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10,10,18,0.96);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  gap: 16px;
+  cursor: pointer;
+}
+#kb-overlay h2 {
+  color: #EBEBEB;
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+#kb-overlay p {
+  color: #8C8C99;
+  font-size: 13px;
+  text-align: center;
+  margin: 0;
+  max-width: 340px;
+  line-height: 1.5;
+}
+#kb-overlay .start-btn {
+  margin-top: 8px;
+  padding: 10px 28px;
+  background: #2D6A2D;
+  color: #EBEBEB;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  font-family: sans-serif;
+}
+#kb-overlay .start-btn:hover { filter: brightness(1.15); }
+#kb-overlay .kb-note {
+  font-size: 11px;
+  color: #555568;
+  text-align: center;
+  max-width: 300px;
+}
+
+/* Tooltip */
+.tooltip {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(10,10,18,0.95);
+  color: var(--col-text);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid #2a2a3a;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.1s;
+  z-index: 500;
+}
+.ql-btn:hover .tooltip { opacity: 1; }
+
+/* ===================================================================
+   NOTIFICATION TOAST
+   =================================================================== */
+#toast {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20,20,30,0.95);
+  border: 1px solid #2a2a45;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 11px;
+  color: var(--col-text-dim);
+  z-index: 400;
+  opacity: 0;
+  transition: opacity 0.15s;
+  pointer-events: none;
+  white-space: nowrap;
+}
+#toast.show { opacity: 1; }
+
+</style>
+</head>
+<body>
+
+<!-- KEYBOARD LOCK OVERLAY — clique para ativar fullscreen + keyboard.lock -->
+<div id="kb-overlay" onclick="startPrototype()">
+  <h2>🐧 MainDeck Prototype P11g — INVERSO: cresce/encolhe em grupo · slide quando sozinha (1ª abre da DIREITA)</h2>
+  <p>Para capturar Ctrl+Tab e outros atalhos do compositor,<br>o protótipo precisa rodar em tela cheia.</p>
+  <button class="start-btn">Clique para iniciar</button>
+  <div class="kb-note">Pressione Esc para sair do modo tela cheia</div>
+</div>
+
+<!-- DESKTOP AREA -->
+<div id="desktop">
+
+  <!-- WINDOW: Chrome -->
+  <div class="window" id="win-chrome" data-id="chrome">
+    <div class="win-titlebar" style="background:#252530; border-bottom: 1px solid #1a1a24;">
+      <div class="win-traffic">
+        <div class="win-dot close" onclick="closeWindow('chrome')"></div>
+        <div class="win-dot min" onclick="minimizeWindowById('chrome')"></div>
+        <div class="win-dot max" onclick="toggleMaximize()"></div>
+      </div>
+      <div class="win-title">Google — Chromium</div>
+    </div>
+    <div class="win-content">
+      <!-- Chrome tabs bar -->
+      <div class="chrome-bar">
+        <div class="chrome-tabs">
+          <div class="chrome-tab active">
+            <div class="chrome-tab-favicon">G</div>
+            <span style="font-size:11px;color:#e8eaed;">Google</span>
+          </div>
+          <div class="chrome-tab">
+            <div class="chrome-tab-favicon" style="background:#ea4335;">Y</div>
+            <span style="font-size:11px;color:#9aa0a6;">YouTube</span>
+          </div>
+          <div class="chrome-tab" style="opacity:0.6;">
+            <span style="font-size:11px;color:#9aa0a6;">+</span>
+          </div>
+        </div>
+      </div>
+      <!-- Omnibar -->
+      <div class="chrome-omnibar">
+        <div class="chrome-nav-btns">
+          <button class="chrome-nav-btn">←</button>
+          <button class="chrome-nav-btn">→</button>
+          <button class="chrome-nav-btn" style="font-size:14px;">↻</button>
+        </div>
+        <div class="chrome-url-bar">
+          <span class="chrome-url-icon">🔒</span>
+          <span class="chrome-url-text">google.com</span>
+        </div>
+        <button class="chrome-nav-btn">⋮</button>
+      </div>
+      <!-- Page content -->
+      <div class="chrome-page">
+        <div class="google-logo">
+          <span class="g-blue">G</span><span class="g-red">o</span><span
+          class="g-yellow">o</span><span class="g-blue">g</span><span
+          class="g-green">l</span><span class="g-red">e</span>
+        </div>
+        <input class="google-search" type="text" placeholder="Pesquisar no Google ou inserir URL">
+      </div>
+    </div>
+  </div>
+
+  <!-- WINDOW: PCManFM -->
+  <div class="window" id="win-files" data-id="files" style="display:none;">
+    <div class="win-titlebar" style="background:#202030; border-bottom: 1px solid #1a1a2a;">
+      <div class="win-traffic">
+        <div class="win-dot close" onclick="closeWindow('files')"></div>
+        <div class="win-dot min" onclick="minimizeWindowById('files')"></div>
+        <div class="win-dot max" onclick="toggleMaximize()"></div>
+      </div>
+      <div class="win-title">Home — Gerenciador de Arquivos</div>
+    </div>
+    <div class="win-content" style="display:flex;flex-direction:column;">
+      <div class="fm-toolbar">
+        <button class="fm-btn">←</button>
+        <button class="fm-btn">→</button>
+        <button class="fm-btn">↑</button>
+        <button class="fm-btn">↻</button>
+        <div class="fm-path-bar">/home/tcfialho</div>
+        <button class="fm-btn">☰</button>
+      </div>
+      <div class="fm-layout">
+        <div class="fm-sidebar">
+          <div class="fm-sidebar-item active">🏠 Home</div>
+          <div class="fm-sidebar-item">🖥️ Desktop</div>
+          <div class="fm-sidebar-item">📄 Documents</div>
+          <div class="fm-sidebar-item">⬇️ Downloads</div>
+          <div class="fm-sidebar-item">🎵 Music</div>
+          <div class="fm-sidebar-item">🖼️ Pictures</div>
+          <div class="fm-sidebar-item">🎬 Videos</div>
+          <div class="fm-sidebar-item" style="margin-top:8px;border-top:1px solid #2d2d40;padding-top:8px;">💾 SSD (250GB)</div>
+          <div class="fm-sidebar-item">💿 HDD (1TB)</div>
+        </div>
+        <div class="fm-files">
+          <div class="fm-file"><div class="fm-file-icon">📁</div><div class="fm-file-name">Documents</div></div>
+          <div class="fm-file"><div class="fm-file-icon">📁</div><div class="fm-file-name">Downloads</div></div>
+          <div class="fm-file"><div class="fm-file-icon">📁</div><div class="fm-file-name">.config</div></div>
+          <div class="fm-file"><div class="fm-file-icon">📁</div><div class="fm-file-name">.local</div></div>
+          <div class="fm-file selected"><div class="fm-file-icon">📁</div><div class="fm-file-name">.claude</div></div>
+          <div class="fm-file"><div class="fm-file-icon">📄</div><div class="fm-file-name">.bashrc</div></div>
+          <div class="fm-file"><div class="fm-file-icon">📄</div><div class="fm-file-name">.zshrc</div></div>
+          <div class="fm-file"><div class="fm-file-icon">🖼️</div><div class="fm-file-name">wallpaper.jpg</div></div>
+          <div class="fm-file"><div class="fm-file-icon">📁</div><div class="fm-file-name">Pictures</div></div>
+          <div class="fm-file"><div class="fm-file-icon">📁</div><div class="fm-file-name">Music</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- WINDOW: Kitty Terminal -->
+  <div class="window" id="win-term" data-id="term" style="display:none;">
+    <div class="win-titlebar" style="background:#0f0f18; border-bottom: 1px solid #1a1a2a;">
+      <div class="win-traffic">
+        <div class="win-dot close" onclick="closeWindow('term')"></div>
+        <div class="win-dot min" onclick="minimizeWindowById('term')"></div>
+        <div class="win-dot max" onclick="toggleMaximize()"></div>
+      </div>
+      <div class="win-title">tcfialho@arch ~ — kitty</div>
+    </div>
+    <div class="win-content">
+      <div class="term-content" id="term-output">
+        <div><span class="term-prompt">tcfialho</span><span style="color:#666">@</span><span class="term-path">arch</span><span style="color:#666"> ~ </span><span class="term-dollar">$</span> <span class="term-cmd">neofetch</span></div>
+        <div style="color:#7ec8e3;margin:4px 0 2px">                   -\`</div>
+        <div style="color:#7ec8e3">                  .o+\`</div>
+        <div><span style="color:#7ec8e3">                 \`ooo/</span><span class="term-output">  OS: Arch Linux x86_64</span></div>
+        <div><span style="color:#7ec8e3">                \`+oooo:</span><span class="term-output">  Host: Legion Slim 5 Gen 7</span></div>
+        <div><span style="color:#7ec8e3">               \`+oooooo:</span><span class="term-output">  Kernel: 7.0.9-x64v3-xanmod1</span></div>
+        <div><span style="color:#7ec8e3">               -+oooooo+:</span><span class="term-output">  Uptime: 3h 22m</span></div>
+        <div><span style="color:#7ec8e3">             \`/:-:++oooo+:</span><span class="term-output">  WM: river (maindeck-wm)</span></div>
+        <div><span style="color:#7ec8e3">            \`/++++/+++++++:</span><span class="term-output">  Terminal: kitty</span></div>
+        <div><span style="color:#7ec8e3">           \`/++++++++++++++:</span><span class="term-output">  CPU: i7-12700H</span></div>
+        <div><span style="color:#7ec8e3">          \`/+++ooooooooooooo/\`</span><span class="term-output">  GPU: NVIDIA RTX 4050</span></div>
+        <div><span style="color:#7ec8e3">         ./ooosssso++osssssso+\`</span><span class="term-output">  Memory: 4.2GB / 15.5GB</span></div>
+        <div><span style="color:#7ec8e3">        .oossssso-\`\`\`/ossssss+\`</span></div>
+        <div style="color:#7ec8e3">       -osssssso.      :ssssssso.</div>
+        <div style="color:#7ec8e3">      :osssssss/        osssso+++.</div>
+        <div style="color:#7ec8e3">     /ossssssss/        +ssssooo/-</div>
+        <div style="color:#7ec8e3">   \`/ossssso+/:-        -:/+osssso+-</div>
+        <div style="color:#7ec8e3">  \`+sso+:-\`                 \`.-/+oso:</div>
+        <div style="color:#7ec8e3"> \`++:.                           \`-/+/</div>
+        <div style="color:#7ec8e3"> .\`                                 \`/</div>
+        <br>
+        <div><span class="term-prompt">tcfialho</span><span style="color:#666">@</span><span class="term-path">arch</span><span style="color:#666"> ~ </span><span class="term-dollar">$</span> <span class="term-cmd">ls -la Documents/poc/maindeck-wm/ | head -10</span></div>
+        <div class="term-output">total 248</div>
+        <div class="term-output">drwxr-xr-x  4 tcfialho tcfialho  4096 Jun 17 14:22 .</div>
+        <div class="term-output">drwxr-xr-x 12 tcfialho tcfialho  4096 Jun 17 09:15 ..</div>
+        <div class="term-output">-rw-r--r--  1 tcfialho tcfialho 18432 Jun 17 13:47 bar-render.c</div>
+        <div class="term-output">-rw-r--r--  1 tcfialho tcfialho  6210 Jun 17 13:20 bar-input.c</div>
+        <div class="term-output">-rw-r--r--  1 tcfialho tcfialho  4890 Jun 17 12:55 wm-layout.c</div>
+        <div class="term-output">-rw-r--r--  1 tcfialho tcfialho  7120 Jun 17 11:30 wm-input.c</div>
+        <br>
+        <div id="term-prompt-line">
+          <span class="term-prompt">tcfialho</span><span style="color:#666">@</span><span class="term-path">arch</span><span style="color:#666"> ~ </span><span class="term-dollar">$</span> <span id="term-input-display"></span><span class="term-cursor"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /desktop -->
+
+<!-- BOTTOM BAR -->
+<div id="bar">
+
+  <!-- Quick Launch -->
+  <div id="ql-section">
+    <!-- Start button: tux, bg=#2D6A2D, width=2x -->
+    <button class="ql-btn has-bg" id="ql-start"
+      style="background:#2D6A2D; width:52px; position:relative;"
+      onclick="toggleMenu()" title="Menu Iniciar">
+      🐧
+      <span class="tooltip">Menu Iniciar</span>
+    </button>
+    <!-- Extra gap after start button as per code: x += 10 after i==0 -->
+    <div style="width:10px; flex-shrink:0;"></div>
+    <button class="ql-btn" onclick="openApp('chrome')" title="Chromium" style="position:relative;">
+      🌐
+      <span class="tooltip">Chromium</span>
+    </button>
+    <button class="ql-btn" onclick="openApp('files')" title="Arquivos" style="position:relative;">
+      📁
+      <span class="tooltip">Arquivos</span>
+    </button>
+    <button class="ql-btn" onclick="openApp('term')" title="Terminal" style="position:relative;">
+      🖥️
+      <span class="tooltip">Terminal</span>
+    </button>
+  </div>
+
+  <div class="sep"></div>
+
+  <!-- Taskbar (dynamic) -->
+  <div id="taskbar"></div>
+
+  <div class="sep" id="sep-tray"></div>
+
+  <!-- Status: volume, battery, clock, power (drawn right-to-left in code, displayed L→R here)
+       Volume and battery: icon ONLY, no text — bar-render.c draws purely via Cairo paths (draw_volume_icon / draw_battery_icon),
+       no string label. Fixed slot width = ICON_SIZE + BTN_PAD*2 = 18+16 = 34px. -->
+  <div id="status-section">
+    <div class="status-item" id="status-vol" title="Volume" style="width:34px;justify-content:center;padding:0;">
+      <svg id="vol-icon" width="18" height="18" viewBox="0 0 18 18">
+        <!-- Speaker body trapezoid -->
+        <polygon points="2,7 7,4 7,14 2,11" fill="rgba(235,235,235,1)"/>
+        <!-- Wave arcs -->
+        <path d="M8.5,6.5 A3,3 0 0,1 8.5,11.5" fill="none" stroke="rgba(235,235,235,1)" stroke-width="1.2" stroke-linecap="round"/>
+        <path d="M10,4.5 A5.5,5.5 0 0,1 10,13.5" fill="none" stroke="rgba(235,235,235,1)" stroke-width="1.2" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div class="status-item" id="status-bat" title="Bateria" style="width:34px;justify-content:center;padding:0;">
+      <svg id="bat-icon" width="18" height="18" viewBox="0 0 18 18">
+        <!-- Battery outline -->
+        <rect x="1" y="5.5" width="13" height="7" fill="none" stroke="rgba(178,178,178,0.9)" stroke-width="1"/>
+        <!-- Terminal nub -->
+        <rect x="14" y="7.5" width="2.5" height="3" fill="rgba(178,178,178,0.9)"/>
+        <!-- Fill bar (82% green) -->
+        <rect x="2" y="6.9" width="10.5" height="4.2" fill="rgba(77,217,89,0.95)"/>
+      </svg>
+    </div>
+    <div class="status-item" id="status-clock">
+      <span id="clock-text"></span>
+    </div>
+    <div class="status-item power-btn" id="status-power" title="Power">⏻</div>
+  </div>
+
+</div><!-- /bar -->
+
+<!-- START MENU -->
+<div id="start-menu" tabindex="-1">
+  <div id="menu-search-wrap">
+    <span id="menu-search-icon">🔍</span>
+    <input type="text" id="menu-search" placeholder="Pesquisar aplicativo..."
+      autocomplete="off" spellcheck="false">
+  </div>
+  <div id="menu-list"></div>
+</div>
+
+<!-- KEY LEGEND -->
+<div id="legend">
+  <strong>Atalhos (prototipo usa Ctrl)</strong>
+  <div><span class="key">Ctrl+Tab</span> toggle target / <span class="key">hold</span> swap</div>
+  <div><span class="key">Ctrl+→</span> deck next  / <span class="key">hold</span> send bottom</div>
+  <div><span class="key">Ctrl+←</span> deck prev  / <span class="key">hold</span> promote main</div>
+  <div><span class="key">Ctrl+↑</span> maximize / <span class="key">hold</span> des-minimizar</div>
+  <div><span class="key">Ctrl+↓</span> restore  / <span class="key">hold</span> minimizar</div>
+  <div><span class="key">Ctrl+Enter</span> spawn terminal</div>
+  <div><span class="key">Ctrl+F4</span> fechar janela</div>
+  <div><span class="key">Ctrl+Shift</span> toggle maximize</div>
+  <div><span class="key">Ctrl</span> abrir menu</div>
+  <div class="note">Super real é capturado pelo compositor</div>
+</div>
+
+<!-- TOAST NOTIFICATION -->
+<div id="toast"></div>
+
+<script>
+/* ===================================================================
+   MainDeck WM state  — fiel ao WindowManager em types.h
+   wm.windows = lista na ordem MainDeck: 0=MAIN, 1=DECK, 2+=hidden
+   wm.target_index = 0 ou 1
+   wm.maximized = boolean
+   =================================================================== */
+
+const wm = {
+  windows: [],      // { id, title, appId } em MainDeck order (conjunto VISÍVEL/ativo)
+  target_index: 0,  // 0=MAIN ou 1=DECK
+  maximized: false,
+  minimized: [],    // P10: pilha LIFO de janelas guardadas na barra (topo = última minimizada)
+};
+
+/* App registry */
+const APPS = {
+  chrome: { id: 'chrome', title: 'Google — Chromium', appId: 'chromium', icon: '🌐' },
+  files:  { id: 'files',  title: 'Home — Arquivos',   appId: 'pcmanfm',  icon: '📁' },
+  term:   { id: 'term',   title: 'kitty',              appId: 'kitty',    icon: '🖥️' },
+};
+
+/* ===================================================================
+   LAYOUT ENGINE  — wm-layout.c
+   GAP = 12, BORDER_WIDTH = 3
+   MAIN = usable_w * 2 / 3
+   DECK = usable_w - MAIN - GAP
+   =================================================================== */
+const GAP = 12;
+const BORDER = 3; /* CSS border already applied as var(--border) */
+
+/* P4.1: timers de "remoção de cena" por janela — depois que a janela encolheu
+   e sumiu (transição), aplicamos display:none. Se ela voltar a ficar visível
+   antes disso, cancelamos o timer. */
+const hideTimers = {};
+
+/* showWin(el, x,y,w,h): traz a janela à cena na geometria final.
+   - ENTRANDO (estava display:none ou win-hidden): seta a geometria final ENQUANTO
+     ainda hidden, força reflow, e só então remove win-hidden → apenas scale+opacity
+     animam (geometria tem delta zero, logo não desliza).
+   - PERSISTINDO (já visível): só atualiza a geometria e deixa a transition animar
+     left/top/width/height — essa é a "alma" da P4 (a janela cresce ocupando o espaço). */
+function showWin(el, x, y, w, h) {
+  if (!el) return;
+  clearTimeout(hideTimers[el.id]);
+  const entering = el.style.display === 'none' || el.classList.contains('win-hidden');
+  if (entering) {
+    el.classList.add('win-hidden');      // garante o estado inicial (scale .86 + opacity 0)
+    el.style.display = 'flex';           // mesmo p/ janela que nasce com display:none no HTML
+    el.style.left = x + 'px'; el.style.top = y + 'px';
+    el.style.width = w + 'px'; el.style.height = h + 'px';
+    void el.offsetWidth;                 // snapshot: {geom final, scale .86, opacity 0}
+    el.classList.remove('win-hidden');   // ABRIR (P4.1): anima scale .86→1 + opacity 0→1
+  } else {
+    el.style.left = x + 'px'; el.style.top = y + 'px';
+    el.style.width = w + 'px'; el.style.height = h + 'px';
+  }
+}
+
+function hideWin(el) {
+  if (!el) return;
+  if (el.style.display === 'none') return; // já fora de cena
+  // encolhe NO LUGAR: não tocamos em left/width — a janela some onde está
+  el.classList.add('win-hidden');
+  el.classList.remove('focused');
+  clearTimeout(hideTimers[el.id]);
+  hideTimers[el.id] = setTimeout(() => { el.style.display = 'none'; }, 240);
+}
+
+/* animClass: aplica um keyframe (com reflow forçado p/ reiniciar) e remove ao fim.
+   Usado pelas animações de keyframe importadas do P2.3 (deck/foco/fechar). */
+function animClass(el, cls, duration) {
+  if (!el) return;
+  el.classList.remove(cls);
+  void el.offsetWidth;
+  el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), duration);
+}
+
+/* noAnim: suspende a transição de geometria persistente enquanto fn() reposiciona,
+   para que ações baseadas em keyframe (deck switch, foco) não "deslizem" o reflow.
+   Padrão herdado do P8. */
+function noAnim(fn) {
+  Object.keys(APPS).forEach(id => {
+    const e = document.getElementById('win-' + id);
+    if (e) e.style.transition = 'none';
+  });
+  fn();
+  requestAnimationFrame(() => Object.keys(APPS).forEach(id => {
+    const e = document.getElementById('win-' + id);
+    if (e) e.style.transition = '';
+  }));
+}
+
+function applyLayout() {
+  const desktop = document.getElementById('desktop');
+  const W = desktop.clientWidth;
+  const H = desktop.clientHeight;
+
+  const visibleIds = wm.windows.slice(0, 2).filter(Boolean);
+  const visibleSet = new Set(visibleIds.map(w => w.id));
+
+  if (visibleIds.length === 0) {
+    Object.keys(APPS).forEach(id => hideWin(document.getElementById('win-' + id)));
+    return;
+  }
+
+  /* Maximized: target fills usable area; a outra ENCOLHE no lugar e some. */
+  if (wm.maximized) {
+    const target = visibleIds[wm.target_index] || visibleIds[0];
+    Object.keys(APPS).forEach(id => {
+      if (id !== target.id) hideWin(document.getElementById('win-' + id));
+    });
+    const el = document.getElementById('win-' + target.id);
+    if (el) {
+      showWin(el, 0, 0, W, H);
+      el.classList.add('focused');
+    }
+    return;
+  }
+
+  // some quem não está visível, encolhendo no lugar
+  Object.keys(APPS).forEach(id => {
+    if (!visibleSet.has(id)) hideWin(document.getElementById('win-' + id));
+  });
+
+  if (visibleIds.length === 1) {
+    const el = document.getElementById('win-' + visibleIds[0].id);
+    if (el) { showWin(el, 0, 0, W, H); el.classList.add('focused'); }
+  } else {
+    const mainWidth = Math.floor(W * 2 / 3);
+    const deckWidth = W - mainWidth;
+    const wMain = mainWidth - Math.floor(GAP / 2);
+    const wDeck = deckWidth - Math.floor(GAP / 2);
+    const deckX = mainWidth + Math.floor(GAP / 2);
+
+    const mainEl = document.getElementById('win-' + visibleIds[0].id);
+    const deckEl = document.getElementById('win-' + visibleIds[1].id);
+
+    if (mainEl) showWin(mainEl, 0, 0, wMain, H);
+    if (deckEl) showWin(deckEl, deckX, 0, wDeck, H);
+
+    visibleIds.forEach((w, i) => {
+      const el = document.getElementById('win-' + w.id);
+      if (!el) return;
+      el.classList.toggle('focused', i === wm.target_index);
+    });
+  }
+}
+
+/* ===================================================================
+   TASKBAR RENDERING
+   =================================================================== */
+function renderTaskbar() {
+  const tb = document.getElementById('taskbar');
+  tb.innerHTML = '';
+
+  wm.windows.forEach((win, idx) => {
+    const btn = document.createElement('button');
+    btn.className = 'tb-btn';
+
+    const app = APPS[win.id];
+    if (app) {
+      const icon = document.createElement('span');
+      icon.className = 'tb-icon';
+      icon.textContent = app.icon;
+      btn.appendChild(icon);
+
+      const title = document.createElement('span');
+      title.className = 'tb-title';
+      title.textContent = win.title;
+      btn.appendChild(title);
+    }
+
+    /* Active = target_index matches position (0 or 1) AND it's visible */
+    const isActive = idx < 2 && idx === wm.target_index;
+    if (isActive) btn.classList.add('active');
+
+    btn.addEventListener('click', () => activateWindow(idx));
+    btn.addEventListener('auxclick', (e) => {
+      if (e.button === 1) closeWindowByIdx(idx);
+    });
+
+    tb.appendChild(btn);
+  });
+
+  /* P10: janelas minimizadas — apagadas, com marcador "▾"; clique restaura.
+     Aparecem depois das ativas. Distinção visual evita confundir com janela
+     apenas enfileirada no deck (que volta via Ctrl+Tab+Tab, não no clique). */
+  wm.minimized.forEach((win) => {
+    const btn = document.createElement('button');
+    btn.className = 'tb-btn minimized';
+
+    const app = APPS[win.id];
+    if (app) {
+      const icon = document.createElement('span');
+      icon.className = 'tb-icon';
+      icon.textContent = app.icon;
+      btn.appendChild(icon);
+
+      const title = document.createElement('span');
+      title.className = 'tb-title';
+      title.textContent = '▾ ' + win.title;
+      btn.appendChild(title);
+    }
+
+    btn.addEventListener('click', () => restoreMinimized(win.id));
+    tb.appendChild(btn);
+  });
+}
+
+/* ===================================================================
+   WINDOW MANAGEMENT ACTIONS  — wm-input.c / wm-layout.c
+   =================================================================== */
+
+/* New window always inserts at head (index 0 = MAIN), rest slide down.
+   This is the MainDeck "push to front" behavior from wm-layout.c. */
+function openApp(id) {
+  // P10: se estiver minimizada, abrir = restaurar da barra (não duplica)
+  if (wm.minimized.some(w => w.id === id)) {
+    restoreMinimized(id);
+    return;
+  }
+  // If already open, bring to front (toggle target or promote)
+  const existingIdx = wm.windows.findIndex(w => w.id === id);
+  if (existingIdx >= 0) {
+    if (existingIdx <= 1) {
+      // Visible: just focus it
+      wm.target_index = existingIdx;
+      applyLayout();
+      renderTaskbar();
+      return;
+    } else {
+      // Hidden: promote to MAIN (insert at 0)
+      const [win] = wm.windows.splice(existingIdx, 1);
+      wm.windows.unshift(win);
+      wm.target_index = 0;
+      applyLayout();
+      renderTaskbar();
+      // P11g: promover é sempre multi (grupo) → sem slide, o showWin faz o "crescer"
+      return;
+    }
+  }
+
+  // New window: insert at head
+  const app = APPS[id];
+  if (!app) return;
+
+  wm.windows.unshift({ id, title: app.title, appId: app.appId });
+  wm.target_index = 0; // new window becomes MAIN and gets focus
+  wm.maximized = false;
+
+  applyLayout();
+  renderTaskbar();
+  // P11g (INVERSO do 11c): SOZINHA (1ª janela) desliza (da DIREITA); em GRUPO não
+  // desliza → o showWin faz o "crescer" natural (escala onde há reflow).
+  if (wm.windows.length === 1) {
+    animClass(document.getElementById('win-' + id), 'anim-open-slide', 200);
+  }
+}
+
+/* FECHAR — P11g (INVERSO do 11c): se há vizinhas, ENCOLHE (escala onde há reflow);
+   se for a ÚLTIMA janela, desliza p/ esquerda (clipado no slot). */
+function closeWindow(id) {
+  const idx = wm.windows.findIndex(w => w.id === id);
+  if (idx < 0) return;
+  const el = document.getElementById('win-' + id);
+  const doClose = () => {
+    const i = wm.windows.findIndex(w => w.id === id);
+    if (i < 0) return;
+    wm.windows.splice(i, 1);
+    if (wm.target_index >= wm.windows.length) {
+      wm.target_index = Math.max(0, wm.windows.length - 1);
+    }
+    if (wm.target_index > 1) wm.target_index = 1;
+    wm.maximized = false;
+    if (el) el.style.display = 'none';   // garante saída de cena antes do reflow
+    applyLayout();
+    renderTaskbar();
+  };
+  if (el && idx < 2) {
+    // INVERSO: última janela (sozinha) → desliza; senão (grupo) → encolhe
+    const isLast = wm.windows.length === 1;
+    animClass(el, isLast ? 'anim-close-slide' : 'anim-close-shrink', 180);
+    setTimeout(doClose, 160);
+  } else {
+    doClose();
+  }
+}
+
+function closeWindowByIdx(idx) {
+  if (idx < 0 || idx >= wm.windows.length) return;
+  const id = wm.windows[idx].id;
+  closeWindow(id);
+}
+
+/* ACTION_TOGGLE_TARGET — P2.3: foco = nudge lateral mínimo (8px) na direção do
+   slot da janela que ganha foco, sem deslizar a janela inteira. Não usa noAnim:
+   o toggle não muda geometria (só a borda azul), então deixamos a transição de
+   border-bottom-color (0.10s) rodar; o nudge é keyframe e não conflita. */
+function actionToggleTarget() {
+  if (wm.windows.length < 2) return;
+  // P11: maximizado, alternar percorre TODAS as janelas em tela cheia → slide full-bleed
+  if (wm.maximized) { maximizedCycleAll('next'); return; }
+  wm.target_index = wm.target_index === 0 ? 1 : 0;
+  applyLayout();
+  renderTaskbar();
+  const focused = wm.windows[wm.target_index];
+  if (focused) {
+    const el = document.getElementById('win-' + focused.id);
+    animClass(el, wm.target_index === 1 ? 'anim-nudge-right' : 'anim-nudge-left', 160);
+  }
+  showToast('Toggle target → ' + (wm.target_index === 0 ? 'MAIN' : 'DECK'));
+}
+
+/* swapGeom — P8: anima a troca de geometria sem ghost. Congela a transição,
+   posiciona as janelas no estado "antes" (invertido) e, no rAF seguinte,
+   reabilita a transição e seta a geometria correta — o caminho é animado. */
+function swapGeom() {
+  const mainEl = document.getElementById('win-' + wm.windows[0].id);
+  const deckEl = document.getElementById('win-' + wm.windows[1].id);
+  const desktop = document.getElementById('desktop');
+  const W = desktop.clientWidth, H = desktop.clientHeight;
+  const mw = Math.floor(W * 2 / 3), dw = W - mw;
+  const wM = mw - Math.floor(GAP / 2), wD = dw - Math.floor(GAP / 2), dX = mw + Math.floor(GAP / 2);
+  // congela
+  if (mainEl) mainEl.style.transition = 'none';
+  if (deckEl) deckEl.style.transition = 'none';
+  // posição "antes" (invertida): win[0] parte do slot deck, win[1] parte do slot main
+  if (mainEl) { mainEl.style.left = dX + 'px'; mainEl.style.width = wD + 'px'; mainEl.style.height = H + 'px'; mainEl.style.top = '0px'; }
+  if (deckEl) { deckEl.style.left = '0px';     deckEl.style.width = wM + 'px'; deckEl.style.height = H + 'px'; deckEl.style.top = '0px'; }
+  // anima para a posição correta
+  requestAnimationFrame(() => {
+    if (mainEl) { mainEl.style.transition = ''; mainEl.style.left = '0px';     mainEl.style.width = wM + 'px'; }
+    if (deckEl) { deckEl.style.transition = ''; deckEl.style.left = dX + 'px'; deckEl.style.width = wD + 'px'; }
+    if (mainEl) mainEl.classList.toggle('focused', wm.target_index === 0);
+    if (deckEl) deckEl.classList.toggle('focused', wm.target_index === 1);
+    renderTaskbar();
+  });
+}
+
+/* ACTION_SWAP_MAIN_DECK — P8: Ctrl+hold+Tab, geometria animada (sem ghost) */
+function actionSwapMainDeck() {
+  if (wm.windows.length < 2) return;
+  // Maximizado, só uma janela é visível e o swap mantém a mesma em foco — seria
+  // invisível e quebra a geometria. Ignora até restaurar (Ctrl+↓).
+  if (wm.maximized) { showToast('Swap indisponível em tela cheia'); return; }
+  const tmp = wm.windows[0];
+  wm.windows[0] = wm.windows[1];
+  wm.windows[1] = tmp;
+  wm.target_index = wm.target_index === 0 ? 1 : 0;
+  swapGeom();
+  showToast('Swap MAIN ↔ DECK');
+}
+
+/* ACTION_DECK_NEXT — mirrors md_deck_next() in wm-layout.c:399
+   Takes current DECK (index 1), moves it to end of list.
+   The window that was at index 2 slides up to index 1 (new DECK).
+   Sets target_index=1. */
+function actionDeckNext() {
+  // P11: maximizado, percorre TODAS as janelas em tela cheia (mesmo com 2) → slide full-bleed
+  if (wm.maximized) { maximizedCycleAll('next'); return; }
+  if (wm.windows.length <= 2) {
+    showToast('Sem janela invisível à direita');
+    return;
+  }
+  // P11: sweep SEGUE a seta (Ctrl+→ varre p/ direita): antiga sai pela direita,
+  // nova entra pela esquerda (clipada na divisão main↔deck).
+  const oldDeckEl = document.getElementById('win-' + wm.windows[1].id);
+  if (oldDeckEl) animClass(oldDeckEl, 'anim-deck-out-right', 140);
+  setTimeout(() => {
+    const [deck] = wm.windows.splice(1, 1);
+    wm.windows.push(deck);
+    wm.target_index = 1;
+    noAnim(() => { applyLayout(); renderTaskbar(); });
+    const newDeckEl = document.getElementById('win-' + wm.windows[1].id);
+    if (newDeckEl) animClass(newDeckEl, 'anim-deck-in-left', 200);
+  }, 110);
+  showToast('Deck → próximo');
+}
+
+/* ACTION_DECK_PREV — mirrors md_deck_prev() in wm-layout.c:412
+   Takes last visible window (index vis-1), inserts after MAIN (→ becomes index 1).
+   Old DECK slides down. Sets target_index=1. */
+function actionDeckPrev() {
+  // P11: maximizado, percorre TODAS as janelas em tela cheia (mesmo com 2) → slide full-bleed
+  if (wm.maximized) { maximizedCycleAll('prev'); return; }
+  if (wm.windows.length <= 2) {
+    showToast('Sem janela invisível à esquerda');
+    return;
+  }
+  // P11: sweep SEGUE a seta (Ctrl+← varre p/ esquerda): antiga sai pela esquerda
+  // (clipada na divisão main↔deck), nova entra pela direita.
+  const oldDeckEl = document.getElementById('win-' + wm.windows[1].id);
+  if (oldDeckEl) animClass(oldDeckEl, 'anim-deck-out-left', 140);
+  setTimeout(() => {
+    const [last] = wm.windows.splice(wm.windows.length - 1, 1);
+    wm.windows.splice(1, 0, last);
+    wm.target_index = 1;
+    noAnim(() => { applyLayout(); renderTaskbar(); });
+    const newDeckEl = document.getElementById('win-' + wm.windows[1].id);
+    if (newDeckEl) animClass(newDeckEl, 'anim-deck-in-right', 200);
+  }, 110);
+  showToast('Deck → anterior');
+}
+
+/* ===================================================================
+   P11 — TROCAR APP EM TELA CHEIA (maximizado)
+   Maximizado, só uma janela aparece e NÃO há distinção MAIN/DECK visível.
+   Então qualquer gesto de "trocar app" (Ctrl+Tab, Ctrl+Tab+Tab, Ctrl+←/→)
+   percorre TODAS as janelas no anel completo (estilo Alt+Tab), não só as duas
+   da frente. A janela mostrada vira o MAIN(0); o anel gira a partir dela, então
+   ao restaurar (Ctrl+↓) o tiling fica coerente (mostrada = MAIN).
+   O carrossel full-bleed: a nova entra inteira por um lado, a antiga sai pelo
+   outro. fullscreenSwitch() é dono do display (não chama applyLayout, p/ não dar
+   snap); o estado em wm.* já foi mutado aqui.
+   =================================================================== */
+
+/* Gira o array p/ que o elemento em `pos` vá para o índice 0, preservando a
+   ordem cíclica do anel. */
+function rotateTo(pos) {
+  const n = wm.windows.length;
+  pos = ((pos % n) + n) % n;
+  wm.windows = wm.windows.slice(pos).concat(wm.windows.slice(0, pos));
+}
+
+/* Avança/volta a janela em tela cheia percorrendo TODAS (anel completo). */
+function maximizedCycleAll(dir) {
+  const n = wm.windows.length;
+  if (n < 2) return;
+  const cur = wm.target_index < n ? wm.target_index : 0;
+  const oldWin = wm.windows[cur];
+  const nextPos = dir === 'next' ? (cur + 1) % n : (cur - 1 + n) % n;
+  const newWin = wm.windows[nextPos];   // captura ANTES de girar
+  rotateTo(nextPos);                     // newWin passa a ser windows[0]
+  wm.target_index = 0;
+  fullscreenSwitch(oldWin.id, newWin.id, dir);
+  showToast('Trocar app (tela cheia)');
+}
+
+/* Carrossel full-bleed entre duas janelas em tela cheia.
+   dir 'next' → nova entra da direita, antiga sai pela esquerda; 'prev' inverte. */
+function fullscreenSwitch(oldId, newId, dir) {
+  if (oldId === newId) { renderTaskbar(); return; }
+  const desktop = document.getElementById('desktop');
+  const W = desktop.clientWidth, H = desktop.clientHeight;
+  const oldEl = document.getElementById('win-' + oldId);
+  const newEl = document.getElementById('win-' + newId);
+
+  // Mantém só old/new em cena (preserva a invariante do maximizado)
+  Object.keys(APPS).forEach(id => {
+    if (id !== oldId && id !== newId) {
+      const e = document.getElementById('win-' + id);
+      if (e) e.style.display = 'none';
+    }
+  });
+
+  // Posiciona a nova em tela cheia instantaneamente (sem transição de geometria)
+  if (newEl) {
+    clearTimeout(hideTimers[newEl.id]);
+    newEl.style.transition = 'none';
+    newEl.classList.remove('win-hidden');
+    newEl.style.display = 'flex';
+    newEl.style.left = '0px'; newEl.style.top = '0px';
+    newEl.style.width = W + 'px'; newEl.style.height = H + 'px';
+    newEl.classList.add('focused');
+    void newEl.offsetWidth;          // trava o snapshot full-screen
+    newEl.style.transition = '';
+  }
+  if (oldEl) oldEl.classList.remove('focused');
+
+  // P11: animação SEGUE a seta — 'next' (Ctrl+→) varre p/ DIREITA (nova entra pela
+  // esquerda, antiga sai pela direita); 'prev' (Ctrl+←) varre p/ ESQUERDA.
+  const inAnim  = dir === 'next' ? 'anim-fs-in-left'   : 'anim-fs-in-right';
+  const outAnim = dir === 'next' ? 'anim-fs-out-right' : 'anim-fs-out-left';
+  if (newEl) animClass(newEl, inAnim, 240);
+  if (oldEl) animClass(oldEl, outAnim, 240);
+
+  // Esconde a antiga ao fim do slide (a menos que ela já tenha voltado a ser a visível)
+  setTimeout(() => {
+    const visibleId = wm.windows[wm.target_index] && wm.windows[wm.target_index].id;
+    if (oldEl && oldId !== visibleId) oldEl.style.display = 'none';
+  }, 235);
+
+  renderTaskbar();
+}
+
+/* ACTION_SEND_TARGET_TO_DECK_BOTTOM: target window goes to end of list */
+function actionSendTargetToDeckBottom() {
+  if (wm.windows.length === 0) return;
+  const idx = wm.target_index < wm.windows.length ? wm.target_index : 0;
+  const [win] = wm.windows.splice(idx, 1);
+  wm.windows.push(win);
+  wm.target_index = 0;
+  applyLayout();
+  renderTaskbar();
+  showToast('Enviado ao fim do deck');
+}
+
+/* ACTION_PROMOTE_TARGET_TO_MAIN: move target to index 0 */
+function actionPromoteTargetToMain() {
+  if (wm.windows.length === 0) return;
+  const idx = wm.target_index < wm.windows.length ? wm.target_index : 0;
+  if (idx === 0) { showToast('Já é MAIN'); return; }
+  const [win] = wm.windows.splice(idx, 1);
+  wm.windows.unshift(win);
+  wm.target_index = 0;
+  applyLayout();
+  renderTaskbar();
+  showToast('Promovido a MAIN');
+}
+
+/* ACTION_MAXIMIZE_TARGET: fill usable area */
+function actionMaximize() {
+  if (wm.windows.length === 0) return;
+  wm.maximized = true;
+  applyLayout();
+  renderTaskbar();
+  showToast('Maximizado');
+}
+
+/* ACTION_RESTORE */
+function actionRestore() {
+  wm.maximized = false;
+  applyLayout();
+  renderTaskbar();
+  showToast('Restaurado');
+}
+
+/* ===================================================================
+   P10 — MINIMIZAR / DES-MINIMIZAR  (Ctrl+hold+↓ / Ctrl+hold+↑)
+   Minimizar = parquear DE VERDADE: a janela focada sai de wm.windows e vai
+   para a pilha wm.minimized (continua na barra, apagada). O layout reflui
+   sozinho (1→vazio, 2→tela cheia, 3→puxa a próxima), pois a janela some do
+   conjunto visível. Des-minimizar = pop LIFO (a última guardada) → vira MAIN.
+   100% teclado; o clique na barra é só um bônus.
+   =================================================================== */
+
+/* Minimiza a janela alvo (Ctrl+hold+↓). */
+function actionMinimize() {
+  if (wm.windows.length === 0) return;
+  const idx = wm.target_index < wm.windows.length ? wm.target_index : 0;
+  minimizeWindowById(wm.windows[idx].id);
+}
+
+/* Minimiza uma janela específica: anima descendo p/ a barra, depois parqueia.
+   Usado pelo atalho (via alvo) e pela bolinha amarela do titlebar. */
+function minimizeWindowById(id) {
+  const idx = wm.windows.findIndex(w => w.id === id);
+  if (idx < 0) return;
+  const el = document.getElementById('win-' + id);
+  if (el && idx < 2) {
+    animClass(el, 'anim-minimize', 200);
+    setTimeout(() => doMinimize(id), 180);
+  } else {
+    doMinimize(id);
+  }
+  showToast('Minimizado → barra');
+}
+
+function doMinimize(id) {
+  const i = wm.windows.findIndex(w => w.id === id);
+  if (i < 0) return;
+  const [win] = wm.windows.splice(i, 1);
+  wm.minimized.push(win);                       // topo da pilha = mais recente
+  if (wm.target_index >= wm.windows.length) {
+    wm.target_index = Math.max(0, wm.windows.length - 1);
+  }
+  if (wm.target_index > 1) wm.target_index = 1;
+  wm.maximized = false;
+  const el = document.getElementById('win-' + id);
+  if (el) el.style.display = 'none';            // sai de cena antes do reflow
+  applyLayout();
+  renderTaskbar();
+}
+
+/* Des-minimiza a última (LIFO) — Ctrl+hold+↑. */
+function actionUnminimize() {
+  if (wm.minimized.length === 0) { showToast('Nada minimizado'); return; }
+  const win = wm.minimized.pop();
+  restoreWin(win);
+}
+
+/* Restaura uma janela específica (clique na barra). */
+function restoreMinimized(id) {
+  const i = wm.minimized.findIndex(w => w.id === id);
+  if (i < 0) return;
+  const [win] = wm.minimized.splice(i, 1);
+  restoreWin(win);
+}
+
+/* Traz a janela de volta como MAIN, subindo da barra (espelho do minimizar). */
+function restoreWin(win) {
+  wm.windows.unshift(win);
+  wm.target_index = 0;
+  wm.maximized = false;
+  applyLayout();                                // reflui as demais (geometria suave)
+  renderTaskbar();
+  const el = document.getElementById('win-' + win.id);
+  if (el) animClass(el, 'anim-unminimize', 220); // keyframe sobrepõe o "crescer" do showWin
+  showToast('Restaurado da barra');
+}
+
+/* ACTION_TOGGLE_MAXIMIZE (Ctrl+F19 / Win+Shift) */
+function toggleMaximize() {
+  if (wm.maximized) actionRestore(); else actionMaximize();
+}
+
+/* ACTION_CLOSE_TARGET */
+function actionCloseTarget() {
+  if (wm.windows.length === 0) return;
+  const idx = wm.target_index < wm.windows.length ? wm.target_index : 0;
+  closeWindowByIdx(idx);
+}
+
+/* ACTION_SPAWN_TERMINAL */
+function actionSpawnTerminal() {
+  openApp('term');
+}
+
+/* Activate from taskbar click */
+function activateWindow(idx) {
+  if (idx < 0 || idx >= wm.windows.length) return;
+  wm.target_index = idx < 2 ? idx : 0;
+  if (idx >= 2) {
+    // Bring hidden window to front
+    const [win] = wm.windows.splice(idx, 1);
+    wm.windows.unshift(win);
+    wm.target_index = 0;
+  }
+  applyLayout();
+  renderTaskbar();
+}
+
+/* ===================================================================
+   HOLD DETECTION  — HOLD_THRESHOLD_MS = 360ms
+   Key bindings that have both tap and hold actions
+   =================================================================== */
+const HOLD_MS = 360;
+const holdTimers = {};
+const holdFired = {};
+
+function startHold(key, tapFn, holdFn) {
+  holdFired[key] = false;
+  holdTimers[key] = setTimeout(() => {
+    holdFired[key] = true;
+    holdFn();
+  }, HOLD_MS);
+}
+
+function endHold(key, tapFn) {
+  clearTimeout(holdTimers[key]);
+  if (!holdFired[key]) {
+    tapFn();
+  }
+  holdFired[key] = false;
+}
+
+/* ===================================================================
+   DOUBLE-TAP DETECTION  — 280ms window
+   Alt+Tab: tap=TOGGLE_TARGET, double-tap(280ms)=DECK_NEXT
+   =================================================================== */
+const DOUBLE_TAP_MS = 280;
+let tabTapTimer = null;
+let tabTapCount = 0;
+
+function handleTabTap() {
+  tabTapCount++;
+  if (tabTapCount === 1) {
+    tabTapTimer = setTimeout(() => {
+      tabTapCount = 0;
+      // Single tap fired
+      actionToggleTarget();
+    }, DOUBLE_TAP_MS);
+  } else if (tabTapCount === 2) {
+    clearTimeout(tabTapTimer);
+    tabTapCount = 0;
+    // Double tap
+    actionDeckNext();
+    showToast('Double-tap → Deck Next');
+  }
+}
+
+/* ===================================================================
+   KEYBOARD BINDINGS  — wm-input.c
+   Real bindings use keyd: Win→F19, Win+Tab→Alt+F23, etc.
+   Prototype substitutes Super → Alt (captured by compositor)
+   =================================================================== */
+const keydownState = {};
+/* ctrlClean: true enquanto Ctrl está pressionado e nenhuma outra tecla foi
+   acionada junto — espelha o comportamento do keyd overload(meta, f19):
+   só dispara a ação solo (menu) se Ctrl for solto sem combo. */
+let ctrlDown = false;
+let ctrlClean = false;
+
+document.addEventListener('keydown', (e) => {
+  const ctrl = e.ctrlKey;
+  const shift = e.shiftKey;
+  const key = e.key;
+
+  // Rastreia Ctrl solo: marca clean no press, suja em qualquer combo
+  if (key === 'Control' && !e.repeat) {
+    ctrlDown = true;
+    ctrlClean = true;
+    // não dispara ação no keydown — aguarda keyup para saber se foi solo
+    return;
+  }
+  if (ctrlDown && key !== 'Control') {
+    ctrlClean = false; // Ctrl+outra tecla → não é solo
+  }
+
+  // Prevent Ctrl combos from triggering browser shortcuts
+  if (ctrl) e.preventDefault();
+
+  // Ctrl+Tab: tap=TOGGLE_TARGET, double-tap=DECK_NEXT, hold=SWAP
+  if (ctrl && !shift && key === 'Tab' && !e.repeat) {
+    if (!keydownState['Ctrl+Tab']) {
+      keydownState['Ctrl+Tab'] = true;
+      startHold('Tab',
+        () => handleTabTap(),
+        () => { actionSwapMainDeck(); showToast('Hold → Swap MAIN↔DECK'); }
+      );
+    }
+    return;
+  }
+
+  // Ctrl+Right: tap=DECK_NEXT, hold=SEND_TARGET_TO_DECK_BOTTOM
+  if (ctrl && !shift && key === 'ArrowRight' && !e.repeat) {
+    if (!keydownState['Ctrl+Right']) {
+      keydownState['Ctrl+Right'] = true;
+      startHold('Right',
+        () => actionDeckNext(),
+        () => { actionSendTargetToDeckBottom(); showToast('Hold → Send to bottom'); }
+      );
+    }
+    return;
+  }
+
+  // Ctrl+Left: tap=DECK_PREV, hold=PROMOTE_TARGET_TO_MAIN
+  if (ctrl && !shift && key === 'ArrowLeft' && !e.repeat) {
+    if (!keydownState['Ctrl+Left']) {
+      keydownState['Ctrl+Left'] = true;
+      startHold('Left',
+        () => actionDeckPrev(),
+        () => { actionPromoteTargetToMain(); showToast('Hold → Promote to MAIN'); }
+      );
+    }
+    return;
+  }
+
+  // Ctrl+Up: tap=MAXIMIZE_TARGET, hold=UNMINIMIZE (puxa da barra)
+  if (ctrl && !shift && key === 'ArrowUp' && !e.repeat) {
+    if (!keydownState['Ctrl+Up']) {
+      keydownState['Ctrl+Up'] = true;
+      startHold('Up',
+        () => actionMaximize(),
+        () => { actionUnminimize(); showToast('Hold → Des-minimizar'); }
+      );
+    }
+    return;
+  }
+
+  // Ctrl+Down: tap=RESTORE (sair tela cheia), hold=MINIMIZE (manda p/ barra)
+  if (ctrl && !shift && key === 'ArrowDown' && !e.repeat) {
+    if (!keydownState['Ctrl+Down']) {
+      keydownState['Ctrl+Down'] = true;
+      startHold('Down',
+        () => actionRestore(),
+        () => { actionMinimize(); showToast('Hold → Minimizar'); }
+      );
+    }
+    return;
+  }
+
+  // Ctrl+Enter: SPAWN_TERMINAL
+  if (ctrl && !shift && key === 'Enter' && !e.repeat) {
+    actionSpawnTerminal();
+    showToast('Spawn terminal');
+    return;
+  }
+
+  // Ctrl+F4: CLOSE_TARGET
+  if (ctrl && !shift && key === 'F4' && !e.repeat) {
+    actionCloseTarget();
+    showToast('Fechar janela alvo');
+    return;
+  }
+
+  // Ctrl+Shift: TOGGLE_MAXIMIZE (equivalente ao Win+Shift real)
+  if (ctrl && shift && (key === 'Shift' || key === 'Control') && !e.repeat) {
+    if (!keydownState['Ctrl+Shift']) {
+      keydownState['Ctrl+Shift'] = true;
+      toggleMaximize();
+      showToast('Toggle maximize');
+    }
+    return;
+  }
+
+  // F19: SPAWN_LAUNCHER (keysym interno do keyd, mantido por compatibilidade)
+  if (key === 'F19' && !e.repeat) {
+    toggleMenu();
+    return;
+  }
+
+  // Menu search: typing
+  if (document.getElementById('start-menu').classList.contains('open')) {
+    handleMenuKey(e);
+  }
+}, { capture: true });
+
+document.addEventListener('keyup', (e) => {
+  const key = e.key;
+
+  if (key === 'Tab' && keydownState['Ctrl+Tab']) {
+    keydownState['Ctrl+Tab'] = false;
+    endHold('Tab', () => handleTabTap());
+  }
+  if (key === 'ArrowRight' && keydownState['Ctrl+Right']) {
+    keydownState['Ctrl+Right'] = false;
+    endHold('Right', () => actionDeckNext());
+  }
+  if (key === 'ArrowLeft' && keydownState['Ctrl+Left']) {
+    keydownState['Ctrl+Left'] = false;
+    endHold('Left', () => actionDeckPrev());
+  }
+  if (key === 'ArrowUp' && keydownState['Ctrl+Up']) {
+    keydownState['Ctrl+Up'] = false;
+    endHold('Up', () => actionMaximize());
+  }
+  if (key === 'ArrowDown' && keydownState['Ctrl+Down']) {
+    keydownState['Ctrl+Down'] = false;
+    endHold('Down', () => actionRestore());
+  }
+  if ((key === 'Shift' || key === 'Control') && keydownState['Ctrl+Shift']) {
+    keydownState['Ctrl+Shift'] = false;
+  }
+  // Ctrl solto limpo (sem combo) → abre/fecha menu, igual ao overload(meta,f19) do keyd
+  if (key === 'Control') {
+    if (ctrlClean) toggleMenu();
+    ctrlDown = false;
+    ctrlClean = false;
+  }
+}, { capture: true });
+
+/* ===================================================================
+   START MENU  — maindeck-menu.c
+   =================================================================== */
+const MENU_APPS = [
+  { icon: '🌐', label: 'Chromium', id: 'chrome' },
+  { icon: '📁', label: 'Gerenciador de Arquivos', id: 'files' },
+  { icon: '🖥️', label: 'Kitty Terminal', id: 'term' },
+  { icon: '⚙️', label: 'Configurações do Sistema', id: null },
+  { icon: '📷', label: 'Flameshot', id: null },
+  { icon: '🎵', label: 'Spotify', id: null },
+  { icon: '📝', label: 'Mousepad', id: null },
+  { icon: '🔧', label: 'GParted', id: null },
+  { icon: '📊', label: 'htop', id: null },
+  { icon: '🎮', label: 'Steam', id: null },
+  { icon: '🔒', label: 'Bitwarden', id: null },
+  { icon: '💬', label: 'Discord', id: null },
+];
+
+let menuSelectedIdx = 0;
+let menuQuery = '';
+let menuFiltered = [];
+let menuOpen = false;
+let menuCloseTimer = null;
+const MENU_DEBOUNCE_MS = 250;
+
+/* Simple fuzzy filter: consecutive match bonus */
+function fuzzyMatch(query, label) {
+  if (!query) return true;
+  const q = query.toLowerCase();
+  const s = label.toLowerCase();
+  let qi = 0;
+  for (let i = 0; i < s.length && qi < q.length; i++) {
+    if (s[i] === q[qi]) qi++;
+  }
+  return qi === q.length;
+}
+
+function renderMenuList() {
+  const q = menuQuery;
+  menuFiltered = MENU_APPS.filter(a => fuzzyMatch(q, a.label));
+  if (menuSelectedIdx >= menuFiltered.length) menuSelectedIdx = 0;
+
+  const list = document.getElementById('menu-list');
+  list.innerHTML = '';
+  menuFiltered.forEach((app, i) => {
+    const item = document.createElement('div');
+    item.className = 'menu-item' + (i === menuSelectedIdx ? ' selected' : '');
+    item.innerHTML = `<div class="menu-icon">${app.icon}</div><div class="menu-label">${app.label}</div>`;
+    item.addEventListener('click', () => {
+      launchMenuItem(i);
+    });
+    item.addEventListener('mouseover', () => {
+      menuSelectedIdx = i;
+      renderMenuList();
+    });
+    list.appendChild(item);
+  });
+}
+
+function launchMenuItem(idx) {
+  if (idx < 0 || idx >= menuFiltered.length) return;
+  const app = menuFiltered[idx];
+  closeMenu();
+  if (app.id) openApp(app.id);
+}
+
+function openMenu() {
+  if (menuOpen) return;
+  menuOpen = true;
+  menuQuery = '';
+  menuSelectedIdx = 0;
+  document.getElementById('start-menu').classList.add('open');
+  document.getElementById('menu-search').value = '';
+  const wrap = document.getElementById('menu-search-wrap');
+  wrap.classList.add('focused');
+  renderMenuList();
+  setTimeout(() => document.getElementById('menu-search').focus(), 50);
+}
+
+function closeMenu() {
+  if (!menuOpen) return;
+  menuOpen = false;
+  document.getElementById('start-menu').classList.remove('open');
+  document.getElementById('menu-search-wrap').classList.remove('focused');
+}
+
+/* Toggle: if open, close; if closed, open.
+   Double-click-start: if already open, cancel pending close (debounce 250ms) */
+let menuLastOpenTime = 0;
+
+function toggleMenu() {
+  const now = Date.now();
+  if (menuOpen) {
+    // Debounce: if toggled within 250ms of opening, ignore (not double-open)
+    if (now - menuLastOpenTime < MENU_DEBOUNCE_MS) return;
+    clearTimeout(menuCloseTimer);
+    closeMenu();
+  } else {
+    menuLastOpenTime = now;
+    openMenu();
+  }
+}
+
+/* Menu keyboard handling — maindeck-menu.c keyboard section */
+function handleMenuKey(e) {
+  const search = document.getElementById('menu-search');
+
+  switch (e.key) {
+    case 'Escape':
+      e.preventDefault();
+      closeMenu();
+      break;
+    case 'Enter':
+      e.preventDefault();
+      launchMenuItem(menuSelectedIdx);
+      break;
+    case 'ArrowDown':
+      e.preventDefault();
+      menuSelectedIdx = Math.min(menuSelectedIdx + 1, menuFiltered.length - 1);
+      renderMenuList();
+      break;
+    case 'ArrowUp':
+      e.preventDefault();
+      menuSelectedIdx = Math.max(menuSelectedIdx - 1, 0);
+      renderMenuList();
+      break;
+    case 'Backspace':
+      menuQuery = menuQuery.slice(0, -1);
+      search.value = menuQuery;
+      menuSelectedIdx = 0;
+      renderMenuList();
+      break;
+    default:
+      if (e.key.length === 1 && !e.ctrlKey && !e.altKey) {
+        menuQuery += e.key;
+        search.value = menuQuery;
+        menuSelectedIdx = 0;
+        renderMenuList();
+      }
+      break;
+  }
+}
+
+/* Search input live update */
+document.getElementById('menu-search').addEventListener('input', (e) => {
+  menuQuery = e.target.value;
+  menuSelectedIdx = 0;
+  renderMenuList();
+});
+
+/* Close on focus loss — FOCUS_DELAY_MS = 80ms in maindeck-menu.c */
+document.addEventListener('click', (e) => {
+  const menu = document.getElementById('start-menu');
+  const startBtn = document.getElementById('ql-start');
+  if (!menu.contains(e.target) && !startBtn.contains(e.target) && menuOpen) {
+    setTimeout(() => closeMenu(), 80);
+  }
+});
+
+/* ===================================================================
+   TERMINAL INPUT SIMULATION
+   =================================================================== */
+let termInput = '';
+document.addEventListener('keydown', (e) => {
+  if (!document.getElementById('win-term') ||
+      document.getElementById('win-term').style.display === 'none') return;
+  // Only handle if no menu open and no other focused input
+  if (menuOpen) return;
+  if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+  if (e.altKey || e.ctrlKey || e.metaKey || e.key.length > 1) return;
+
+  termInput += e.key;
+  document.getElementById('term-input-display').textContent = termInput;
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Backspace' && !e.altKey && !e.ctrlKey) {
+    if (document.getElementById('win-term') &&
+        document.getElementById('win-term').style.display !== 'none' &&
+        !menuOpen && !(document.activeElement && document.activeElement.tagName === 'INPUT')) {
+      termInput = termInput.slice(0, -1);
+      const el = document.getElementById('term-input-display');
+      if (el) el.textContent = termInput;
+    }
+  }
+  if (e.key === 'Enter' && !e.altKey && !e.ctrlKey) {
+    if (document.getElementById('win-term') &&
+        document.getElementById('win-term').style.display !== 'none' &&
+        !menuOpen && !(document.activeElement && document.activeElement.tagName === 'INPUT')) {
+      const out = document.getElementById('term-output');
+      const cmdText = termInput.trim();
+      termInput = '';
+      const el = document.getElementById('term-input-display');
+      if (el) el.textContent = '';
+
+      // Add command echo and fake output before the prompt line
+      const promptLine = document.getElementById('term-prompt-line');
+      // Insert executed cmd line
+      const cmdDiv = document.createElement('div');
+      cmdDiv.innerHTML = `<span class="term-prompt">tcfialho</span><span style="color:#666">@</span><span class="term-path">arch</span><span style="color:#666"> ~ </span><span class="term-dollar">$</span> <span class="term-cmd">${cmdText}</span>`;
+      out.insertBefore(cmdDiv, promptLine);
+      if (cmdText) {
+        const outDiv = document.createElement('div');
+        outDiv.className = 'term-output';
+        outDiv.textContent = `bash: ${cmdText}: comando não encontrado`;
+        out.insertBefore(outDiv, promptLine);
+      }
+      out.scrollTop = out.scrollHeight;
+    }
+  }
+});
+
+/* ===================================================================
+   CLOCK
+   =================================================================== */
+function updateClock() {
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  const mo = String(now.getMonth() + 1).padStart(2, '0');
+  const yy = now.getFullYear();
+  /* Format: "%H:%M  %d/%m/%Y" — as in bar.json */
+  document.getElementById('clock-text').textContent = `${hh}:${mm}  ${dd}/${mo}/${yy}`;
+}
+updateClock();
+setInterval(updateClock, 1000);
+
+/* ===================================================================
+   TOAST
+   =================================================================== */
+let toastTimer = null;
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 1500);
+}
+
+/* ===================================================================
+   RESIZE HANDLER
+   =================================================================== */
+window.addEventListener('resize', () => {
+  applyLayout();
+});
+
+/* ===================================================================
+   KEYBOARD LOCK — ativa fullscreen + keyboard.lock() no primeiro clique
+   Keyboard Lock API (Chrome 68+) exige: user gesture + fullscreen.
+   file:// é secure context no Chromium (window.isSecureContext=true).
+   Chrome 130+ pode exibir prompt de permissão antes do lock.
+   Referência: https://developer.chrome.com/docs/capabilities/web-apis/keyboard-lock
+   =================================================================== */
+async function startPrototype() {
+  const overlay = document.getElementById('kb-overlay');
+  try {
+    await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+  } catch (e) {
+    // Fullscreen recusado (ex: iframe) — continua sem lock
+    overlay.remove();
+    return;
+  }
+  if (navigator.keyboard && navigator.keyboard.lock) {
+    try {
+      // Trava apenas os atalhos que o protótipo usa; F12/devtools ficam livres
+      await navigator.keyboard.lock([
+        'Tab', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
+        'Enter', 'F4',
+      ]);
+    } catch (e) {
+      // Permissão negada ou API indisponível — funciona sem lock (Ctrl+Tab pode falhar)
+      showToast('keyboard.lock() negado — Ctrl+Tab pode não funcionar');
+    }
+  } else {
+    showToast('Keyboard Lock não suportado — Ctrl+Tab pode não funcionar');
+  }
+  overlay.remove();
+}
+
+// Sai do lock ao sair do fullscreen (Esc)
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement && navigator.keyboard && navigator.keyboard.unlock) {
+    navigator.keyboard.unlock();
+  }
+});
+
+/* ===================================================================
+   INITIAL STATE: chrome=MAIN, files=DECK, term=hidden
+   =================================================================== */
+wm.windows = [
+  { id: 'chrome', title: 'Google — Chromium', appId: 'chromium' },
+  { id: 'files',  title: 'Home — Arquivos',   appId: 'pcmanfm' },
+  { id: 'term',   title: 'kitty',              appId: 'kitty' },
+];
+wm.target_index = 0;
+wm.maximized = false;
+applyLayout();
+renderTaskbar();
+</script>
+</body>
+</html>
