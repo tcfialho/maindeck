@@ -710,12 +710,16 @@ html, body {
 
 /* -------------------------------------------------------------------
    P2.3 keyframes — deck switch, foco (nudge) e fechar.
-   clip-path:inset(0) confina o slide ao próprio bounding box (não cruza vizinhos).
+   As variantes RIGHT deslizam p/ a borda direita (recortadas pelo #desktop
+   overflow:hidden) — nunca cruzam o main.
+   As variantes LEFT deslizam em direção ao main; por isso o clip-path VIAJA
+   junto com o translate (inset esquerdo = |translateX|), fixando a borda
+   esquerda visível na divisão main↔deck — o efeito fica confinado ao deck.
    ------------------------------------------------------------------- */
 @keyframes p9DeckOutRight { from { transform:translateX(0);    opacity:1; clip-path:inset(0); } to { transform:translateX(28px);  opacity:0; clip-path:inset(0); } }
-@keyframes p9DeckOutLeft  { from { transform:translateX(0);    opacity:1; clip-path:inset(0); } to { transform:translateX(-28px); opacity:0; clip-path:inset(0); } }
+@keyframes p9DeckOutLeft  { from { transform:translateX(0);    opacity:1; clip-path:inset(0 0 0 0); }    to { transform:translateX(-28px); opacity:0; clip-path:inset(0 0 0 28px); } }
 @keyframes p9DeckInRight  { from { transform:translateX(28px); opacity:0; clip-path:inset(0); } to { transform:translateX(0);     opacity:1; clip-path:inset(0); } }
-@keyframes p9DeckInLeft   { from { transform:translateX(-28px);opacity:0; clip-path:inset(0); } to { transform:translateX(0);     opacity:1; clip-path:inset(0); } }
+@keyframes p9DeckInLeft   { from { transform:translateX(-28px);opacity:0; clip-path:inset(0 0 0 28px); } to { transform:translateX(0);     opacity:1; clip-path:inset(0 0 0 0); } }
 @keyframes p9CloseSlide   { from { transform:translateX(0);    opacity:1; clip-path:inset(0); } to { transform:translateX(-45%);  opacity:0; clip-path:inset(0); } }
 @keyframes p9NudgeRight   { 0%{transform:translateX(0);} 45%{transform:translateX(8px);}  100%{transform:translateX(0);} }
 @keyframes p9NudgeLeft    { 0%{transform:translateX(0);} 45%{transform:translateX(-8px);} 100%{transform:translateX(0);} }
@@ -1450,7 +1454,8 @@ function actionDeckNext() {
     showToast('Sem janela invisível à direita');
     return;
   }
-  // P2.3: deck atual sai deslizando p/ direita; o novo deck entra deslizando p/ direita
+  // Sweep SEGUE a seta (Ctrl+→ varre p/ direita): antiga sai pela direita,
+  // nova entra pela esquerda (clipada na divisão main↔deck).
   const oldDeckEl = document.getElementById('win-' + wm.windows[1].id);
   if (oldDeckEl) animClass(oldDeckEl, 'anim-deck-out-right', 140);
   setTimeout(() => {
@@ -1459,7 +1464,7 @@ function actionDeckNext() {
     wm.target_index = 1;
     noAnim(() => { applyLayout(); renderTaskbar(); });
     const newDeckEl = document.getElementById('win-' + wm.windows[1].id);
-    if (newDeckEl) animClass(newDeckEl, 'anim-deck-in-right', 200);
+    if (newDeckEl) animClass(newDeckEl, 'anim-deck-in-left', 200);
   }, 110);
   showToast('Deck → próximo');
 }
@@ -1472,7 +1477,8 @@ function actionDeckPrev() {
     showToast('Sem janela invisível à esquerda');
     return;
   }
-  // P2.3: deck atual sai deslizando p/ esquerda; o novo deck entra deslizando p/ esquerda
+  // Sweep SEGUE a seta (Ctrl+← varre p/ esquerda): antiga sai pela esquerda
+  // (clipada na divisão main↔deck), nova entra pela direita.
   const oldDeckEl = document.getElementById('win-' + wm.windows[1].id);
   if (oldDeckEl) animClass(oldDeckEl, 'anim-deck-out-left', 140);
   setTimeout(() => {
@@ -1481,7 +1487,7 @@ function actionDeckPrev() {
     wm.target_index = 1;
     noAnim(() => { applyLayout(); renderTaskbar(); });
     const newDeckEl = document.getElementById('win-' + wm.windows[1].id);
-    if (newDeckEl) animClass(newDeckEl, 'anim-deck-in-left', 200);
+    if (newDeckEl) animClass(newDeckEl, 'anim-deck-in-right', 200);
   }, 110);
   showToast('Deck → anterior');
 }
