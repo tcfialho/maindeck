@@ -122,6 +122,7 @@ session uses the default KMS config.
 
 | Path | Purpose |
 |---|---|
+| `/etc/keyd/default.conf` | Key remapping configuration (Win→F19, Tab/←/→→F23/F24). |
 | `~/.config/river/init` | River session entry point. |
 | `~/.config/maindeck/bar.json` | Native MainDeck bar config. |
 | `~/.config/mako/config` | Notification behavior for OSD/mode messages. |
@@ -129,12 +130,56 @@ session uses the default KMS config.
 | `~/.local/bin/sunshine-session-start` | Sunshine login-session handoff. |
 | `/usr/local/bin/sunshine-prelogin-start` | Sunshine pre-login SDDM launcher. |
 
+## Keyboard Configuration (keyd)
+
+The WM binds the F-key combos keyd emits. The local keyd configuration at `/etc/keyd/default.conf` remaps physical modifier sequences to synthetic keysyms that survive standard layout mappings:
+
+```ini
+[main]
+leftmeta = overload(meta, f19)
+
+[meta]
+# Tap/Hold do MainDeck via timeout(tap, 360ms, hold).
+# F19/F23/F24 são as F-keys que sobrevivem como keysym REAL até o compositor neste
+# layout (br,us-intl); as demais (ex.: F14) viram XF86* ou não casam o keysym esperado.
+# Por isso as 3 teclas de navegação compartilham F23/F24 com modificadores distintos:
+#   tab  TAP=Alt+F23      HOLD=Alt+Ctrl+F23
+#   ←    TAP=F23          HOLD=Ctrl+F23
+#   →    TAP=F24          HOLD=Ctrl+F24
+tab   = timeout(A-f23, 360, A-C-f23)
+left  = timeout(f23,   360, C-f23)
+right = timeout(f24,   360, C-f24)
+# Win+Shift tocado (solta rápido, SEM outra tecla) = Ctrl+F19 → toggle maximize no WM.
+# Win+Shift SEGURADO + outra tecla (ex.: Escape) → Shift age como modificador →
+# Super+Shift+<tecla> chega ao compositor (assim Super+Shift+Escape = exit sobrevive).
+leftshift = overload(shift, C-f19)
+```
+
+### What keyd does, and why
+
+- **Tap Win**: emits `F19` (opens fuzzel launcher).
+- **Hold Win**: acts as `Super`/`Mod` (triggers window manager bindings like `Super+Return`).
+- **Win+Shift (tap)**: keyd overloaded Shift inside `[meta]` to emit `Ctrl+F19` on tap (triggering `ACTION_TOGGLE_MAXIMIZE` in the WM).
+- **Win+Shift (hold) + Key**: Shift acts as modifier, so `Super+Shift+Escape` still triggers `ACTION_EXIT`.
+
 ## Quick Checks
 
 ```sh
+# session / init
 sh -n ~/.config/river/init
+ps -eo pid,comm,args | rg -i 'waybar|maindeck|river|sunshine|keyd'
+
+# keyboard (keyd)
+systemctl status keyd --no-pager          # must be enabled + active
+sudo keyd monitor                          # live: shows what keyd emits per key
+#   tap Win → f19 ; hold Win+Tab → A-f23 / A-C-f23 ; tap Win+Shift → C-f19 ; etc.
+#   NOTE: this shows the evdev KEYCODE, NOT the XKB keysym the compositor sees.
+
+# what maindeck-wm actually receives (after keyd) — it logs each bound key. THIS,
+# not `keyd monitor`, is the proof a binding matched (no line = keysym mismatch):
+tail -f ~/.local/state/maindeck/maindeck.log   # "[EVENT] key pressed: tap=N hold=M"
+
+# sunshine
 systemctl --user status sunshine-after-login.service
 systemctl status sunshine-prelogin.service
-pgrep -a maindeck-wm
-pgrep -a maindeck-bar
 ```
