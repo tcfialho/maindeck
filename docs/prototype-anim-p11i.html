@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MainDeck Prototype P11e — card deal (slide + rotação)</title>
+<title>MainDeck Prototype P11i — abrir 11c, fechar sempre encolhe (dissolve)</title>
 <style>
 /* ===================================================================
    ROOT VARIABLES — extraídas de bar-render.c macros
@@ -726,7 +726,7 @@ html, body {
 @keyframes p9DeckOutLeft  { from { transform:translateX(0);    opacity:1; clip-path:inset(0 0 0 0); }    to { transform:translateX(-28px); opacity:0; clip-path:inset(0 0 0 28px); } }
 @keyframes p9DeckInRight  { from { transform:translateX(28px); opacity:0; clip-path:inset(0); } to { transform:translateX(0);     opacity:1; clip-path:inset(0); } }
 @keyframes p9DeckInLeft   { from { transform:translateX(-28px);opacity:0; clip-path:inset(0 0 0 28px); } to { transform:translateX(0);     opacity:1; clip-path:inset(0 0 0 0); } }
-@keyframes p9CloseSlide   { from { transform:translateX(0) rotate(0deg);    opacity:1; clip-path:inset(0 0 0 0); } to { transform:translateX(-45%) rotate(-4deg);  opacity:0; clip-path:inset(0 0 0 45%); } }
+@keyframes p9CloseSlide   { from { transform:translateX(0);    opacity:1; clip-path:inset(0 0 0 0); } to { transform:translateX(-45%);  opacity:0; clip-path:inset(0 0 0 45%); } }
 @keyframes p9NudgeRight   { 0%{transform:translateX(0);} 45%{transform:translateX(8px);}  100%{transform:translateX(0);} }
 @keyframes p9NudgeLeft    { 0%{transform:translateX(0);} 45%{transform:translateX(-8px);} 100%{transform:translateX(0);} }
 
@@ -734,7 +734,7 @@ html, body {
 .window.anim-deck-out-left  { animation: p9DeckOutLeft  0.13s ease-in  forwards; pointer-events:none; }
 .window.anim-deck-in-right  { animation: p9DeckInRight  0.20s ease-out forwards; }
 .window.anim-deck-in-left   { animation: p9DeckInLeft   0.20s ease-out forwards; }
-.window.anim-close-slide    { animation: p9CloseSlide   0.18s cubic-bezier(0.5,0,0.9,0.3) forwards; pointer-events:none; }
+.window.anim-close-slide    { animation: p9CloseSlide   0.18s ease-in  forwards; pointer-events:none; }
 .window.anim-nudge-right    { animation: p9NudgeRight   0.16s ease-out forwards; }
 .window.anim-nudge-left     { animation: p9NudgeLeft    0.16s ease-out forwards; }
 
@@ -772,13 +772,24 @@ html, body {
 .window.anim-fs-out-right { animation: p11FsOutRight 0.24s cubic-bezier(0.4,0,0.2,1) forwards; pointer-events:none; }
 
 /* -------------------------------------------------------------------
-   P11e — "CARD DEAL" (tema do deck): a janela entra como carta distribuída —
-   desliza da esquerda com leve rotação (-4°) que assenta reta, com easing de
-   "settle". Fechar = varrida da mesa: tomba (-4°) e sai p/ esquerda acelerando.
-   Caráter via rotação/física, mantendo o eixo horizontal (sem escala competindo).
+   P11a — ABRIR: a janela nova entra deslizando 45% da ESQUERDA → direita
+   + fade. É o FECHAR ao contrário (o fechar sai 45% p/ esquerda): abre vindo
+   da esquerda, fecha indo p/ esquerda — eixo consistente. Como a janela nova
+   vai pro slot MAIN (à esquerda), entrar pela esquerda vai p/ a borda da tela,
+   sem cruzar o deck. Slide puro, sem clip. Substitui o "crescer" do 4.1.
    ------------------------------------------------------------------- */
-@keyframes p11aOpenSlide { from { transform:translateX(-45%) rotate(-4deg); opacity:0; } to { transform:translateX(0) rotate(0deg); opacity:1; } }
-.window.anim-open-slide { animation: p11aOpenSlide 0.22s cubic-bezier(0.2,0.8,0.25,1) forwards; }
+@keyframes p11aOpenSlide { from { transform:translateX(-45%); opacity:0; } to { transform:translateX(0); opacity:1; } }
+.window.anim-open-slide { animation: p11aOpenSlide 0.18s ease-out forwards; }
+
+/* -------------------------------------------------------------------
+   P11c — "context-switch": SLIDE quando há vizinhas (entra/sai da fileira,
+   funde com o reflow), ESCALA quando a janela está sozinha (1ª que abre / última
+   que fecha — sem reflow competindo, a tela materializa/colapsa).
+   - Abrir sozinha: NÃO aplica o slide → mantém o "crescer" natural do showWin (4.1).
+   - Fechar a última: encolhe no lugar + fade (espelho do crescer).
+   ------------------------------------------------------------------- */
+@keyframes p11cCloseShrink { from { transform:scale(1); opacity:1; } to { transform:scale(0.86); opacity:0; } }
+.window.anim-close-shrink { animation: p11cCloseShrink 0.18s ease-in forwards; pointer-events:none; }
 
 /* ===================================================================
    KEYBOARD LOCK OVERLAY
@@ -878,7 +889,7 @@ html, body {
 
 <!-- KEYBOARD LOCK OVERLAY — clique para ativar fullscreen + keyboard.lock -->
 <div id="kb-overlay" onclick="startPrototype()">
-  <h2>🐧 MainDeck Prototype P11e — card deal (carta entra deslizando + leve rotação)</h2>
+  <h2>🐧 MainDeck Prototype P11i — abrir: cresce sozinha / slide em grupo · fechar: SEMPRE encolhe</h2>
   <p>Para capturar Ctrl+Tab e outros atalhos do compositor,<br>o protótipo precisa rodar em tela cheia.</p>
   <button class="start-btn">Clique para iniciar</button>
   <div class="kb-note">Pressione Esc para sair do modo tela cheia</div>
@@ -1370,7 +1381,7 @@ function openApp(id) {
       wm.target_index = 0;
       applyLayout();
       renderTaskbar();
-      animClass(document.getElementById('win-' + win.id), 'anim-open-slide', 200); // P11a: entra da direita
+      animClass(document.getElementById('win-' + win.id), 'anim-open-slide', 200); // P11c: promover é sempre multi → slide
       return;
     }
   }
@@ -1385,11 +1396,17 @@ function openApp(id) {
 
   applyLayout();
   renderTaskbar();
-  animClass(document.getElementById('win-' + id), 'anim-open-slide', 200); // P11a: entra da direita
+  // P11c: só desliza se já há vizinhas (entra na fileira). Sozinha (1ª janela),
+  // sem slide → o showWin já faz o "crescer" natural (a tela materializa).
+  if (wm.windows.length > 1) {
+    animClass(document.getElementById('win-' + id), 'anim-open-slide', 200);
+  }
 }
 
-/* FECHAR — P2.3: a janela alvo desliza p/ esquerda + fade (clip-path confina
-   ao próprio box), depois sai de cena e as demais refluem (geometria do P4.1). */
+/* FECHAR — P11i: SEMPRE encolhe no lugar + fade (dissolve), seja main, deck ou
+   única. Sem direção → não escolhe lado nem some na divisão main↔deck. A janela
+   está saindo da atenção (fade), então recua sem brigar com o reflow das vizinhas.
+   Distinto do minimizar (que encolhe DESCENDO p/ a barra). */
 function closeWindow(id) {
   const idx = wm.windows.findIndex(w => w.id === id);
   if (idx < 0) return;
@@ -1408,7 +1425,7 @@ function closeWindow(id) {
     renderTaskbar();
   };
   if (el && idx < 2) {
-    animClass(el, 'anim-close-slide', 180);
+    animClass(el, 'anim-close-shrink', 180);   // P11i: sempre encolhe (dissolve no lugar)
     setTimeout(doClose, 160);
   } else {
     doClose();
