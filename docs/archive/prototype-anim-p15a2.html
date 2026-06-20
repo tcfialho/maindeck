@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MainDeck Prototype P15a2 — P15 sem spring: scale+fade no solo · ease-in-out no reflow</title>
+<title>MainDeck Prototype P15a2 — solo: slide vertical (do topo) · grupo: slide horizontal</title>
 <style>
 /* ===================================================================
    ROOT VARIABLES — extraídas de bar-render.c macros
@@ -788,20 +788,24 @@ html, body {
        direita, então colapsa em direção à borda direita (a ponta do deck).
      - MAIN ou ÚNICA → "sumir": fade puro no lugar, sem direção nem escala.
    ------------------------------------------------------------------- */
-/* P15: par simétrico completo.
-   Solo: scale 0.65 abre e fecha (centro, com fade).
-   Grupo open: slide sólido da esquerda (opacidade 1, sem blend).
-   Deck close: sai 100% sólido para a direita — espelho exato do open slide-solid.
-   Main close (com deck): scale 0.65 (mesma linguagem do solo).
-   Spring (cubic-bezier 0.22,1,0.36,1) nos dois sentidos: encolhe→deck e expande←deck. */
-@keyframes p15Open      { from { transform:scale(0.65); opacity:0; } to { transform:scale(1); opacity:1; } }
-@keyframes p15Close     { from { transform:scale(1); opacity:1; } to { transform:scale(0.65); opacity:0; } }
-@keyframes p15SlideIn   { from { transform:translateX(-45%); opacity:1; } to { transform:translateX(0); opacity:1; } }
-@keyframes p15DeckClose { from { transform:translateX(0);    opacity:1; } to { transform:translateX(100%); opacity:1; } }
-.window.anim-open-scale      { animation: p15Open      0.22s ease-out forwards; }
-.window.anim-close-scale     { animation: p15Close     0.20s ease-in  forwards; pointer-events:none; }
-.window.anim-open-slide-solid{ animation: p15SlideIn   0.20s ease-out forwards; }
-.window.anim-deck-close-right{ animation: p15DeckClose 0.20s ease-in  forwards; pointer-events:none; }
+/* P15a2: eixo diferente para solo — sem fade, sem scale, sem spring.
+   Solo open:  desce do topo (translateY -100% → 0), opacity:1 fixo.
+   Solo close: sobe de volta ao topo (translateY 0 → -100%), opacity:1 fixo.
+     Eixo vertical marca visualmente o caso "sem contexto espacial" (primeira/última),
+     oposto ao eixo horizontal dos slides de grupo.
+   Main-com-deck close: slide para esquerda (anim-close-solo, reutilizado).
+   Grupo open: slide parcial 45% da esquerda (sólido).
+   Deck close: 100% para a direita. */
+@keyframes p15a2OpenVert  { from { transform:translateY(-100%); opacity:1; } to { transform:translateY(0); opacity:1; } }
+@keyframes p15a2CloseVert { from { transform:translateY(0); opacity:1; } to { transform:translateY(-100%); opacity:1; } }
+@keyframes p15aCloseSolo  { from { transform:translateX(0); opacity:1; } to { transform:translateX(-100%); opacity:1; } }
+@keyframes p15SlideIn     { from { transform:translateX(-45%);  opacity:1; } to { transform:translateX(0); opacity:1; } }
+@keyframes p15DeckClose   { from { transform:translateX(0);     opacity:1; } to { transform:translateX(100%); opacity:1; } }
+.window.anim-open-vert       { animation: p15a2OpenVert  0.22s ease-out forwards; }
+.window.anim-close-vert      { animation: p15a2CloseVert 0.20s ease-in  forwards; pointer-events:none; }
+.window.anim-close-solo      { animation: p15aCloseSolo  0.20s ease-in  forwards; pointer-events:none; }
+.window.anim-open-slide-solid{ animation: p15SlideIn     0.20s ease-out forwards; }
+.window.anim-deck-close-right{ animation: p15DeckClose   0.20s ease-in  forwards; pointer-events:none; }
 
 /* ===================================================================
    KEYBOARD LOCK OVERLAY
@@ -901,7 +905,7 @@ html, body {
 
 <!-- KEYBOARD LOCK OVERLAY — clique para ativar fullscreen + keyboard.lock -->
 <div id="kb-overlay" onclick="startPrototype()">
-  <h2>🐧 MainDeck Prototype P15a2 — P15 sem spring: scale+fade no solo · reflow com ease-in-out padrão</h2>
+  <h2>🐧 MainDeck Prototype P15a2 — solo: slide vertical do topo · grupo: slide horizontal · sem fade · sem spring</h2>
   <p>Para capturar Ctrl+Tab e outros atalhos do compositor,<br>o protótipo precisa rodar em tela cheia.</p>
   <button class="start-btn">Clique para iniciar</button>
   <div class="kb-note">Pressione Esc para sair do modo tela cheia</div>
@@ -1406,13 +1410,21 @@ function openApp(id) {
   wm.target_index = 0; // new window becomes MAIN and gets focus
   wm.maximized = false;
 
-  // P15a2: sem spring — reflow via transição CSS padrão (ease-in-out).
+  // P15a: sem spring. Deck antigo (3ª janela+) esconde instantaneamente para não sobrepor visualmente.
+  if (wm.windows.length > 2) {
+    const oldDeckEl = document.getElementById('win-' + wm.windows[2].id);
+    if (oldDeckEl) {
+      oldDeckEl.style.transition = 'none';
+      oldDeckEl.style.display = 'none';
+      requestAnimationFrame(() => { oldDeckEl.style.transition = ''; });
+    }
+  }
 
   applyLayout();
   renderTaskbar();
-  // P14a1: sozinha = scale 0.65 pronunciado; 2ª+ = slide sólido da esquerda (sem fade blend).
+  // P15a2: sozinha = slide vertical do topo (eixo neutro, sem direção espacial); 2ª+ = slide horizontal da esquerda.
   if (wm.windows.length === 1) {
-    animClass(document.getElementById('win-' + id), 'anim-open-scale', 220);
+    animClass(document.getElementById('win-' + id), 'anim-open-vert', 220);
   } else {
     animClass(document.getElementById('win-' + id), 'anim-open-slide-solid', 200);
   }
@@ -1438,19 +1450,18 @@ function closeWindow(id) {
     renderTaskbar();
   };
   if (el && idx < 2) {
-    // P15 — fechamentos simétricos:
     if (wm.windows.length === 1) {
-      // Solo: scale 0.65 (espelho do open solo)
-      animClass(el, 'anim-close-scale', 200);
+      // P15a2: solo (última janela) — sobe de volta ao topo, simétrico com a entrada
+      animClass(el, 'anim-close-vert', 200);
       setTimeout(doClose, 180);
     } else if (idx === 1) {
-      // Deck: sai 100% sólido para direita (espelho do open slide-solid da esquerda)
+      // Deck: sai 100% sólido para direita
       animClass(el, 'anim-deck-close-right', 200);
       setTimeout(doClose, 180);
     } else {
-      // Main com deck: scale 0.65 + deck expande via ease-in-out padrão (sem spring)
-      animClass(el, 'anim-close-scale', 200);
-      setTimeout(doClose, 160);
+      // Main com deck: slide para esquerda (horizontal, contexto espacial existe)
+      animClass(el, 'anim-close-solo', 200);
+      setTimeout(doClose, 180);
     }
   } else {
     doClose();
