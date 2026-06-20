@@ -794,14 +794,19 @@ html, body {
    Deck close: sai 100% sólido para a direita — espelho exato do open slide-solid.
    Main close (com deck): scale 0.65 (mesma linguagem do solo).
    Spring (cubic-bezier 0.22,1,0.36,1) nos dois sentidos: encolhe→deck e expande←deck. */
+/* P15a6: scale+fade só para primeira (open solo) e última (close solo).
+   Main-com-deck close: slide para esquerda sem fade (P15a1).
+   Sem spring em nenhum reflow. */
 @keyframes p15Open      { from { transform:scale(0.65); opacity:0; } to { transform:scale(1); opacity:1; } }
 @keyframes p15Close     { from { transform:scale(1); opacity:1; } to { transform:scale(0.65); opacity:0; } }
+@keyframes p15aCloseSolo{ from { transform:translateX(0); opacity:1; } to { transform:translateX(-100%); opacity:1; } }
 @keyframes p15SlideIn   { from { transform:translateX(-45%); opacity:1; } to { transform:translateX(0); opacity:1; } }
 @keyframes p15DeckClose { from { transform:translateX(0);    opacity:1; } to { transform:translateX(100%); opacity:1; } }
-.window.anim-open-scale      { animation: p15Open      0.22s ease-out forwards; }
-.window.anim-close-scale     { animation: p15Close     0.20s ease-in  forwards; pointer-events:none; }
-.window.anim-open-slide-solid{ animation: p15SlideIn   0.20s ease-out forwards; }
-.window.anim-deck-close-right{ animation: p15DeckClose 0.20s ease-in  forwards; pointer-events:none; }
+.window.anim-open-scale      { animation: p15Open       0.22s ease-out forwards; }
+.window.anim-close-scale     { animation: p15Close      0.20s ease-in  forwards; pointer-events:none; }
+.window.anim-close-solo      { animation: p15aCloseSolo 0.20s ease-in  forwards; pointer-events:none; }
+.window.anim-open-slide-solid{ animation: p15SlideIn    0.20s ease-out forwards; }
+.window.anim-deck-close-right{ animation: p15DeckClose  0.20s ease-in  forwards; pointer-events:none; }
 
 /* ===================================================================
    KEYBOARD LOCK OVERLAY
@@ -1457,8 +1462,8 @@ function closeWindow(id) {
       animClass(el, 'anim-deck-close-right', 200);
       setTimeout(doClose, 180);
     } else {
-      // Main com deck: scale 0.65 + fade; deck expande via ease-in-out padrão (sem spring).
-      animClass(el, 'anim-close-scale', 200);
+      // Main com deck (não é a última): slide para esquerda sem fade (P15a1).
+      animClass(el, 'anim-close-solo', 200);
       setTimeout(doClose, 180);
     }
   } else {
