@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MainDeck Prototype P15a3 — solo: instantâneo (sem animação) · grupo: slide horizontal</title>
+<title>MainDeck Prototype P15a3 — solo: slide vertical (de baixo) · grupo: slide horizontal</title>
 <style>
 /* ===================================================================
    ROOT VARIABLES — extraídas de bar-render.c macros
@@ -788,21 +788,23 @@ html, body {
        direita, então colapsa em direção à borda direita (a ponta do deck).
      - MAIN ou ÚNICA → "sumir": fade puro no lugar, sem direção nem escala.
    ------------------------------------------------------------------- */
-/* P15a3: sem animação para solo — aparece e some instantaneamente.
-   Filosofia: a animação existe para mostrar relação entre janelas.
-   Sem contexto (primeira/última), não há relação para mostrar — janela surge.
-   win-hidden transition é suprimida via transition:none antes do applyLayout.
-   Grupo open: slide parcial 45% da esquerda (sólido) — contexto existe.
-   Deck close: 100% para a direita.
-   Main-com-deck close: slide para esquerda. */
-@keyframes p15aOpenSolo  { from { transform:translateX(-100%); opacity:1; } to { transform:translateX(0); opacity:1; } }
-@keyframes p15aCloseSolo { from { transform:translateX(0); opacity:1; } to { transform:translateX(-100%); opacity:1; } }
-@keyframes p15SlideIn    { from { transform:translateX(-45%);  opacity:1; } to { transform:translateX(0); opacity:1; } }
-@keyframes p15DeckClose  { from { transform:translateX(0);     opacity:1; } to { transform:translateX(100%); opacity:1; } }
-.window.anim-open-solo       { animation: p15aOpenSolo  0.22s ease-out forwards; }
-.window.anim-close-solo      { animation: p15aCloseSolo 0.20s ease-in  forwards; pointer-events:none; }
-.window.anim-open-slide-solid{ animation: p15SlideIn    0.20s ease-out forwards; }
-.window.anim-deck-close-right{ animation: p15DeckClose  0.20s ease-in  forwards; pointer-events:none; }
+/* P15a3: eixo vertical, de baixo — sem fade, sem scale, sem spring.
+   Solo open:  sobe de baixo (translateY +100% → 0), opacity:1 fixo.
+   Solo close: desce de volta para baixo (translateY 0 → +100%), opacity:1 fixo.
+     Eixo vertical de baixo: janela emerge da barra/chão e volta para lá.
+   Main-com-deck close: slide para esquerda (anim-close-solo, reutilizado).
+   Grupo open: slide parcial 45% da esquerda (sólido).
+   Deck close: 100% para a direita. */
+@keyframes p15a2OpenVert  { from { transform:translateY(100%);  opacity:1; } to { transform:translateY(0); opacity:1; } }
+@keyframes p15a2CloseVert { from { transform:translateY(0); opacity:1; } to { transform:translateY(100%);  opacity:1; } }
+@keyframes p15aCloseSolo  { from { transform:translateX(0); opacity:1; } to { transform:translateX(-100%); opacity:1; } }
+@keyframes p15SlideIn     { from { transform:translateX(-45%);  opacity:1; } to { transform:translateX(0); opacity:1; } }
+@keyframes p15DeckClose   { from { transform:translateX(0);     opacity:1; } to { transform:translateX(100%); opacity:1; } }
+.window.anim-open-vert       { animation: p15a2OpenVert  0.22s ease-out forwards; }
+.window.anim-close-vert      { animation: p15a2CloseVert 0.20s ease-in  forwards; pointer-events:none; }
+.window.anim-close-solo      { animation: p15aCloseSolo  0.20s ease-in  forwards; pointer-events:none; }
+.window.anim-open-slide-solid{ animation: p15SlideIn     0.20s ease-out forwards; }
+.window.anim-deck-close-right{ animation: p15DeckClose   0.20s ease-in  forwards; pointer-events:none; }
 
 /* ===================================================================
    KEYBOARD LOCK OVERLAY
@@ -902,7 +904,7 @@ html, body {
 
 <!-- KEYBOARD LOCK OVERLAY — clique para ativar fullscreen + keyboard.lock -->
 <div id="kb-overlay" onclick="startPrototype()">
-  <h2>🐧 MainDeck Prototype P15a3 — solo: surge/some instantaneamente · grupo: slide horizontal · sem fade · sem spring</h2>
+  <h2>🐧 MainDeck Prototype P15a3 — solo: slide vertical de baixo · grupo: slide horizontal · sem fade · sem spring</h2>
   <p>Para capturar Ctrl+Tab e outros atalhos do compositor,<br>o protótipo precisa rodar em tela cheia.</p>
   <button class="start-btn">Clique para iniciar</button>
   <div class="kb-note">Pressione Esc para sair do modo tela cheia</div>
@@ -1417,21 +1419,11 @@ function openApp(id) {
     }
   }
 
-  // P15a3: solo — suprime o win-hidden transition antes do applyLayout para aparecer sem animação.
-  const isSolo = wm.windows.length === 1;
-  if (isSolo) {
-    const soloEl = document.getElementById('win-' + id);
-    soloEl.style.transition = 'none';
-  }
   applyLayout();
   renderTaskbar();
-  if (isSolo) {
-    const soloEl = document.getElementById('win-' + id);
-    soloEl.style.opacity   = '1';
-    soloEl.style.transform = 'none';
-    soloEl.classList.remove('win-hidden');
-    requestAnimationFrame(() => { soloEl.style.transition = ''; });
-    // Nenhum animClass: primeira janela surge sem movimento
+  // P15a3: sozinha = slide vertical de baixo (emerge da barra/chão); 2ª+ = slide horizontal da esquerda.
+  if (wm.windows.length === 1) {
+    animClass(document.getElementById('win-' + id), 'anim-open-vert', 220);
   } else {
     animClass(document.getElementById('win-' + id), 'anim-open-slide-solid', 200);
   }
@@ -1458,14 +1450,15 @@ function closeWindow(id) {
   };
   if (el && idx < 2) {
     if (wm.windows.length === 1) {
-      // P15a3: solo (última janela) — some instantaneamente, sem animação
-      doClose();
+      // P15a3: solo (última janela) — desce de volta para baixo, simétrico com a entrada
+      animClass(el, 'anim-close-vert', 200);
+      setTimeout(doClose, 180);
     } else if (idx === 1) {
       // Deck: sai 100% sólido para direita
       animClass(el, 'anim-deck-close-right', 200);
       setTimeout(doClose, 180);
     } else {
-      // Main com deck: slide para esquerda
+      // Main com deck: slide para esquerda (horizontal, contexto espacial existe)
       animClass(el, 'anim-close-solo', 200);
       setTimeout(doClose, 180);
     }
