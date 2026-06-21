@@ -1,0 +1,110 @@
+From f147bc4d830162cfb5ac62e0d079c4d7ff5dca2c Mon Sep 17 00:00:00 2001
+From: tcfialho <tcfialho@gmail.com>
+Date: Fri, 19 Jun 2026 00:01:34 -0300
+Subject: [PATCH 2/7] maindeck anim: fix open-fade frozen when interrupted by a
+ move
+
+A move that interrupted an in-flight open fade froze the window translucent:
+armMove collapsed target_opacity to last_opacity and the driver gated opacity
+application on kind (.move => no-op), so the fade never completed. This happens
+when opening two windows in quick succession (first goes main->deck mid-fade).
+
+Fix: armMove carries the existing animation's real opacity target (1.0) and
+continues from the current opacity; the driver applies opacity whenever the
+endpoints differ (Animation.fades()), not based on kind. Pure 1.0->1.0 moves
+still skip the per-buffer walk.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ river/Animation.zig | 32 +++++++++++++++++++++++++-------
+ river/Output.zig    | 14 ++++++--------
+ 2 files changed, 31 insertions(+), 15 deletions(-)
+
+diff --git a/river/Animation.zig b/river/Animation.zig
+index 46c174d..1c2fd00 100644
+--- a/river/Animation.zig
++++ b/river/Animation.zig
+@@ -80,6 +80,11 @@ pub fn nowNs() i64 {
+ /// Arm a position tween from `cur` toward `target`. If an animation is already
+ /// in flight, start from the last applied position (not `cur`), so a new layout
+ /// arriving mid-tween continues smoothly instead of jumping.
++///
++/// A move that interrupts an in-flight fade must NOT freeze the fade: it carries
++/// the existing animation's real opacity target (e.g. 1.0 for an open fade) and
++/// continues from the current opacity, so the fade still completes during/after
++/// the move. (Opacity is advanced whenever start != target, not gated on kind.)
+ pub fn armMove(
+     existing: ?Animation,
+     cur_x: i32,
+@@ -89,10 +94,18 @@ pub fn armMove(
+     duration_ms: u32,
+     easing: Easing,
+ ) Animation {
+-    const sx: f32, const sy: f32, const so: f32 = if (existing) |a|
+-        .{ a.last_x, a.last_y, a.last_opacity }
+-    else
+-        .{ @floatFromInt(cur_x), @floatFromInt(cur_y), 1.0 };
++    var sx: f32 = @floatFromInt(cur_x);
++    var sy: f32 = @floatFromInt(cur_y);
++    var start_opacity: f32 = 1.0;
++    var target_opacity: f32 = 1.0;
++    if (existing) |a| {
++        sx = a.last_x;
++        sy = a.last_y;
++        start_opacity = a.last_opacity;
++        // Carry the fade's destination so it finishes; for a move that already
++        // ended at full opacity this is just 1.0 -> 1.0 (a no-op opacity track).
++        target_opacity = a.target_opacity;
++    }
+ 
+     return .{
+         .kind = .move,
+@@ -105,12 +118,17 @@ pub fn armMove(
+         .target_y = @floatFromInt(target_y),
+         .last_x = sx,
+         .last_y = sy,
+-        .start_opacity = so,
+-        .target_opacity = so,
+-        .last_opacity = so,
++        .start_opacity = start_opacity,
++        .target_opacity = target_opacity,
++        .last_opacity = start_opacity,
+     };
+ }
+ 
++/// True if this animation changes opacity at all (so the driver should apply it).
++pub fn fades(anim: Animation) bool {
++    return anim.start_opacity != anim.target_opacity;
++}
++
+ /// Arm a fade at a fixed position. `kind` is `.open` (0 -> 1) or `.close` (1 -> 0).
+ pub fn armFade(
+     kind: Kind,
+diff --git a/river/Output.zig b/river/Output.zig
+index ec1368a..21f973d 100644
+--- a/river/Output.zig
++++ b/river/Output.zig
+@@ -614,14 +614,12 @@ pub fn advanceAnimations(now_ns: i64) bool {
+             window.popup_tree.node.setPosition(s.x, s.y);
+         }
+ 
+-        // Opacity: only touch buffers when actually fading (open/close), to keep
+-        // pure moves free of per-buffer work.
+-        switch (anim.kind) {
+-            .open, .close => {
+-                const opacity: f32 = if (finished) anim.target_opacity else s.opacity;
+-                Animation.applyOpacity(&window.surfaces.tree.node, opacity);
+-            },
+-            .move => {},
++        // Opacity: apply whenever the animation actually changes opacity (gated on
++        // the endpoints, not the kind — a move that interrupts a fade still fades).
++        // Pure moves (1.0 -> 1.0) skip the per-buffer walk.
++        if (anim.fades()) {
++            const opacity: f32 = if (finished) anim.target_opacity else s.opacity;
++            Animation.applyOpacity(&window.surfaces.tree.node, opacity);
+         }
+ 
+         if (finished) {
+-- 
+2.54.0
+

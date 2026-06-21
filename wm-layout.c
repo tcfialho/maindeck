@@ -9,6 +9,7 @@
 #include "wm-log.h"
 #include "wm-state.h"
 #include "wm-layout.h"
+#include "wm-animation-intents.h"
 
 #define DEFAULT_WIDTH 1280
 #define DEFAULT_HEIGHT 720
@@ -32,7 +33,10 @@ static void window_apply_borders(struct Window *w, enum BorderState desired) {
 		river_window_v1_set_borders(w->obj, RIVER_WINDOW_V1_EDGES_NONE, 0, 0, 0, 0, 0);
 	} else if (desired == BORDER_TILED) {
 		if (is_target) {
-			// Apenas traço azul na parte de baixo (2px de espessura): #2563eb
+			// Apenas traço azul na parte de baixo (2px de espessura): #2563eb.
+			// NOTA: RIVER_WINDOW_V1_EDGES_BOTTOM (2) é mapeado via @bitCast em Zig 
+			// para o segundo campo da packed struct Edges {top, bottom, left, right},
+			// resultando em top=false e bottom=true. A borda superior fica estritamente inativa.
 			river_window_v1_set_borders(w->obj, RIVER_WINDOW_V1_EDGES_BOTTOM, 2,
 				chan(37), chan(99), chan(235), chan(255));
 		} else {
@@ -305,6 +309,90 @@ void apply_pending_taskbar_activation(void) {
 	activate_window_from_taskbar(window);
 }
 
+/* Torna `window` o alvo do MainDeck (mesma lógica de targeting do activate
+ * tiled), SEM mexer em wm.maximized — o chamador decide. Flutuantes não têm
+ * índice MainDeck e não participam do maximize global. */
+static void target_tiled_window(struct Window *window) {
+	if (window->floating) return;
+	int32_t idx = window_index(window);
+	if (window->minimized) {
+		window->minimized = false;
+		move_first(window);
+		wm.target_index = 0;
+	} else if (idx == 0 || idx == 1) {
+		wm.target_index = (uint32_t)idx;
+	} else {
+		move_first(window);
+		wm.target_index = 0;
+	}
+}
+
+/* Menu de contexto: maximiza uma janela específica = foca + maximized global
+ * (decisão de design: maximized é estado global do MainDeck, segue o alvo). */
+void md_maximize_window(struct Window *window) {
+	if (window == NULL || window->closed || window->floating) return;
+	target_tiled_window(window);
+	wm.maximized = true;
+	wm.focus_dirty = true;
+	LOG_EVENT("ctx-menu maximize: \"%s\"", window->title ? window->title : "");
+	log_state();
+}
+
+/* Menu de contexto: "Restaurar" estilo Windows — reverte minimizado OU
+ * maximizado. Minimizado tem precedência (volta como MAIN). */
+void md_restore_window(struct Window *window) {
+	if (window == NULL || window->closed) return;
+	if (window->minimized) {
+		window->minimized = false;
+		move_first(window);
+		wm.target_index = 0;
+		wm.maximized = false;
+		wm.focus_dirty = true;
+		LOG_EVENT("ctx-menu restore (unminimize): \"%s\"", window->title ? window->title : "");
+		log_state();
+		return;
+	}
+	/* Não-minimizada: só faz sentido sair do maximize, e maximize é global e
+	 * segue o alvo — restaura se esta é a janela alvo e estamos maximizados. */
+	if (wm.maximized && window == target_window()) {
+		wm.maximized = false;
+		wm.focus_dirty = true;
+		LOG_EVENT("ctx-menu restore (unmaximize): \"%s\"", window->title ? window->title : "");
+		log_state();
+	}
+}
+
+void apply_pending_window_action(void) {
+	if (pending_window_action == WINDOW_ACTION_NONE) return;
+	enum WindowAction action = pending_window_action;
+	char id[33];
+	snprintf(id, sizeof(id), "%s", pending_window_action_id);
+	pending_window_action = WINDOW_ACTION_NONE;
+	pending_window_action_id[0] = '\0';
+
+	struct Window *window = window_by_identifier(id);
+	if (window == NULL) {
+		LOG_WARN("ctx-menu: identifier desconhecido=%s (no-op)", id);
+		return;
+	}
+	switch (action) {
+	case WINDOW_ACTION_MINIMIZE:
+		md_minimize_window(window);
+		wm.focus_dirty = true;
+		LOG_EVENT("ctx-menu minimize: \"%s\"", window->title ? window->title : "");
+		log_state();
+		break;
+	case WINDOW_ACTION_MAXIMIZE:
+		md_maximize_window(window);
+		break;
+	case WINDOW_ACTION_RESTORE:
+		md_restore_window(window);
+		break;
+	case WINDOW_ACTION_NONE:
+		break;
+	}
+}
+
 static void osd(const char *message) {
 	LOG_INFO("OSD: %s", message);
 	if (fork() == 0) {
@@ -375,6 +463,9 @@ void log_state(void) {
 				w->app_id ? w->app_id : "",
 				w->width,
 				w->height);
+		} else if (w->minimized) {
+			LOG_STATE("  [MIN] \"%s\" app_id=%s", w->title ? w->title : "",
+				w->app_id ? w->app_id : "");
 		} else {
 			const char *role = i == 0 ? "MAIN" : (i == 1 ? "DECK" : "hidden");
 			const char *target = (i == wm.target_index) ? " [ALVO]" : "";
@@ -454,6 +545,45 @@ void md_promote_target_to_main(void) {
 	move_first(target);
 	wm.target_index = 0;
 	wm.maximized = false;
+	log_state();
+}
+
+void md_minimize_window(struct Window *window) {
+	if (window == NULL || window->closed || window->minimized) return;
+	// A fullscreen window that gets minimized is reconciled by window_render_layout
+	// (the `fullscreen && !minimized` guard falls through to exit_fullscreen), so
+	// we only set the flag here and let the layout pass issue the protocol exit.
+	window->minimized = true;
+	move_last(window);          // group at the tail; newest minimized is last
+	wm.target_index = 0;        // target the new MAIN (clamped below if needed)
+	wm.maximized = false;
+	clamp_target();
+}
+
+void md_minimize_target(void) {
+	struct Window *target = target_window();
+	if (target == NULL) return;
+	md_minimize_window(target);
+	LOG_EVENT("minimize (keybinding): \"%s\"", target->title ? target->title : "");
+	log_state();
+}
+
+void md_unminimize(void) {
+	// LIFO: the most recently minimized window. minimize sends each one to the
+	// tail, so the LAST window with minimized==true is the newest. Filter by the
+	// flag — the tail also holds non-minimized deck-overflow windows, so "last
+	// in the list" alone would restore the wrong window.
+	struct Window *newest = NULL;
+	struct Window *w;
+	wl_list_for_each(w, &wm.windows, link) {
+		if (w->minimized && !w->closed) newest = w; // keep the last match
+	}
+	if (newest == NULL) return; // nothing minimized
+	newest->minimized = false;
+	move_first(newest);         // comes back as MAIN (mirror of the prototype)
+	wm.target_index = 0;
+	wm.maximized = false;
+	LOG_EVENT("unminimize (LIFO): \"%s\"", newest->title ? newest->title : "");
 	log_state();
 }
 
@@ -630,7 +760,8 @@ void window_manage_layout(struct Window *window, size_t index, const struct Layo
 	if (!visible) return;
 	struct Box box = layout_box_for_index(view, index);
 	int32_t width = box.width - (BORDER_WIDTH * 2);
-	int32_t height = box.height - (BORDER_WIDTH * 2);
+	// Recupera o espaço do topo removendo BORDER_WIDTH apenas uma vez (para o fundo)
+	int32_t height = box.height - BORDER_WIDTH;
 	river_window_v1_use_ssd(window->obj);
 	river_window_v1_set_tiled(window->obj, all_edges());
 	river_window_v1_propose_dimensions(window->obj, width > 1 ? width : 1, height > 1 ? height : 1);
@@ -647,13 +778,29 @@ void window_manage_layout(struct Window *window, size_t index, const struct Layo
 
 void window_render_layout(struct Window *window, size_t index, const struct LayoutView *view) {
 	if (window->minimized) {
+		bool was_visible = window->last_applied_visible;
+		if (was_visible) {
+			AnimationIntent intent = md_intent_for_close(index, view->visible_count + 1);
+			md_send_animation_intent(window, intent);
+		}
 		window_set_visible(window, false);
 		window_apply_borders(window, BORDER_NONE);
+		window->last_applied_visible = false;
 		return;
 	}
 	// Transient windows / dialogs: float centered above parent, no WM borders.
 	if (window->parent != NULL) {
 		bool visible = window_is_really_visible_view(window, view);
+		bool was_visible = window->last_applied_visible;
+		if (was_visible != visible) {
+			AnimationIntent intent;
+			if (visible) {
+				intent = md_intent_for_open(view->visible_count);
+			} else {
+				intent = md_intent_for_close(index, view->visible_count + 1);
+			}
+			md_send_animation_intent(window, intent);
+		}
 		window_set_visible(window, visible);
 		if (visible) {
 			// Center the child over the parent's layout box.
@@ -675,23 +822,53 @@ void window_render_layout(struct Window *window, size_t index, const struct Layo
 				int32_t ch = window->height > 0 ? window->height : pbox.height / 2;
 				int32_t cx = pbox.x + (pbox.width  - cw) / 2;
 				int32_t cy = pbox.y + (pbox.height - ch) / 2;
+				if (was_visible && visible) {
+					AnimationIntent intent = ANIMATION_INTENT_NONE;
+					bool pos_changed = (cx != window->last_render_x || cy != window->last_render_y);
+					bool size_changed = (cw != window->last_render_width || ch != window->last_render_height);
+					if (size_changed) {
+						intent = md_intent_for_reflow();
+					} else if (pos_changed) {
+						intent = md_intent_for_nudge();
+					}
+					if (intent != ANIMATION_INTENT_NONE) {
+						md_send_animation_intent(window, intent);
+					}
+				}
 				river_node_v1_set_position(window->node, cx, cy);
+				window->last_render_x = cx;
+				window->last_render_y = cy;
+				window->last_render_width = cw;
+				window->last_render_height = ch;
 			}
 			wm_place_top(window->node);
 		}
 		window_apply_borders(window, BORDER_NONE);
+		window->last_applied_visible = visible;
 		return;
 	}
 	// Fullscreen window: compositor owns geometry; just show it, no borders,
 	// node on top (so it's the top fullscreen window — anything above it in the
 	// render order, like waybar, keeps drawing; see place_top handling).
 	if (window->fullscreen) {
+		bool was_visible = window->last_applied_visible;
+		if (!was_visible) {
+			AnimationIntent intent = md_intent_for_open(view->visible_count);
+			md_send_animation_intent(window, intent);
+		}
 		window_set_visible(window, true);
 		window_apply_borders(window, BORDER_NONE);
 		wm_place_top(window->node);
+		window->last_applied_visible = true;
 		return;
 	}
 	if (window->floating) {
+		bool visible = true;
+		bool was_visible = window->last_applied_visible;
+		if (!was_visible) {
+			AnimationIntent intent = md_intent_for_open(view->visible_count);
+			md_send_animation_intent(window, intent);
+		}
 		window_set_visible(window, true);
 		window_apply_borders(window, BORDER_NONE);
 		// Centraliza na área útil assim que as dimensões reais são conhecidas.
@@ -700,22 +877,83 @@ void window_render_layout(struct Window *window, size_t index, const struct Layo
 			int32_t cy = view->output.y + (view->output.height - window->height) / 2;
 			if (cx < view->output.x) cx = view->output.x;
 			if (cy < view->output.y) cy = view->output.y;
+			if (was_visible && visible) {
+				AnimationIntent intent = ANIMATION_INTENT_NONE;
+				bool pos_changed = (cx != window->last_render_x || cy != window->last_render_y);
+				bool size_changed = (window->width != window->last_render_width || window->height != window->last_render_height);
+				if (size_changed) {
+					intent = md_intent_for_reflow();
+				} else if (pos_changed) {
+					intent = md_intent_for_nudge();
+				}
+				if (intent != ANIMATION_INTENT_NONE) {
+					md_send_animation_intent(window, intent);
+				}
+			}
 			river_node_v1_set_position(window->node, cx, cy);
+			window->last_render_x = cx;
+			window->last_render_y = cy;
+			window->last_render_width = window->width;
+			window->last_render_height = window->height;
 		}
 		wm_place_top(window->node);
+		window->last_applied_visible = true;
 		return;
 	}
 
 	bool visible = view->maximized ? (window == view->target) : (index < 2 && index < (size_t)view->visible_count);
+	bool was_visible = window->last_applied_visible;
+	if (was_visible != visible) {
+		AnimationIntent intent;
+		if (visible) {
+			intent = md_intent_for_open(view->visible_count > 1 ? view->visible_count - 1 : 0);
+		} else {
+			intent = md_intent_for_close(index, view->visible_count + 1);
+		}
+		md_send_animation_intent(window, intent);
+	}
+
 	if (!visible) {
 		window_set_visible(window, false);
 		window_apply_borders(window, BORDER_NONE);
+		window->last_applied_visible = false;
 		return;
 	}
 
 	struct Box box = layout_box_for_index(view, index);
-	window_set_visible(window, true);
-	river_node_v1_set_position(window->node, box.x + BORDER_WIDTH, box.y + BORDER_WIDTH);
+	int32_t new_x = box.x + BORDER_WIDTH;
+	int32_t new_y = box.y;
+	int32_t new_w = box.width - (BORDER_WIDTH * 2);
+	int32_t new_h = box.height - BORDER_WIDTH;
+
+	if (was_visible && visible) {
+		AnimationIntent intent = ANIMATION_INTENT_NONE;
+		bool pos_changed = (new_x != window->last_render_x || new_y != window->last_render_y);
+		bool size_changed = (new_w != window->last_render_width || new_h != window->last_render_height);
+		if (size_changed) {
+			intent = md_intent_for_reflow();
+			if (index < 2 && view->visible_count >= 2) {
+				intent = md_intent_for_swap();
+			}
+		} else if (pos_changed) {
+			intent = md_intent_for_deck_move();
+			int32_t diff_x = new_x > window->last_render_x ? new_x - window->last_render_x : window->last_render_x - new_x;
+			if (diff_x > 0 && diff_x < 50) {
+				intent = md_intent_for_nudge();
+			}
+		}
+		if (intent != ANIMATION_INTENT_NONE) {
+			md_send_animation_intent(window, intent);
+		}
+	}
+
+	river_node_v1_set_position(window->node, new_x, new_y);
+	window->last_render_x = new_x;
+	window->last_render_y = new_y;
+	window->last_render_width = new_w;
+	window->last_render_height = new_h;
+	window->last_applied_visible = true;
+
 	wm_place_top(window->node);
 
 	// Borda transparente para todas as janelas (focado e desfocado).

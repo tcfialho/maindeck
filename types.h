@@ -76,6 +76,10 @@ struct Window {
 	bool border_focused;
 	bool applied_visible;
 
+	bool last_applied_visible;
+	int32_t last_render_x, last_render_y;
+	int32_t last_render_width, last_render_height;
+
 	struct wl_list link; // WindowManager.windows in MainDeck order
 };
 
@@ -94,8 +98,22 @@ enum Action {
 	ACTION_MAXIMIZE_TARGET,
 	ACTION_RESTORE,
 	ACTION_TOGGLE_MAXIMIZE,
+	ACTION_MINIMIZE_TARGET,
+	ACTION_UNMINIMIZE,
 	ACTION_EXIT,
 };
+
+/* Ação pedida pela barra (menu de contexto) sobre uma janela identificada por
+ * identifier. Agendada pelo IPC e aplicada dentro do manage cycle, espelhando
+ * pending_activate_identifier. WINDOW_ACTION_NONE = nada pendente. */
+enum WindowAction {
+	WINDOW_ACTION_NONE = 0,
+	WINDOW_ACTION_MINIMIZE,
+	WINDOW_ACTION_MAXIMIZE,
+	WINDOW_ACTION_RESTORE,
+};
+
+typedef enum WindowAction WindowAction;
 
 struct XkbBinding {
 	struct river_xkb_binding_v1 *obj;

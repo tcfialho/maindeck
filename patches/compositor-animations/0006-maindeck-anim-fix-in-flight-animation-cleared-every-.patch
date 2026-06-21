@@ -1,0 +1,111 @@
+From 262341e60b94a8f35bd0cc70f07ff93d11b6304f Mon Sep 17 00:00:00 2001
+From: tcfialho <tcfialho@gmail.com>
+Date: Fri, 19 Jun 2026 09:26:36 -0300
+Subject: [PATCH 6/7] maindeck anim: fix in-flight animation cleared every
+ render sequence
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The else branch in renderFinish set window.anim = null whenever a render
+sequence brought no geometry change. But renderFinish runs on EVERY render
+sequence (focus changes, manage_dirty, etc.), not only on geometry changes — so
+any in-flight fade or move was cleared after a single tick, making every
+animation snap. Found by the autonomous nested/headless runtime test: open
+logged op=0.00 then vanished. Now: if an animation is in flight and nothing
+changed this sequence, leave it running (the frame loop owns the node).
+
+Also force a commit per frame while animating (renderAndCommit force arg): a
+tick that samples the same integer position produces no scene damage, and
+without a commit the frame callback is not re-armed. Confirmed needed via the
+wlr_output_schedule_frame contract (no-op while a frame is pending).
+
+After both fixes the test shows smooth interpolation: open opacity 0->1 over 14
+frames, move x gliding with visible spring deceleration, size fx 2.99->1.0,
+close fade on the orphan snapshot, and CPU returning to idle (loop stops).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ river/Output.zig | 31 ++++++++++++++++++++++++++++---
+ river/Window.zig |  7 ++++++-
+ 2 files changed, 34 insertions(+), 4 deletions(-)
+
+diff --git a/river/Output.zig b/river/Output.zig
+index 11db956..9a30171 100644
+--- a/river/Output.zig
++++ b/river/Output.zig
+@@ -475,8 +475,25 @@ fn handleFrame(listener: *wl.Listener(*wlr.Output), wlr_output: *wlr.Output) voi
+     const orphans_active = Animation.advanceOrphans(now_ns);
+     const anim_active = windows_active or orphans_active;
+ 
++    // TEMP INSTRUMENTATION (maindeck anim runtime test): log EVERY handleFrame
++    // (not gated on anim_active) so we can tell whether the loop self-sustains.
++    // Three-way discriminator: ~60Hz with anim_active true while animating =>
++    // loop healthy; ~60Hz but anim_active flips off after one tick => state
++    // cleared; only a few frames total => scheduleFrame not producing frames.
++    // Remove after the runtime test is validated.
++    if (Animation.anim_trace) {
++        log.info("ANIMTRACE frame t={d}ns active={} (win={} orphan={})", .{
++            now_ns, anim_active, windows_active, orphans_active,
++        });
++    }
++
+     // TODO this should probably be retried on failure
+-    output.renderAndCommit() catch |err| switch (err) {
++    // While animating, force a commit even if the scene reports no damage: a
++    // tick that samples the same integer position produces no damage, and
++    // without a commit the frame callback is never re-armed (wlr_output_schedule
++    // _frame is a no-op while a frame is pending), so the loop would stall after
++    // one frame. Committing every animating frame keeps the callback cycle alive.
++    output.renderAndCommit(anim_active) catch |err| switch (err) {
+         error.CommitFailed => log.err("output commit failed for {s}", .{wlr_output.name}),
+     };
+ 
+@@ -487,8 +504,8 @@ fn handleFrame(listener: *wl.Listener(*wlr.Output), wlr_output: *wlr.Output) voi
+     if (anim_active) wlr_output.scheduleFrame();
+ }
+ 
+-fn renderAndCommit(output: *Output) !void {
+-    if (!output.scene_output.?.needsFrame()) return;
++fn renderAndCommit(output: *Output, force: bool) !void {
++    if (!force and !output.scene_output.?.needsFrame()) return;
+ 
+     const wlr_output = output.wlr_output.?;
+     const scene_output = output.scene_output.?;
+@@ -607,6 +624,14 @@ pub fn advanceAnimations(now_ns: i64) bool {
+         const finished = anim.done(now_ns);
+         const s = anim.sample(now_ns);
+ 
++        // TEMP INSTRUMENTATION: per-tick applied position/scale, to prove the
++        // window glides (intermediate positions) rather than snaps. Remove later.
++        if (Animation.anim_trace) {
++            log.info("ANIMTRACE win kind={s} finished={} x={d} y={d} op={d:.2} sc={d:.2} fx={d:.2} fy={d:.2}", .{
++                @tagName(anim.kind), finished, s.x, s.y, s.opacity, s.scale, s.fx, s.fy,
++            });
++        }
++
+         // Base position: sampled while animating, snapped to the logical target
+         // in window.box on finish.
+         const base_x = if (finished) window.box.x else s.x;
+diff --git a/river/Window.zig b/river/Window.zig
+index 1a49e4f..aaf5fc8 100644
+--- a/river/Window.zig
++++ b/river/Window.zig
+@@ -1047,8 +1047,13 @@ pub fn renderFinish(window: *Window) void {
+         window.tree.node.setPosition(old_x, old_y);
+         window.popup_tree.node.setPosition(old_x, old_y);
+         Animation.scheduleAllOutputFrames();
++    } else if (window.anim != null) {
++        // No geometry change in THIS render sequence, but an animation is in
++        // flight. renderFinish runs on every render sequence (focus changes,
++        // manage_dirty, etc.), not just on geometry changes — so clearing the
++        // animation here would kill any in-flight fade/move after a single tick.
++        // Leave it running; the frame loop owns the node position until it ends.
+     } else {
+-        window.anim = null;
+         window.tree.node.setPosition(window.box.x, window.box.y);
+         window.popup_tree.node.setPosition(window.box.x, window.box.y);
+     }
+-- 
+2.54.0
+

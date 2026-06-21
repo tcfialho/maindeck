@@ -58,10 +58,21 @@ static void wm_notify_bar_fullscreen(bool on) {
 static void wm_notify_bar_windows(void) {
 	char msg[4096];
 	size_t off = (size_t)snprintf(msg, sizeof(msg), "windows");
+	// maximized é estado global do MainDeck que segue o alvo; a única janela
+	// "maximizada" do ponto de vista da barra é o alvo atual quando wm.maximized.
+	struct Window *max_win = wm.maximized ? target_window() : NULL;
 	struct Window *window;
 	wl_list_for_each(window, &wm.windows, link) {
 		if (window->closed || window->identifier == NULL || window->identifier[0] == '\0') continue;
-		int n = snprintf(msg + off, sizeof(msg) - off, " %s", window->identifier);
+		// Prefixos de estado por-janela (o WM é autoritativo, o zwlr não vê):
+		//   '!' = minimizada (a barra escurece o botão);
+		//   '+' = maximizada (a barra usa para habilitar Maximizar/Restaurar no
+		//         menu de contexto).
+		// São mutuamente exclusivos (minimizar zera wm.maximized), então no
+		// máximo um char de prefixo. A barra remove o prefixo antes de guardar o
+		// id para o ceifador de fantasmas.
+		const char *pfx = window->minimized ? "!" : (window == max_win ? "+" : "");
+		int n = snprintf(msg + off, sizeof(msg) - off, " %s%s", pfx, window->identifier);
 		if (n < 0 || (size_t)n >= sizeof(msg) - off) return; // não envia conjunto truncado
 		off += (size_t)n;
 	}
@@ -456,17 +467,15 @@ static void window_handle_exit_fullscreen_requested(void *data, struct river_win
 static void window_handle_minimize_requested(void *data, struct river_window_v1 *obj) {
 	(void)obj;
 	struct Window *window = data;
-	if (window->closed) return;
-	if (window->minimized) return;
+	if (window->closed || window->minimized) return;
+	// Client/taskbar-initiated minimize. Notify the bar if it was fullscreen,
+	// then delegate the shared state change (also used by the keybinding).
 	if (window->fullscreen) {
 		window->fullscreen = false;
 		window->fs_output = NULL;
 		wm_notify_bar_fullscreen(false);
 	}
-	window->minimized = true;
-	move_last(window);
-	wm.target_index = 0;
-	wm.maximized = false;
+	md_minimize_window(window);
 	LOG_EVENT("minimize requested: \"%s\" app_id=%s",
 		window->title ? window->title : "",
 		window->app_id ? window->app_id : "");
@@ -750,6 +759,7 @@ static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *o
 		seat_manage(seat);
 	}
 	apply_pending_taskbar_activation();
+	apply_pending_window_action();
 	if (wm.pending_float_focus != NULL) {
 		struct Window *float_focus = wm.pending_float_focus;
 		wm.pending_float_focus = NULL;
@@ -955,8 +965,12 @@ static void handle_global(void *data, struct wl_registry *registry, uint32_t nam
 		const char *interface, uint32_t version) {
 	if (strcmp(interface, river_window_manager_v1_interface.name) == 0) {
 		if (version >= 4) {
+			/* Bind the highest version we and the compositor share. v6 adds
+			 * set_animation_intent (the P17 directional slides); degrade
+			 * gracefully to 5/4 against an older compositor. */
+			uint32_t bind_ver = version >= 6 ? 6 : (version >= 5 ? 5 : 4);
 			window_manager_v1 = wl_registry_bind(registry, name, &river_window_manager_v1_interface,
-				version >= 5 ? 5 : 4);
+				bind_ver);
 		}
 	} else if (strcmp(interface, river_xkb_bindings_v1_interface.name) == 0) {
 		xkb_bindings_v1 = wl_registry_bind(registry, name, &river_xkb_bindings_v1_interface, 1);

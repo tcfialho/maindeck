@@ -1,0 +1,27 @@
+{
+ "calls": {
+  "plan": 2
+ },
+ "total_calls": 2,
+ "sessions": {
+  "claude": "a073990d-a574-4fc0-8de0-b22e1527bdaf"
+ },
+ "history": [
+  {
+   "ts": "2026-06-16T13:21:11",
+   "role": "plan",
+   "provider": "claude",
+   "model": "opus",
+   "in": 1,
+   "out": 3956
+  },
+  {
+   "ts": "2026-06-16T13:33:23",
+   "role": "plan",
+   "provider": "agy",
+   "model": "opus",
+   "in": null,
+   "out": null
+  }
+ ]
+}

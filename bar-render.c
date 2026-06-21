@@ -302,6 +302,13 @@ static void draw_taskbar(cairo_t *cr, int x_start, int x_end, int h) {
 
         bool hovered = (bar->hover_type == HIT_TASKBAR) && (bar->hover_index == i);
 
+        /* Minimized windows are dimmed (P15 adaptation: opacity ~0.5, ~0.8 on
+         * hover). Render the whole button into a group, then composite it at a
+         * reduced alpha so gradient+border+icon+title fade together — the same
+         * effect as CSS `opacity` on the button. */
+        bool dimmed = tl->minimized;
+        if (dimmed) cairo_push_group(cr);
+
         /* Always: gradient fill + 1px border (3D glass effect) */
         {
             double bx = x, by = btn_y;
@@ -361,6 +368,11 @@ static void draw_taskbar(cairo_t *cr, int x_start, int x_end, int h) {
         if (text_w > 8) {
             draw_taskbar_title(cr, tl, tl->title[0] ? tl->title : "...",
                 text_x, btn_y, text_w, btn_h);
+        }
+
+        if (dimmed) {
+            cairo_pop_group_to_source(cr);
+            cairo_paint_with_alpha(cr, hovered ? 0.8 : 0.5);
         }
 
         push_hit(HIT_TASKBAR, i, x, 0, btn_w - 2, h);

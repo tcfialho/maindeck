@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MainDeck Prototype P16 — simétrico: slide sólido · spring duplo · deck fecha 100% · main fecha scale</title>
+<title>MainDeck Prototype P16 — base P14b1: grupo abre só com reflow · spring duplo · deck fecha 100% · main fecha scale</title>
 <style>
 /* ===================================================================
    ROOT VARIABLES — extraídas de bar-render.c macros
@@ -788,18 +788,16 @@ html, body {
        direita, então colapsa em direção à borda direita (a ponta do deck).
      - MAIN ou ÚNICA → "sumir": fade puro no lugar, sem direção nem escala.
    ------------------------------------------------------------------- */
-/* P14a2: simétrico completo.
-   Solo: scale 0.65 abre e fecha. Grupo open: slide sólido ←. Deck close: 100% sólido →.
-   Main close (c/ deck): scale 0.65 = mesma linguagem do solo.
+/* P16 (base P14b1): solo com scale, grupo sem animação de open.
+   Solo: scale 0.65 abre e fecha. Grupo open: SEM anim — só o reflow/spring é o feedback.
+   Deck close: 100% sólido →. Main close (c/ deck): scale 0.65 = mesma linguagem do solo.
    Spring duplo: encolhe→deck e expande←deck. */
-@keyframes p14a2Open      { from { transform:scale(0.65); opacity:0; } to { transform:scale(1); opacity:1; } }
-@keyframes p14a2Close     { from { transform:scale(1); opacity:1; } to { transform:scale(0.65); opacity:0; } }
-@keyframes p14a2SlideIn   { from { transform:translateX(-45%); opacity:1; } to { transform:translateX(0); opacity:1; } }
-@keyframes p14a2DeckClose { from { transform:translateX(0); opacity:1; } to { transform:translateX(100%); opacity:1; } }
-.window.anim-open-scale       { animation: p14a2Open      0.22s ease-out forwards; }
-.window.anim-close-scale      { animation: p14a2Close     0.20s ease-in  forwards; pointer-events:none; }
-.window.anim-open-slide-solid { animation: p14a2SlideIn   0.20s ease-out forwards; }
-.window.anim-deck-close-right { animation: p14a2DeckClose 0.20s ease-in  forwards; pointer-events:none; }
+@keyframes p16Open      { from { transform:scale(0.65); opacity:0; } to { transform:scale(1); opacity:1; } }
+@keyframes p16Close     { from { transform:scale(1); opacity:1; } to { transform:scale(0.65); opacity:0; } }
+@keyframes p16DeckClose { from { transform:translateX(0); opacity:1; } to { transform:translateX(100%); opacity:1; } }
+.window.anim-open-scale       { animation: p16Open      0.22s ease-out forwards; }
+.window.anim-close-scale      { animation: p16Close     0.20s ease-in  forwards; pointer-events:none; }
+.window.anim-deck-close-right { animation: p16DeckClose 0.20s ease-in  forwards; pointer-events:none; }
 
 /* ===================================================================
    KEYBOARD LOCK OVERLAY
@@ -899,7 +897,7 @@ html, body {
 
 <!-- KEYBOARD LOCK OVERLAY — clique para ativar fullscreen + keyboard.lock -->
 <div id="kb-overlay" onclick="startPrototype()">
-  <h2>🐧 MainDeck Prototype P16 — solo: scale 0.65 · slide sólido · spring duplo · deck fecha 100% sólido · main fecha scale</h2>
+  <h2>🐧 MainDeck Prototype P16 (base P14b1) — solo: scale 0.65 · grupo: só reflow (sem slide) · spring duplo · deck fecha 100% sólido · main fecha scale</h2>
   <p>Para capturar Ctrl+Tab e outros atalhos do compositor,<br>o protótipo precisa rodar em tela cheia.</p>
   <button class="start-btn">Clique para iniciar</button>
   <div class="kb-note">Pressione Esc para sair do modo tela cheia</div>
@@ -1428,11 +1426,10 @@ function openApp(id) {
 
   applyLayout();
   renderTaskbar();
-  // P14a1: sozinha = scale 0.65 pronunciado; 2ª+ = slide sólido da esquerda (sem fade blend).
+  // P14b1: sozinha = scale 0.65 pronunciado; em grupo = só reflow (o spring de geometria
+  // das janelas se reorganizando já é o feedback — sem animação de entrada na janela nova).
   if (wm.windows.length === 1) {
     animClass(document.getElementById('win-' + id), 'anim-open-scale', 220);
-  } else {
-    animClass(document.getElementById('win-' + id), 'anim-open-slide-solid', 200);
   }
 }
 

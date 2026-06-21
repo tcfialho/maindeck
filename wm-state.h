@@ -16,4 +16,9 @@ extern struct wp_cursor_shape_manager_v1 *cursor_shape_manager_v1;
  * Apenas pending_activate_identifier cruza fronteira (lido por wm-layout.c). */
 extern char pending_activate_identifier[33];
 
+/* Ação do menu de contexto da barra (minimize/maximize/restore), agendada pelo
+ * IPC em wm-ipc.c e aplicada por apply_pending_window_action() em wm-layout.c. */
+extern enum WindowAction pending_window_action;
+extern char pending_window_action_id[33];
+
 #endif /* WM_STATE_H */

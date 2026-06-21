@@ -1,0 +1,4 @@
+VERDICT: FIX
+BLOCKERS: 1
+[B1] docs/prototype-anim-p8.html:1291 — O diff omitiu o cabeçalho correspondente ao arquivo prototype-anim-p9.html, misturando seu bloco de alteração sob o cabeçalho do p8.html com numeração de linhas inconsistente — Adicionar o cabeçalho 'diff --git a/docs/prototype-anim-p9.html b/docs/prototype-anim-p9.html' antes do segundo bloco de setTimeout.
+[N1] Geral — Se wm.target_index estiver undefined/null no estado inicial, a comparação estrita resultará em 0 em vez de 1 após o primeiro swap — Utilizar `wm.target_index = (wm.target_index || 0) === 0 ? 1 : 0` para garantir a consistência do foco inicial.

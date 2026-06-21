@@ -1,0 +1,29 @@
+{
+ "calls": {
+  "plan": 1,
+  "review": 1
+ },
+ "total_calls": 2,
+ "sessions": {
+  "claude": "625c4efc-257e-4b83-8913-37b31ad9945a"
+ },
+ "history": [
+  {
+   "ts": "2026-06-12T16:01:58",
+   "role": "plan",
+   "provider": "claude",
+   "model": "opus",
+   "in": 372,
+   "out": 3081
+  },
+  {
+   "ts": "2026-06-12T16:03:36",
+   "role": "review",
+   "provider": "claude",
+   "model": "opus",
+   "in": 372,
+   "out": 3649
+  }
+ ],
+ "last_verdict": "APPROVE (blockers=0)"
+}

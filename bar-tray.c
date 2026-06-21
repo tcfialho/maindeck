@@ -18,6 +18,7 @@
 #include "xdg-shell-client-protocol.h"
 
 #include "bar-tray.h"
+#include "bar-taskbar.h"
 #include "bar-state.h"
 #include "bar-icons.h"
 #include "bar-render.h"
@@ -690,6 +691,21 @@ static int              g_menu_anchor_w  = 0;
 static uint32_t         g_menu_serial    = 0;
 static int              g_menu_tray_idx  = -1;
 
+/* O mesmo popup serve a dois clientes: o menu do system tray (D-Bus/dbusmenu) e
+ * o menu de contexto da taskbar (ações locais via IPC do WM). O "kind" decide
+ * como uma linha é ativada (bar_tray_menu_activate). */
+enum MenuKind { MENU_KIND_TRAY = 0, MENU_KIND_WINDOW };
+static enum MenuKind    g_menu_kind      = MENU_KIND_TRAY;
+/* Para MENU_KIND_WINDOW: a janela alvo (índice na taskbar + identifier). O id é
+ * copiado na abertura porque a taskbar pode ser remanejada (memmove) entre abrir
+ * o menu e clicar — o identifier é o vínculo estável. MenuItem.id carrega a
+ * WindowAction da linha. */
+static int              g_menu_win_idx   = -1;
+static char             g_menu_win_id[33] = "";
+
+/* WindowAction codificada em MenuItem.id para linhas do menu de janela. */
+enum { WIN_ACT_CLOSE = 1, WIN_ACT_MAXIMIZE, WIN_ACT_MINIMIZE, WIN_ACT_RESTORE };
+
 static void menu_shm_create(int w, int h) {
     struct BarState *bar = &g_bar;
     int stride = w * 4;
@@ -991,6 +1007,62 @@ static const struct xdg_surface_listener menu_xdg_surface_listener = {
     .configure = menu_xdg_surface_configure,
 };
 
+/* Cria a surface/popup do menu a partir de g_menu_items[] já preenchido e medido
+ * por menu_measure(). Ancorado num retângulo na barra (anchor_x..+anchor_w),
+ * cresce para cima (FLIP_Y). O grab dá dismiss-ao-clicar-fora de graça. Serve a
+ * ambos os kinds, mas com alinhamento horizontal diferente:
+ *   - tray (direita da barra): anchor/gravity TOP_LEFT → borda DIREITA do popup
+ *     no anchor, cresce p/ a esquerda (fica sob o ícone, não vaza pela direita);
+ *   - taskbar (esquerda da barra): anchor TOP_LEFT + gravity TOP_RIGHT → borda
+ *     ESQUERDA do popup na borda esquerda do botão, cresce p/ CIMA (acima da
+ *     barra) e p/ a direita. (gravity TOP_LEFT caía sobre o botão anterior;
+ *     anchor BOTTOM_LEFT ancorava na base da barra e o menu cobria a barra.)
+ * Pressupõe que nenhum popup esteja aberto (chamadores fazem bar_tray_menu_close
+ * antes). */
+static void menu_popup_create(int anchor_x, int anchor_w, uint32_t serial,
+                              uint32_t anchor, uint32_t gravity) {
+    struct BarState *bar = &g_bar;
+
+    menu_measure();
+    int mw = menu_calc_width();
+    int mh = menu_calc_height();
+    int aw = anchor_w > 0 ? anchor_w : 22;
+
+    bar->menu_surface = wl_compositor_create_surface(bar->compositor);
+    bar->menu_xdg_surface = xdg_wm_base_get_xdg_surface(bar->xdg_wm_base, bar->menu_surface);
+    xdg_surface_add_listener(bar->menu_xdg_surface, &menu_xdg_surface_listener, NULL);
+
+    /* Positioner: anchor at icon/button position on the bar, grow upward */
+    struct xdg_positioner *pos = xdg_wm_base_create_positioner(bar->xdg_wm_base);
+    xdg_positioner_set_size(pos, mw, mh);
+    xdg_positioner_set_anchor_rect(pos, anchor_x, 0, aw, bar->height);
+    xdg_positioner_set_anchor(pos, anchor);
+    xdg_positioner_set_gravity(pos, gravity);
+    xdg_positioner_set_constraint_adjustment(pos,
+        XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X |
+        XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y);
+
+    bar->menu_popup = xdg_surface_get_popup(bar->menu_xdg_surface, NULL, pos);
+    xdg_positioner_destroy(pos);
+    xdg_popup_add_listener(bar->menu_popup, &menu_popup_listener, NULL);
+
+    /* Attach popup to the layer surface */
+    zwlr_layer_surface_v1_get_popup(bar->layer_surface, bar->menu_popup);
+
+    /* Grab input focus (also gives click-outside-to-dismiss) */
+    xdg_popup_grab(bar->menu_popup, bar->seat, serial);
+
+    /* Allocate SHM buffer */
+    menu_shm_create(mw, mh);
+    bar->menu_open = true;
+
+    /* Commit so compositor sends configure */
+    wl_surface_commit(bar->menu_surface);
+    wl_display_flush(bar->display);
+
+    bar_request_redraw_flags(bar, BAR_DIRTY_TRAY);
+}
+
 struct MenuLayoutRequest {
     char service[128];
     int icon_x;
@@ -1033,47 +1105,73 @@ static void on_menu_layout_reply(DBusPendingCall *pending, void *user_data) {
         return;
     }
 
-    menu_measure();
-    int mw = menu_calc_width();
-    int mh = menu_calc_height();
+    /* Tray fica à direita: borda direita do popup no ícone, cresce p/ a esquerda. */
+    menu_popup_create(req->icon_x, g_menu_anchor_w, req->serial,
+                      XDG_POSITIONER_ANCHOR_TOP_LEFT, XDG_POSITIONER_GRAVITY_TOP_LEFT);
+    LOG_INFO("menu: opened for %s (%d items)", req->service, g_menu_item_n);
+}
 
+/* Acrescenta uma linha ao menu em construção (g_menu_items). action vai em .id
+ * (interpretado por bar_tray_menu_activate no ramo WINDOW). */
+static void winmenu_add(const char *label, int action, bool enabled) {
+    if (g_menu_item_n >= MENU_ITEM_MAX) return;
+    struct MenuItem *mi = &g_menu_items[g_menu_item_n++];
+    mi->id        = action;
+    mi->separator = false;
+    mi->enabled   = enabled;
+    snprintf(mi->label, sizeof(mi->label), "%s", label);
+}
+
+/* Menu de contexto da taskbar (botão direito num botão de janela). Monta os 4
+ * itens estilo Windows com habilitação dependente do estado e abre o popup
+ * ancorado no botão. idx/icon_x/icon_w vêm da hit area; serial do clique. */
+void bar_taskbar_open_menu(int idx, int icon_x, int icon_w, uint32_t serial) {
     struct BarState *bar = &g_bar;
+    if (!bar->xdg_wm_base) {
+        LOG_WARN("winmenu: no xdg_wm_base");
+        return;
+    }
+    if (idx < 0 || idx >= bar->toplevel_n) return;
+    struct BarToplevel *tl = bar->toplevels[idx];
+    if (!tl) return;
 
-    /* Create wl_surface for popup */
-    bar->menu_surface = wl_compositor_create_surface(bar->compositor);
-    bar->menu_xdg_surface = xdg_wm_base_get_xdg_surface(bar->xdg_wm_base, bar->menu_surface);
-    xdg_surface_add_listener(bar->menu_xdg_surface, &menu_xdg_surface_listener, NULL);
+    bar_tray_menu_close();
 
-    /* Positioner: anchor at icon position on the bar, grow upward */
-    struct xdg_positioner *pos = xdg_wm_base_create_positioner(bar->xdg_wm_base);
-    xdg_positioner_set_size(pos, mw, mh);
-    xdg_positioner_set_anchor_rect(pos, req->icon_x, 0, g_menu_anchor_w, bar->height);
-    xdg_positioner_set_anchor(pos, XDG_POSITIONER_ANCHOR_TOP_LEFT);
-    xdg_positioner_set_gravity(pos, XDG_POSITIONER_GRAVITY_TOP_LEFT);
-    xdg_positioner_set_constraint_adjustment(pos,
-        XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X |
-        XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y);
+    /* Estado da janela → habilitação (ver matriz no plano). Ações que precisam
+     * do IPC do WM exigem identifier; sem ele, só Fechar (via zwlr handle). */
+    bool has_id = tl->identifier[0] != '\0';
+    bool minimized = tl->minimized;
+    bool maximized = tl->maximized;
+    bool fullscreen = tl->fullscreen;
 
-    bar->menu_popup = xdg_surface_get_popup(bar->menu_xdg_surface, NULL, pos);
-    xdg_positioner_destroy(pos);
-    xdg_popup_add_listener(bar->menu_popup, &menu_popup_listener, NULL);
+    bool en_close    = true; /* sempre */
+    bool en_max      = has_id && !minimized && !maximized && !fullscreen;
+    bool en_min      = has_id && !minimized;          /* maximizada PODE minimizar */
+    bool en_restore  = has_id && (minimized || maximized);
 
-    /* Attach popup to the layer surface */
-    zwlr_layer_surface_v1_get_popup(bar->layer_surface, bar->menu_popup);
+    g_menu_kind    = MENU_KIND_WINDOW;
+    g_menu_win_idx = idx;
+    snprintf(g_menu_win_id, sizeof(g_menu_win_id), "%s", tl->identifier);
+    g_menu_anchor_x = icon_x;
+    g_menu_anchor_w = icon_w > 0 ? icon_w : 22;
+    g_menu_serial   = serial;
+    g_menu_hover    = -1;
+    g_menu_tray_idx = -1;
+    g_menu_item_n   = 0;
 
-    /* Grab input focus */
-    xdg_popup_grab(bar->menu_popup, bar->seat, req->serial);
+    winmenu_add("Maximizar", WIN_ACT_MAXIMIZE, en_max);
+    winmenu_add("Minimizar", WIN_ACT_MINIMIZE, en_min);
+    winmenu_add("Restaurar", WIN_ACT_RESTORE, en_restore);
+    winmenu_add("Fechar",    WIN_ACT_CLOSE,    en_close);
 
-    /* Allocate SHM buffer */
-    menu_shm_create(mw, mh);
-    bar->menu_open = true;
-
-    /* Commit so compositor sends configure */
-    wl_surface_commit(bar->menu_surface);
-    wl_display_flush(bar->display);
-
-    LOG_INFO("menu: opened for %s (%d items) %dx%d", req->service, g_menu_item_n, mw, mh);
-    bar_request_redraw_flags(bar, BAR_DIRTY_TRAY);
+    /* Taskbar fica à esquerda: âncora no TOPO-esquerda da barra (y=0) + gravity
+     * TOP_RIGHT → canto inferior-esquerdo do popup nesse ponto, crescendo p/ CIMA
+     * (fica ACIMA da barra, não sobre ela) e p/ a DIREITA (alinhado ao botão).
+     * (BOTTOM_LEFT ancorava na base da barra → o menu cobria a própria barra.) */
+    menu_popup_create(icon_x, g_menu_anchor_w, serial,
+                      XDG_POSITIONER_ANCHOR_TOP_LEFT, XDG_POSITIONER_GRAVITY_TOP_RIGHT);
+    LOG_INFO("winmenu: opened idx=%d id=%s min=%d max=%d fs=%d",
+             idx, has_id ? tl->identifier : "(none)", minimized, maximized, fullscreen);
 }
 
 void bar_tray_open_menu(int idx, int icon_x, int icon_w, uint32_t serial) {
@@ -1086,6 +1184,7 @@ void bar_tray_open_menu(int idx, int icon_x, int icon_w, uint32_t serial) {
 
     bar_tray_menu_close();
 
+    g_menu_kind      = MENU_KIND_TRAY;
     struct TrayItem *it = &g_items[idx];
     g_menu_tray_idx  = idx;
     g_menu_anchor_x  = icon_x;
@@ -1150,6 +1249,34 @@ void bar_tray_menu_activate(int row, uint32_t time) {
     if (row < 0 || row >= g_menu_item_n) return;
     struct MenuItem *mi = &g_menu_items[row];
     if (mi->separator || !mi->enabled) return;
+
+    /* Menu de contexto da taskbar: despacha a ação localmente (Fechar via zwlr
+     * handle; min/max/restore via IPC do WM por identifier) e fecha o popup. */
+    if (g_menu_kind == MENU_KIND_WINDOW) {
+        switch (mi->id) {
+        case WIN_ACT_CLOSE:
+            /* Por identifier (estável). Só cai no índice quando a janela não
+             * tem identifier — caso (raro: ghost/transient) em que Fechar é o
+             * único item ativo e não há chave estável melhor que o índice. */
+            if (g_menu_win_id[0])
+                bar_taskbar_close_by_id(g_menu_win_id);
+            else
+                bar_taskbar_close(g_menu_win_idx);
+            break;
+        case WIN_ACT_MAXIMIZE:
+            bar_taskbar_send_wm("maximize", g_menu_win_id);
+            break;
+        case WIN_ACT_MINIMIZE:
+            bar_taskbar_send_wm("minimize", g_menu_win_id);
+            break;
+        case WIN_ACT_RESTORE:
+            bar_taskbar_send_wm("restore", g_menu_win_id);
+            break;
+        }
+        LOG_INFO("winmenu: activated action=%d id=%s", mi->id, g_menu_win_id);
+        bar_tray_menu_close();
+        return;
+    }
 
     if (g_menu_tray_idx < 0 || g_menu_tray_idx >= g_item_n) return;
     struct TrayItem *it = &g_items[g_menu_tray_idx];
@@ -1226,6 +1353,9 @@ void bar_tray_menu_close(void) {
     bar->menu_tray_idx  = -1;
     g_menu_tray_idx     = -1;
     g_menu_item_n       = 0;
+    g_menu_kind         = MENU_KIND_TRAY;  /* default; não vaza WINDOW p/ o próximo */
+    g_menu_win_idx      = -1;
+    g_menu_win_id[0]    = '\0';
     LOG_INFO("menu: closed");
     bar_request_redraw_flags(&g_bar, BAR_DIRTY_TRAY);
 }

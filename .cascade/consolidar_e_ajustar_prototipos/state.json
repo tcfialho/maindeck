@@ -1,0 +1,19 @@
+{
+ "calls": {
+  "plan": 1
+ },
+ "total_calls": 1,
+ "sessions": {
+  "claude": "1db8a2b1-3c3e-46bc-b263-221c01409ca7"
+ },
+ "history": [
+  {
+   "ts": "2026-06-17T22:20:38",
+   "role": "plan",
+   "provider": "claude",
+   "model": "opus",
+   "in": 1,
+   "out": 3316
+  }
+ ]
+}

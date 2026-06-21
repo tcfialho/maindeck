@@ -78,15 +78,17 @@ static void tl_state(void *data,
     struct zwlr_foreign_toplevel_handle_v1 *h, struct wl_array *st) {
     (void)h;
     struct BarToplevel *tl = data;
-    bool act = false, min = false, fs = false;
+    bool act = false, fs = false;
     uint32_t *s;
     wl_array_for_each(s, st) {
         if (*s == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED) act = true;
-        if (*s == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED)  min = true;
         if (*s == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_FULLSCREEN) fs = true;
     }
     tl->activated = act;
-    tl->minimized  = min;
+    /* tl->minimized is owned exclusively by the WM (bar_taskbar_set_wm_windows):
+     * river never emits the zwlr MINIMIZED state because hide() is ambiguous
+     * (minimize vs deck-overflow), so reading it here would just clobber the
+     * WM's authoritative value back to false. */
     tl->fullscreen = fs;
     bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
     /* Only suppress render if app_id is known — if empty, fullscreen arrived
@@ -322,29 +324,29 @@ const struct ext_foreign_toplevel_list_v1_listener bar_ext_list_listener = {
 /* IPC: activate via maindeck-wm socket                                 */
 /* ------------------------------------------------------------------ */
 
-void bar_taskbar_activate(int idx) {
+/* Envia "<verb> <id>" ao socket IPC do WM (maindeck-wm.sock). Usado por
+ * activate (clique esquerdo) e pelos comandos do menu de contexto
+ * (minimize/maximize/restore). id deve ser não-vazio. */
+void bar_taskbar_send_wm(const char *verb, const char *id) {
     struct BarState *bar = &g_bar;
-    if (idx < 0 || idx >= bar->toplevel_n) return;
- 
-    struct BarToplevel *tl = bar->toplevels[idx];
-    if (!tl || !tl->identifier[0]) {
-        LOG_WARN("taskbar: no identifier for idx=%d, cannot activate", idx);
+    if (!id || !id[0]) {
+        LOG_WARN("taskbar: %s sem identifier, ignorado", verb);
         return;
     }
- 
     if (bar->ipc_sock < 0) {
         LOG_WARN("taskbar: IPC socket not connected");
         return;
     }
- 
+
     char msg[64];
-    int  len = snprintf(msg, sizeof(msg), "activate %s", tl->identifier);
- 
+    int  len = snprintf(msg, sizeof(msg), "%s %s", verb, id);
+    if (len < 0 || (size_t)len >= sizeof(msg)) return;
+
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", bar->ipc_path);
- 
+
     ssize_t sent = sendto(bar->ipc_sock, msg, (size_t)len, 0,
                           (struct sockaddr *)&addr, sizeof(addr));
     if (sent < 0) {
@@ -352,6 +354,18 @@ void bar_taskbar_activate(int idx) {
     } else {
         LOG_INFO("taskbar: sent '%s' to %s", msg, bar->ipc_path);
     }
+}
+
+void bar_taskbar_activate(int idx) {
+    struct BarState *bar = &g_bar;
+    if (idx < 0 || idx >= bar->toplevel_n) return;
+
+    struct BarToplevel *tl = bar->toplevels[idx];
+    if (!tl || !tl->identifier[0]) {
+        LOG_WARN("taskbar: no identifier for idx=%d, cannot activate", idx);
+        return;
+    }
+    bar_taskbar_send_wm("activate", tl->identifier);
 }
  
 void bar_taskbar_close(int idx) {
@@ -361,6 +375,25 @@ void bar_taskbar_close(int idx) {
     if (tl && tl->zwlr_handle) {
         zwlr_foreign_toplevel_handle_v1_close(tl->zwlr_handle);
     }
+}
+
+/* Fecha a janela pelo identifier (estável), não por índice. Necessário para o
+ * menu de contexto: enquanto o popup está aberto, o dispatch da barra continua,
+ * então o array toplevels[] pode ser remanejado (memmove em tl_closed/ghost
+ * prune) e um índice capturado na abertura ficaria obsoleto. */
+void bar_taskbar_close_by_id(const char *id) {
+    struct BarState *bar = &g_bar;
+    if (!id || !id[0]) return;
+    for (int i = 0; i < bar->toplevel_n; i++) {
+        struct BarToplevel *tl = bar->toplevels[i];
+        if (tl && tl->identifier[0] && strcmp(tl->identifier, id) == 0) {
+            if (tl->zwlr_handle) {
+                zwlr_foreign_toplevel_handle_v1_close(tl->zwlr_handle);
+            }
+            return;
+        }
+    }
+    LOG_WARN("taskbar: close_by_id id desconhecido=%s (no-op)", id);
 }
 
 /* ------------------------------------------------------------------ */
@@ -437,25 +470,70 @@ void bar_taskbar_prune_ghosts(void) {
     }
 }
 
-/* msg: "windows id1 id2 ..." (ou só "windows" = nenhuma janela viva). */
+/* msg: "windows id1 id2 ..." (ou só "windows" = nenhuma janela viva).
+ * Um id pode vir prefixado por um char de estado (autoritativo do WM):
+ *   '!' = minimizada;  '+' = maximizada.
+ * O prefixo é removido antes de guardar em wm_set_ids (a poda compara com o
+ * identifier do foreign-toplevel, que não tem prefixo). O estado é aplicado ao
+ * BarToplevel correspondente, tendo precedência sobre o zwlr. */
 void bar_taskbar_set_wm_windows(const char *msg) {
     struct BarState *bar = &g_bar;
     const char *p = msg + 7; /* depois de "windows" */
+    /* Conjuntos de ids deste lote, por estado, para aplicar aos toplevels. */
+    char min_ids[BAR_MAX_TOPLEVELS][33];
+    int  min_n = 0;
+    char max_ids[BAR_MAX_TOPLEVELS][33];
+    int  max_n = 0;
     int n = 0;
     while (*p != '\0' && n < BAR_MAX_TOPLEVELS) {
         while (*p == ' ' || *p == '\n') p++;
         if (*p == '\0') break;
+        bool minimized = (*p == '!');
+        bool maximized = (*p == '+');
+        if (minimized || maximized) p++; /* pula o prefixo */
         const char *start = p;
         while (*p != '\0' && *p != ' ' && *p != '\n') p++;
         size_t len = (size_t)(p - start);
         if (len > 0 && len <= 32) {
             memcpy(bar->wm_set_ids[n], start, len);
             bar->wm_set_ids[n][len] = '\0';
+            if (minimized && min_n < BAR_MAX_TOPLEVELS) {
+                memcpy(min_ids[min_n], start, len);
+                min_ids[min_n][len] = '\0';
+                min_n++;
+            }
+            if (maximized && max_n < BAR_MAX_TOPLEVELS) {
+                memcpy(max_ids[max_n], start, len);
+                max_ids[max_n][len] = '\0';
+                max_n++;
+            }
             n++;
         }
     }
     bar->wm_set_n = n;
     bar->wm_set_valid = true;
     clock_gettime(CLOCK_MONOTONIC, &bar->wm_set_time);
+
+    /* Aplica os estados minimizado/maximizado (precedência WM) a cada toplevel. */
+    for (int i = 0; i < bar->toplevel_n; i++) {
+        struct BarToplevel *tl = bar->toplevels[i];
+        if (!tl || !tl->identifier[0]) continue;
+        bool min = false;
+        for (int j = 0; j < min_n; j++) {
+            if (strcmp(min_ids[j], tl->identifier) == 0) { min = true; break; }
+        }
+        bool max = false;
+        for (int j = 0; j < max_n; j++) {
+            if (strcmp(max_ids[j], tl->identifier) == 0) { max = true; break; }
+        }
+        if (tl->minimized != min) {
+            tl->minimized = min;
+            bar_request_redraw_flags(bar, BAR_DIRTY_TASKBAR);
+        }
+        /* maximized não altera o desenho do botão (sem redraw), só alimenta o
+         * menu de contexto — mas atualizamos sempre para refletir o estado. */
+        tl->maximized = max;
+    }
+
     bar_taskbar_prune_ghosts();
 }

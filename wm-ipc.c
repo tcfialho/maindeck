@@ -53,6 +53,11 @@ static char ipc_path[108]; /* sizeof(sockaddr_un.sun_path) */
 /* Compartilhado com wm-layout.c (apply_pending_taskbar_activation) → extern em wm-state.h */
 char pending_activate_identifier[33];
 
+/* Ação do menu de contexto da barra (minimize/maximize/restore <id>), aplicada
+ * por apply_pending_window_action() dentro do manage cycle. → extern em wm-state.h */
+enum WindowAction pending_window_action = WINDOW_ACTION_NONE;
+char pending_window_action_id[33];
+
 
 static int ipc_init(void) {
 	const char *dir = getenv("XDG_RUNTIME_DIR");
@@ -87,22 +92,51 @@ static int ipc_init(void) {
 	return fd;
 }
 
-static void ipc_handle_message(const char *msg) {
-	const char prefix[] = "activate ";
-	const size_t prefix_len = sizeof(prefix) - 1;
-	if (strncmp(msg, prefix, prefix_len) != 0) {
-		LOG_WARN("IPC: comando desconhecido ignorado: %s", msg);
-		return;
-	}
-	const char *id = msg + prefix_len;
+/* Agenda uma ação do menu de contexto sobre um identifier, espelhando o fluxo
+ * do activate: valida, guarda em pending, acorda o manage cycle. A aplicação
+ * (que chama requests de window-management) acontece DENTRO do manage cycle —
+ * nunca aqui — para não disparar erro de protocolo que mataria o WM. */
+static void ipc_schedule_window_action(enum WindowAction action, const char *verb, const char *id) {
 	if (!valid_identifier(id)) {
-		LOG_WARN("IPC: identifier inválido ignorado: %s", id);
+		LOG_WARN("IPC: identifier inválido ignorado (%s): %s", verb, id);
 		return;
 	}
-	LOG_EVENT("IPC recebeu activate identifier=%s", id);
-	snprintf(pending_activate_identifier, sizeof(pending_activate_identifier), "%s", id);
-	/* Acorda o manage cycle para aplicar o activate imediatamente */
+	LOG_EVENT("IPC recebeu %s identifier=%s", verb, id);
+	pending_window_action = action;
+	snprintf(pending_window_action_id, sizeof(pending_window_action_id), "%s", id);
 	river_window_manager_v1_manage_dirty(window_manager_v1);
+}
+
+/* Se msg começa com "verb " (verbo + espaço), retorna o ponteiro para o id
+ * (logo após o espaço); senão NULL. */
+static const char *ipc_match_verb(const char *msg, const char *verb) {
+	size_t len = strlen(verb);
+	if (strncmp(msg, verb, len) == 0 && msg[len] == ' ') {
+		return msg + len + 1;
+	}
+	return NULL;
+}
+
+static void ipc_handle_message(const char *msg) {
+	const char *id;
+	if ((id = ipc_match_verb(msg, "activate")) != NULL) {
+		if (!valid_identifier(id)) {
+			LOG_WARN("IPC: identifier inválido ignorado: %s", id);
+			return;
+		}
+		LOG_EVENT("IPC recebeu activate identifier=%s", id);
+		snprintf(pending_activate_identifier, sizeof(pending_activate_identifier), "%s", id);
+		/* Acorda o manage cycle para aplicar o activate imediatamente */
+		river_window_manager_v1_manage_dirty(window_manager_v1);
+	} else if ((id = ipc_match_verb(msg, "minimize")) != NULL) {
+		ipc_schedule_window_action(WINDOW_ACTION_MINIMIZE, "minimize", id);
+	} else if ((id = ipc_match_verb(msg, "maximize")) != NULL) {
+		ipc_schedule_window_action(WINDOW_ACTION_MAXIMIZE, "maximize", id);
+	} else if ((id = ipc_match_verb(msg, "restore")) != NULL) {
+		ipc_schedule_window_action(WINDOW_ACTION_RESTORE, "restore", id);
+	} else {
+		LOG_WARN("IPC: comando desconhecido ignorado: %s", msg);
+	}
 }
 
 static void ipc_drain(void) {

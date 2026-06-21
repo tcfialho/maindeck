@@ -19,3 +19,14 @@ compile_commands.json
 *.log
 *.swp
 *~
+
+# Profiling / BOLT artifacts — never commit (huge; GitHub rejects >100MB)
+perf_*.data
+*.fdata
+tools/perf-*.py.bak
+
+# Compiled BOLT binaries, test probes, and config backups (reconstructible)
+*.bolt
+*.bak
+*.out
+janelas-filhas-task/autofloat-test/probe

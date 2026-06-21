@@ -178,8 +178,9 @@ static void ptr_button(void *data, struct wl_pointer *ptr,
 
     struct HitArea *ha = &bar->hit_areas[hit];
 
-    /* BTN_LEFT = 0x110, BTN_MIDDLE = 0x112 */
+    /* BTN_LEFT = 0x110, BTN_RIGHT = 0x111, BTN_MIDDLE = 0x112 */
     bool left   = (button == 0x110);
+    bool right  = (button == 0x111);
     bool middle = (button == 0x112);
 
     switch (ha->type) {
@@ -189,6 +190,9 @@ static void ptr_button(void *data, struct wl_pointer *ptr,
     case HIT_TASKBAR:
         if (left)   bar_taskbar_activate(ha->index);
         if (middle) bar_taskbar_close(ha->index);
+        /* Botão direito: menu de contexto estilo Windows (Maximizar/Minimizar/
+         * Restaurar/Fechar) ancorado no botão da janela. */
+        if (right)  bar_taskbar_open_menu(ha->index, ha->x, ha->w, serial);
         break;
     case HIT_STATUS: {
         struct BarConfig *cfg = &bar->config;

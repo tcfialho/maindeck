@@ -85,6 +85,7 @@ exe = executable(
   'wm-libinput.c',
   'wm-handlers.c',
   'wm-config.c',
+  'wm-animation-intents.c',
   generated,
   tablet_protocol,
   cursor_shape_protocol,

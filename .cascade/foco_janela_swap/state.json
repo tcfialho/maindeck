@@ -1,0 +1,37 @@
+{
+ "calls": {
+  "plan": 2,
+  "review": 1
+ },
+ "total_calls": 3,
+ "sessions": {
+  "claude": "5dd15ecb-b358-4f8e-a394-494721fe1b30"
+ },
+ "history": [
+  {
+   "ts": "2026-06-17T19:06:59",
+   "role": "plan",
+   "provider": "agy",
+   "model": "opus",
+   "in": null,
+   "out": null
+  },
+  {
+   "ts": "2026-06-17T19:08:10",
+   "role": "review",
+   "provider": "agy",
+   "model": "opus",
+   "in": null,
+   "out": null
+  },
+  {
+   "ts": "2026-06-17T22:19:33",
+   "role": "plan",
+   "provider": "claude",
+   "model": "opus",
+   "in": 1,
+   "out": 1748
+  }
+ ],
+ "last_verdict": "FIX (blockers=1)"
+}
