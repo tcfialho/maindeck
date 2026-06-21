@@ -1,0 +1,44 @@
+# Fuzzel configurado como Menu Iniciar estilo Windows:
+# - Ancorado no canto inferior esquerdo, acima da barra de tarefas
+# - Tamanho de menu (não ocupa a tela toda)
+# - Tema escuro combinando com a Waybar
+
+[main]
+font=MesloLGS Nerd Font:size=11
+dpi-aware=auto
+anchor=bottom-left
+x-margin=0
+y-margin=32
+width=28
+lines=14
+horizontal-pad=12
+vertical-pad=8
+inner-pad=6
+line-height=22
+prompt="🔍  "
+placeholder="Buscar programas..."
+icon-theme=breeze-dark
+icons-enabled=yes
+match-mode=fuzzy
+terminal=alacritty
+layer=overlay
+keyboard-focus=on-demand
+exit-on-keyboard-focus-loss=yes
+tabs=4
+show-actions=no
+
+[colors]
+background=1a1a1afa
+text=f0f0f0ff
+prompt=f0f0f0ff
+placeholder=999999ff
+input=f0f0f0ff
+match=4ea1f7ff
+selection=2a5f9fff
+selection-text=ffffffff
+selection-match=ffffffff
+border=555555ff
+
+[border]
+width=1
+radius=0

@@ -25,8 +25,12 @@ perf_*.data
 *.fdata
 tools/perf-*.py.bak
 
-# Compiled BOLT binaries, test probes, and config backups (reconstructible)
+# Compiled BOLT binaries, test probes, scratch backups (reconstructible)
 *.bolt
 *.bak
 *.out
 janelas-filhas-task/autofloat-test/probe
+
+# ...but config-backups/ IS tracked on purpose (reference configs).
+!config-backups/
+!config-backups/*

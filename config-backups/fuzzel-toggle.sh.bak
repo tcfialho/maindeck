@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+
+set -eu
+
+# Launches fuzzel on the inherited WAYLAND_DISPLAY. This works in both
+# environments: under niri the caller (keyd F19 → niri spawn) inherits niri's
+# display; under River the caller (maindeck-bar quick-launch) inherits the bar's
+# display, which is the real River display (wayland-1). There is no proxy
+# anymore, so no display rewrite is needed — fuzzel gets keyboard focus directly.
+
+if pgrep -x fuzzel >/dev/null 2>&1; then
+    pkill -x fuzzel
+else
+    # --launch-prefix=maindeck-launch shows a "loading" notification when an app
+    # is picked; maindeck-wm clears it when the app's window maps. Useful for
+    # heavy apps (games) that take a while to show a window.
+    exec fuzzel \
+        --anchor=bottom-left \
+        --x-margin=2 \
+        --y-margin=34 \
+        --width=36 \
+        --lines=12 \
+        --layer=overlay \
+        --border-radius=2 \
+        --launch-prefix="$HOME/.local/bin/maindeck-launch"
+fi
