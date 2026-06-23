@@ -535,9 +535,9 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		struct Window *target = target_window();
 		if (target != NULL && !wm.maximized) {
 			wm.maximized = true;
-			// O target cresce e a outra some — ambas animam REFLOW. Marca todas
-			// as visíveis (no momento, antes do maximize esconder a outra).
+			// O target cresce com GROW_REVEAL e a outra some.
 			mark_visible_tiled_anim(ANIMATION_INTENT_REFLOW_EASE);
+			target->pending_anim = ANIMATION_INTENT_GROW_REVEAL;
 			wm.focus_dirty = true;
 		}
 		break;
@@ -551,10 +551,16 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		break;
 	case ACTION_TOGGLE_MAXIMIZE:
 		// Win+Shift (tap): keyd emite Ctrl+F19. Alterna maximize/restore.
-		if (target_window() != NULL) {
-			wm.maximized = !wm.maximized;
-			mark_visible_tiled_anim(ANIMATION_INTENT_REFLOW_EASE);
-			wm.focus_dirty = true;
+		{
+			struct Window *target = target_window();
+			if (target != NULL) {
+				wm.maximized = !wm.maximized;
+				mark_visible_tiled_anim(ANIMATION_INTENT_REFLOW_EASE);
+				if (wm.maximized) {
+					target->pending_anim = ANIMATION_INTENT_GROW_REVEAL;
+				}
+				wm.focus_dirty = true;
+			}
 		}
 		break;
 	case ACTION_MINIMIZE_TARGET:

@@ -1,0 +1,18 @@
+{
+ "calls": {
+  "review": 1
+ },
+ "total_calls": 1,
+ "sessions": {},
+ "history": [
+  {
+   "ts": "2026-06-23T15:07:59",
+   "role": "review",
+   "provider": "agy",
+   "model": "opus",
+   "in": null,
+   "out": null
+  }
+ ],
+ "last_verdict": "APPROVE (blockers=0)"
+}

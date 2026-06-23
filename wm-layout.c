@@ -366,6 +366,8 @@ void md_maximize_window(struct Window *window) {
 	if (window == NULL || window->closed || window->floating) return;
 	target_tiled_window(window);
 	wm.maximized = true;
+	mark_visible_tiled_anim(ANIMATION_INTENT_REFLOW_EASE);
+	window->pending_anim = ANIMATION_INTENT_GROW_REVEAL;
 	wm.focus_dirty = true;
 	LOG_EVENT("ctx-menu maximize: \"%s\"", window->title ? window->title : "");
 	log_state();
@@ -389,6 +391,7 @@ void md_restore_window(struct Window *window) {
 	 * segue o alvo — restaura se esta é a janela alvo e estamos maximizados. */
 	if (wm.maximized && window == target_window()) {
 		wm.maximized = false;
+		mark_visible_tiled_anim(ANIMATION_INTENT_REFLOW_EASE);
 		wm.focus_dirty = true;
 		LOG_EVENT("ctx-menu restore (unmaximize): \"%s\"", window->title ? window->title : "");
 		log_state();
