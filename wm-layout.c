@@ -97,6 +97,24 @@ static struct Window *window_at(size_t index) {
 	return NULL;
 }
 
+// Marca PER-WINDOW (pending_anim) todas as janelas tiled atualmente VISÍVEIS
+// (não-minimizadas, nos 2 primeiros slots). Usado por ações que mexem na
+// geometria de várias janelas ao mesmo tempo com o MESMO efeito (maximize/
+// restore, promote, send-to-deck-bottom): cada janela afetada carrega seu próprio
+// intent, eliminando o pending_anim global. `intent` é um AnimationIntent (passado
+// como uint32_t p/ não acoplar este header ao de animação). Chamar DEPOIS da
+// mutação da lista.
+void mark_visible_tiled_anim(uint32_t intent) {
+	size_t i = 0;
+	struct Window *window;
+	wl_list_for_each(window, &wm.windows, link) {
+		if (window->minimized || window->parent != NULL || window->floating) continue;
+		if (i >= 2) break; // só os 2 slots visíveis (MAIN + DECK)
+		window->pending_anim = intent;
+		i++;
+	}
+}
+
 int32_t window_index(struct Window *needle) {
 	int32_t i = 0;
 	struct Window *window;
@@ -482,6 +500,11 @@ void md_swap_main_deck(void) {
 	struct Window *main = window_at(0);
 	struct Window *deck = window_at(1);
 	if (main == NULL || deck == NULL) return;
+	// DECLARATIVO: as DUAS janelas trocam de slot/tamanho — ambas animam SPRING.
+	// Marca per-window (não global): cada uma carrega seu intent; o river arma
+	// armMove(.spring) por declaração, não por inferência de geometria.
+	main->pending_anim = ANIMATION_INTENT_SPRING;
+	deck->pending_anim = ANIMATION_INTENT_SPRING;
 	move_first(deck);
 	wm.target_index = wm.target_index == 0 ? 1 : 0;
 	wm.maximized = false;
@@ -817,16 +840,16 @@ void window_manage_layout(struct Window *window, size_t index, const struct Layo
 void window_render_layout(struct Window *window, size_t index, const struct LayoutView *view) {
 	if (window->minimized) {
 		bool was_visible = window->last_applied_visible;
-		LOG_EVENT("[MIN-DIAG] minimized path win=\"%s\" was_visible=%d applied_visible=%d pending_anim=%d",
-			window->title ? window->title : "", was_visible, window->applied_visible, wm.pending_anim);
+		LOG_EVENT("[MIN-DIAG] minimized path win=\"%s\" was_visible=%d applied_visible=%d win_pending=%d",
+			window->title ? window->title : "", was_visible, window->applied_visible, window->pending_anim);
 		if (was_visible) {
-			// DECLARATIVE: a ação já declarou o intent de saída via pending_anim
-			// (MINIMIZE_TARGET → MINIMIZE). O helper inferencial por index não
-			// serve aqui — minimizar não é "sair do deck/main", é descer p/ barra.
-			AnimationIntent intent = (wm.pending_anim != ANIMATION_INTENT_NONE)
-				? (AnimationIntent)wm.pending_anim
-				: md_intent_for_close(index, view->visible_count + 1);
-			md_send_animation_intent(window, intent);
+			// DECLARATIVO PURO: a ação md_minimize_window já marcou ESTA janela com
+			// MINIMIZE em window->pending_anim. Sem global, sem helper inferencial —
+			// se não há intent per-window, não anima (mas o hide abaixo ainda sai).
+			if (window->pending_anim != ANIMATION_INTENT_NONE) {
+				md_send_animation_intent(window, (AnimationIntent)window->pending_anim);
+				window->pending_anim = ANIMATION_INTENT_NONE; // one-shot
+			}
 			// FORÇA o hide: o guard `applied_visible == visible` em window_set_visible
 			// pode pular o envio quando applied_visible já é false (divergência de
 			// tracking entre applied_visible e last_applied_visible que deixa a
@@ -998,14 +1021,21 @@ void window_render_layout(struct Window *window, size_t index, const struct Layo
 	int32_t new_h = box.height - BORDER_WIDTH;
 
 	if (was_visible && visible) {
-		// A janela continua visível, mas pode ter mudado de geometria por um
-		// efeito colateral da ação (ex.: unminimize encolhe o deck, deck-switch
-		// troca os slots). NÃO usar pending_anim global aqui — ele carrega o
-		// intent da ação visada (UNMINIMIZE, MINIMIZE) que NÃO se aplica às
-		// colaterais. A geometria muda, mas é reposicionamento puro (acho que
-		// não precisa animar com SPRING/REFLOW para colaterais em unminimize).
-		// Se no futuro quisermos animar colaterais, usar SPREFLOW ou um intent
-		// per-window explícito, nunca o global.
+		// A janela CONTINUA visível mas mudou de geometria (swap troca slots,
+		// maximize/restore cresce/encolhe, promote/send refluem). O intent vem
+		// EXCLUSIVAMENTE de window->pending_anim, marcado pela AÇÃO (SPRING p/ swap,
+		// REFLOW_EASE p/ maximize/restore/promote/send). NÃO há global nem
+		// inferência: o `geom_changed` abaixo é só um GATE p/ não emitir quando
+		// nada mexeu (re-layout por foco/manage_dirty) — o TIPO da animação é o
+		// enum declarado, não o delta. Sem intent per-window → não anima
+		// (reposicionamento instantâneo), evitando animar colaterais não-visadas.
+		bool geom_changed = (new_x != window->last_render_x || new_y != window->last_render_y ||
+		                     new_w != window->last_render_width || new_h != window->last_render_height);
+		if (geom_changed && window->pending_anim != ANIMATION_INTENT_NONE) {
+			md_send_animation_intent(window, (AnimationIntent)window->pending_anim);
+		}
+		// Consome o intent per-window (one-shot).
+		window->pending_anim = ANIMATION_INTENT_NONE;
 	}
 
 	river_node_v1_set_position(window->node, new_x, new_y);

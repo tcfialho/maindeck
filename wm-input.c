@@ -502,8 +502,8 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		}
 		break;
 	case ACTION_SWAP_MAIN_DECK:
+		// md_swap_main_deck marca as DUAS janelas per-window (SPRING). Sem global.
 		md_swap_main_deck();
-		wm.pending_anim = ANIMATION_INTENT_SPRING; // main↔deck trocam de slot
 		wm.focus_dirty = true;
 		break;
 	case ACTION_DECK_NEXT:
@@ -520,20 +520,24 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		wm.focus_dirty = true;
 		break;
 	case ACTION_SEND_TARGET_TO_DECK_BOTTOM:
+		// Reflui várias janelas (target sai do slot, outra sobe). Marca todas as
+		// visíveis per-window com REFLOW_EASE. Sem global.
 		md_send_target_to_deck_bottom();
-		wm.pending_anim = ANIMATION_INTENT_REFLOW_EASE;
+		mark_visible_tiled_anim(ANIMATION_INTENT_REFLOW_EASE);
 		wm.focus_dirty = true;
 		break;
 	case ACTION_PROMOTE_TARGET_TO_MAIN:
 		md_promote_target_to_main();
-		wm.pending_anim = ANIMATION_INTENT_REFLOW_EASE;
+		mark_visible_tiled_anim(ANIMATION_INTENT_REFLOW_EASE);
 		wm.focus_dirty = true;
 		break;
 	case ACTION_MAXIMIZE_TARGET: {
 		struct Window *target = target_window();
 		if (target != NULL && !wm.maximized) {
 			wm.maximized = true;
-			wm.pending_anim = ANIMATION_INTENT_REFLOW_EASE; // geometria cresce
+			// O target cresce e a outra some — ambas animam REFLOW. Marca todas
+			// as visíveis (no momento, antes do maximize esconder a outra).
+			mark_visible_tiled_anim(ANIMATION_INTENT_REFLOW_EASE);
 			wm.focus_dirty = true;
 		}
 		break;
@@ -541,7 +545,7 @@ static void seat_action(struct Seat *seat, enum Action action) {
 	case ACTION_RESTORE:
 		if (wm.maximized) {
 			wm.maximized = false;
-			wm.pending_anim = ANIMATION_INTENT_REFLOW_EASE;
+			mark_visible_tiled_anim(ANIMATION_INTENT_REFLOW_EASE);
 			wm.focus_dirty = true;
 		}
 		break;
@@ -549,21 +553,22 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		// Win+Shift (tap): keyd emite Ctrl+F19. Alterna maximize/restore.
 		if (target_window() != NULL) {
 			wm.maximized = !wm.maximized;
-			wm.pending_anim = ANIMATION_INTENT_REFLOW_EASE;
+			mark_visible_tiled_anim(ANIMATION_INTENT_REFLOW_EASE);
 			wm.focus_dirty = true;
 		}
 		break;
 	case ACTION_MINIMIZE_TARGET:
 		// Super+Down HOLD (P15): minimize the targeted window to the bar.
+		// md_minimize_window (via md_minimize_target) marca a janela per-window
+		// com MINIMIZE. Sem global duplicado.
 		md_minimize_target();
-		wm.pending_anim = ANIMATION_INTENT_MINIMIZE;
 		wm.focus_dirty = true;
 		break;
 	case ACTION_UNMINIMIZE:
 		// Super+Up HOLD (P15): bring the most recently minimized window back
-		// (LIFO) as MAIN.
+		// (LIFO) as MAIN. md_unminimize marca a janela que volta per-window
+		// (UNMINIMIZE). Sem global duplicado.
 		md_unminimize();
-		wm.pending_anim = ANIMATION_INTENT_UNMINIMIZE;
 		wm.focus_dirty = true;
 		break;
 	case ACTION_EXIT:

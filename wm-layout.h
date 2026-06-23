@@ -39,6 +39,10 @@ void apply_pending_window_action(void);
 void focus_target_on_seats(void);
 void log_state(void);
 void md_swap_main_deck(void);
+/* Marca per-window (pending_anim) as janelas visíveis (≤2 slots) com `intent`
+   (AnimationIntent como uint32_t). Para ações que animam várias janelas com o
+   mesmo efeito (maximize/restore/promote/send). Chamar após mutar a lista. */
+void mark_visible_tiled_anim(uint32_t intent);
 void md_deck_next(void);
 void md_deck_prev(void);
 void md_send_target_to_deck_bottom(void);
