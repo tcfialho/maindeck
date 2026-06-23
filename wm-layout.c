@@ -54,6 +54,7 @@ static void window_set_visible(struct Window *w, bool visible) {
 	if (visible) {
 		river_window_v1_show(w->obj);
 	} else {
+		LOG_EVENT("[VIS-DIAG] hide SENT win=\"%s\" minimized=%d", w->title ? w->title : "", w->minimized);
 		river_window_v1_hide(w->obj);
 	}
 	w->applied_visible = visible;
@@ -493,8 +494,19 @@ void md_deck_next(void) {
 		return;
 	}
 	struct Window *deck = window_at(1);
+	// DECK_NEXT (Win+→): a sequência segue a seta — a janela do deck SAI pela
+	// DIREITA (SLIDE_DECK_OUT) e a próxima oculta ENTRA pela ESQUERDA (DECK_IN_LEFT,
+	// com clip). Marca per-window os dois papéis no momento da ação (semântico, sem
+	// inferência geométrica nem pending_anim global ambíguo). DECK_IN_LEFT é
+	// distinto de SLIDE_IN (que ficou só para o open-em-grupo que vira main) — o
+	// river decide a direção pelo enum, não por box.x.
+	deck->pending_anim = ANIMATION_INTENT_SLIDE_DECK_OUT; // sai p/ direita
 	wl_list_remove(&deck->link);
 	wl_list_insert(visible_region_end()->prev, &deck->link);
+	struct Window *new_deck = window_at(1); // a que subiu p/ o slot do deck
+	if (new_deck != NULL) {
+		new_deck->pending_anim = ANIMATION_INTENT_DECK_IN_LEFT; // entra pela esquerda
+	}
 	wm.target_index = 1;
 	wm.maximized = false;
 	log_state();
@@ -508,6 +520,13 @@ void md_deck_prev(void) {
 	}
 	struct Window *last_visible = window_at(vis - 1);
 	struct Window *main = window_at(0);
+	struct Window *old_deck = window_at(1); // será empurrada p/ hidden
+	// DECK_PREV (Win+←): espelho do NEXT — a janela do deck SAI pela ESQUERDA
+	// (SLIDE_DECK_OUT_LEFT) e a que entra vem da DIREITA (DECK_IN_RIGHT).
+	if (old_deck != NULL) {
+		old_deck->pending_anim = ANIMATION_INTENT_SLIDE_DECK_OUT_LEFT; // sai p/ esquerda
+	}
+	last_visible->pending_anim = ANIMATION_INTENT_DECK_IN_RIGHT; // entra pela direita
 	move_after(last_visible, &main->link);
 	wm.target_index = 1;
 	wm.maximized = false;
@@ -554,6 +573,8 @@ void md_minimize_window(struct Window *window) {
 	// (the `fullscreen && !minimized` guard falls through to exit_fullscreen), so
 	// we only set the flag here and let the layout pass issue the protocol exit.
 	window->minimized = true;
+	// Marca ESTA janela (a que sai p/ a barra) com o intent per-window MINIMIZE.
+	window->pending_anim = ANIMATION_INTENT_MINIMIZE;
 	move_last(window);          // group at the tail; newest minimized is last
 	wm.target_index = 0;        // target the new MAIN (clamped below if needed)
 	wm.maximized = false;
@@ -580,6 +601,11 @@ void md_unminimize(void) {
 	}
 	if (newest == NULL) return; // nothing minimized
 	newest->minimized = false;
+	// Marca ESTA janela (a que volta) com o intent per-window UNMINIMIZE. Assim o
+	// relayout sabe que ela (e só ela) deve animar como unminimize, não as
+	// colaterais (o DECK antigo que vira hidden deve animar como SLIDE_DECK_OUT,
+	// não herdar o pending_anim global).
+	newest->pending_anim = ANIMATION_INTENT_UNMINIMIZE;
 	move_first(newest);         // comes back as MAIN (mirror of the prototype)
 	wm.target_index = 0;
 	wm.maximized = false;
@@ -779,11 +805,26 @@ void window_manage_layout(struct Window *window, size_t index, const struct Layo
 void window_render_layout(struct Window *window, size_t index, const struct LayoutView *view) {
 	if (window->minimized) {
 		bool was_visible = window->last_applied_visible;
+		LOG_EVENT("[MIN-DIAG] minimized path win=\"%s\" was_visible=%d applied_visible=%d pending_anim=%d",
+			window->title ? window->title : "", was_visible, window->applied_visible, wm.pending_anim);
 		if (was_visible) {
-			AnimationIntent intent = md_intent_for_close(index, view->visible_count + 1);
+			// DECLARATIVE: a ação já declarou o intent de saída via pending_anim
+			// (MINIMIZE_TARGET → MINIMIZE). O helper inferencial por index não
+			// serve aqui — minimizar não é "sair do deck/main", é descer p/ barra.
+			AnimationIntent intent = (wm.pending_anim != ANIMATION_INTENT_NONE)
+				? (AnimationIntent)wm.pending_anim
+				: md_intent_for_close(index, view->visible_count + 1);
 			md_send_animation_intent(window, intent);
+			// FORÇA o hide: o guard `applied_visible == visible` em window_set_visible
+			// pode pular o envio quando applied_visible já é false (divergência de
+			// tracking entre applied_visible e last_applied_visible que deixa a
+			// janela visível na tela com applied_visible=0). No minimize é crítico
+			// que o hide CHEGUE ao river no mesmo render que o intent, senão o
+			// orphan (que exige requested.hidden) nunca dispara. Enviamos direto.
+			LOG_EVENT("[VIS-DIAG] hide FORCED win=\"%s\"", window->title ? window->title : "");
+			river_window_v1_hide(window->obj);
+			window->applied_visible = false;
 		}
-		window_set_visible(window, false);
 		window_apply_borders(window, BORDER_NONE);
 		window->last_applied_visible = false;
 		return;
@@ -905,12 +946,32 @@ void window_render_layout(struct Window *window, size_t index, const struct Layo
 	bool was_visible = window->last_applied_visible;
 	if (was_visible != visible) {
 		AnimationIntent intent;
+		// Prioridade do intent declarado: PER-WINDOW (a janela visada pela ação)
+		// > GLOBAL (wm.pending_anim, para ações que afetam várias janelas como
+		// deck-switch) > INFERENCIAL (helpers por index/contexto). O per-window
+		// evita que uma ação como UNMINIMIZE contamine as janelas colaterais
+		// (o DECK antigo que vira hidden deve animar SLIDE_DECK_OUT, não herdar
+		// UNMINIMIZE do pending_anim global).
+		uint32_t declared = (window->pending_anim != ANIMATION_INTENT_NONE)
+			? window->pending_anim
+			: wm.pending_anim;
 		if (visible) {
-			intent = md_intent_for_open(view->visible_count > 1 ? view->visible_count - 1 : 0);
+			intent = (declared != ANIMATION_INTENT_NONE)
+				? (AnimationIntent)declared
+				: md_intent_for_open(view->visible_count > 1 ? view->visible_count - 1 : 0);
 		} else {
-			intent = md_intent_for_close(index, view->visible_count + 1);
+			// DECLARATIVE: a ação já declarou o intent de saída. O index
+			// pós-reordenação NÃO é confiável aqui — a janela que sai do deck já
+			// foi movida para index≥2 antes do relayout, então md_intent_for_close
+			// cairia no branch errado (SLIDE_CLOSE em vez de SLIDE_DECK_OUT).
+			// Só usa o helper inferencial se a ação não declarou nada (fallback).
+			intent = (declared != ANIMATION_INTENT_NONE)
+				? (AnimationIntent)declared
+				: md_intent_for_close(index, view->visible_count + 1);
 		}
 		md_send_animation_intent(window, intent);
+		// Consome o intent per-window (one-shot) — não vaza para o próximo render.
+		window->pending_anim = ANIMATION_INTENT_NONE;
 	}
 
 	if (!visible) {
@@ -920,6 +981,15 @@ void window_render_layout(struct Window *window, size_t index, const struct Layo
 		return;
 	}
 
+	// A janela está VISÍVEL neste render. Se ela estava hidden antes (vinha de
+	// minimize/unminimize/deck-switch-in), envia `show` ao compositor — sem isso
+	// o river mantém requested.hidden=true e a janela fica invisível (tela preta,
+	// não volta do minimize). O guard interno de window_set_visible pula se já
+	// aplicado, então é seguro chamar sempre aqui.
+	if (was_visible != visible) {
+		window_set_visible(window, true);
+	}
+
 	struct Box box = layout_box_for_index(view, index);
 	int32_t new_x = box.x + BORDER_WIDTH;
 	int32_t new_y = box.y;
@@ -927,24 +997,14 @@ void window_render_layout(struct Window *window, size_t index, const struct Layo
 	int32_t new_h = box.height - BORDER_WIDTH;
 
 	if (was_visible && visible) {
-		AnimationIntent intent = ANIMATION_INTENT_NONE;
-		bool pos_changed = (new_x != window->last_render_x || new_y != window->last_render_y);
-		bool size_changed = (new_w != window->last_render_width || new_h != window->last_render_height);
-		if (size_changed) {
-			intent = md_intent_for_reflow();
-			if (index < 2 && view->visible_count >= 2) {
-				intent = md_intent_for_swap();
-			}
-		} else if (pos_changed) {
-			intent = md_intent_for_deck_move();
-			int32_t diff_x = new_x > window->last_render_x ? new_x - window->last_render_x : window->last_render_x - new_x;
-			if (diff_x > 0 && diff_x < 50) {
-				intent = md_intent_for_nudge();
-			}
-		}
-		if (intent != ANIMATION_INTENT_NONE) {
-			md_send_animation_intent(window, intent);
-		}
+		// A janela continua visível, mas pode ter mudado de geometria por um
+		// efeito colateral da ação (ex.: unminimize encolhe o deck, deck-switch
+		// troca os slots). NÃO usar pending_anim global aqui — ele carrega o
+		// intent da ação visada (UNMINIMIZE, MINIMIZE) que NÃO se aplica às
+		// colaterais. A geometria muda, mas é reposicionamento puro (acho que
+		// não precisa animar com SPRING/REFLOW para colaterais em unminimize).
+		// Se no futuro quisermos animar colaterais, usar SPREFLOW ou um intent
+		// per-window explícito, nunca o global.
 	}
 
 	river_node_v1_set_position(window->node, new_x, new_y);
@@ -953,6 +1013,17 @@ void window_render_layout(struct Window *window, size_t index, const struct Layo
 	window->last_render_width = new_w;
 	window->last_render_height = new_h;
 	window->last_applied_visible = true;
+
+	// Pré-registra a animação de close DESTA janela conforme seu papel atual, para
+	// que um close iniciado pelo cliente (Alt+F4 no app) tenha a direção certa sem
+	// o compositor inferir por geometria. Espelha md_intent_for_close, mas declarado
+	// antes do fato: solo → fade; deck (slot 1) → slide right; main-com-deck → slide left.
+	{
+		AnimationIntent close_intent = (view->visible_count <= 1)
+			? ANIMATION_INTENT_FADE_CLOSE
+			: (index == 1 ? ANIMATION_INTENT_SLIDE_DECK_OUT : ANIMATION_INTENT_SLIDE_CLOSE);
+		md_send_close_intent(window, close_intent);
+	}
 
 	wm_place_top(window->node);
 

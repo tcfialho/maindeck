@@ -79,6 +79,15 @@ struct Window {
 	bool last_applied_visible;
 	int32_t last_render_x, last_render_y;
 	int32_t last_render_width, last_render_height;
+	// Último close_intent pré-registrado no compositor (AnimationIntent). -1 =
+	// nunca enviado. Evita reenviar set_close_intent a cada relayout se não mudou.
+	int32_t last_close_intent;
+	// Animação declarada pela AÇÃO para ESTA janela (one-shot, per-window). A ação
+	// marca a janela visada (ex.: UNMINIMIZE na que volta, MINIMIZE na que sai) e o
+	// render cycle lê/consome. Diferente do pending_anim global do WindowManager,
+	// este é específico — não contamina janelas colaterais que mudam de slot por
+	// efeito da mesma ação. 0 (NONE) = sem intent per-window declarado.
+	uint32_t pending_anim;
 
 	struct wl_list link; // WindowManager.windows in MainDeck order
 };
@@ -160,6 +169,12 @@ struct WindowManager {
 	uint32_t target_index; // 0 or 1
 	bool maximized;
 	bool focus_dirty;
+	// Animação declarada pela AÇÃO (one-shot). A ação que muda o layout grava aqui
+	// QUAL animação a transição deve ter (ANIMATION_INTENT_*); o render cycle a
+	// transmite às janelas afetadas e a zera no fim. ANIMATION_INTENT_NONE = sem
+	// animação declarada (o render não inventa uma por geometria). Substitui a
+	// antiga inferência por diff de pixels (size_changed/pos_changed<50).
+	uint32_t pending_anim;
 	struct river_node_v1 *last_placed_top_node;
 	// Flutuante a focar no próximo manage_start (focus_window é window
 	// management state e só pode ser feito dentro da manage sequence).

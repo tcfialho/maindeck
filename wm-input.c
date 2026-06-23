@@ -15,6 +15,7 @@
 #include "wm-log.h"
 #include "wm-state.h"
 #include "wm-layout.h"
+#include "wm-animation-intents.h"
 #include "wm-input.h"
 #include "wm-config.h"
 #include "cursor-shape-v1-client-protocol.h"
@@ -66,41 +67,47 @@ void close_launcher(void) {
 
 // --- XKB binding handlers (tap/hold) ---
 
+// Resolve um tap de TOGGLE_TARGET para a ação efetiva, tratando o double-tap:
+// 1 tap → TOGGLE_TARGET; 2 taps dentro de DOUBLE_TAP_MS → DECK_NEXT (carrossel do
+// deck), sem desfazer o 1º toggle. Centralizado aqui para funcionar tanto no
+// caminho SEM hold (resolvido no pressed) quanto no caminho COM hold (resolvido no
+// release, p/ ex. Win+Tab que tem hold=SWAP). Sem isto, o early-return do pressed
+// para bindings com hold tornava o double-tap inalcançável (Win+Tab+Tab não ciclava).
+static enum Action resolve_toggle_tap(void) {
+	static struct timespec last_toggle_tap;
+	static bool last_toggle_tap_valid = false;
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	long since_ms = last_toggle_tap_valid
+		? (now.tv_sec - last_toggle_tap.tv_sec) * 1000L
+			+ (now.tv_nsec - last_toggle_tap.tv_nsec) / 1000000L
+		: -1;
+	if (last_toggle_tap_valid && since_ms >= 0 && since_ms <= DOUBLE_TAP_MS) {
+		last_toggle_tap_valid = false; // um 3º tap recomeça do zero
+		return ACTION_DECK_NEXT;
+	}
+	last_toggle_tap = now;
+	last_toggle_tap_valid = true;
+	return ACTION_TOGGLE_TARGET;
+}
+
 static void xkb_binding_handle_pressed(void *data, struct river_xkb_binding_v1 *obj) {
 	struct XkbBinding *binding = data;
 	LOG_EVENT("key pressed: tap=%d hold=%d", binding->tap_action, binding->hold_action);
 	if (binding->hold_action != ACTION_NONE) {
+		// Binding com hold (ex.: Win+Tab tap=TOGGLE/hold=SWAP): só arma o timer de
+		// hold; o tap só se confirma no release. O double-tap de TOGGLE_TARGET é
+		// resolvido lá (released), garantindo que Win+Tab+Tab cicle o deck.
 		clock_gettime(CLOCK_MONOTONIC, &binding->press_time);
 		binding->held = true;
 		binding->hold_fired = false;
 		return;
 	}
 
-	// Win+Tab double-tap → cycle the DECK. The first tap fires the normal
-	// ACTION_TOGGLE_TARGET immediately (no latency on the common action). A
-	// second toggle-tap within DOUBLE_TAP_MS runs DECK_NEXT. We deliberately do
-	// NOT undo the first tap's toggle: the ALVO simply lands on DECK and stays
-	// (no flash-and-restore), trading exact "like Win+→" parity for zero latency
-	// and no flicker.
+	// Binding SEM hold: resolve já no pressed (latência zero). Para TOGGLE_TARGET,
+	// o helper trata o double-tap → DECK_NEXT.
 	if (binding->tap_action == ACTION_TOGGLE_TARGET) {
-		static struct timespec last_toggle_tap;
-		static bool last_toggle_tap_valid = false;
-		struct timespec now;
-		clock_gettime(CLOCK_MONOTONIC, &now);
-		long since_ms = last_toggle_tap_valid
-			? (now.tv_sec - last_toggle_tap.tv_sec) * 1000L
-				+ (now.tv_nsec - last_toggle_tap.tv_nsec) / 1000000L
-			: -1;
-		if (last_toggle_tap_valid && since_ms >= 0 && since_ms <= DOUBLE_TAP_MS) {
-			// Second quick tap: cycle the DECK (don't undo the first toggle).
-			binding->seat->pending_action = ACTION_DECK_NEXT;
-			last_toggle_tap_valid = false; // a third tap starts fresh
-			return;
-		}
-		// First tap: fire the toggle now and arm the double-tap window.
-		last_toggle_tap = now;
-		last_toggle_tap_valid = true;
-		binding->seat->pending_action = ACTION_TOGGLE_TARGET;
+		binding->seat->pending_action = resolve_toggle_tap();
 		return;
 	}
 
@@ -114,7 +121,12 @@ static void xkb_binding_handle_released(void *data, struct river_xkb_binding_v1 
 	if (!binding->held) return;
 	binding->held = false;
 	if (!binding->hold_fired) {
-		binding->seat->pending_action = binding->tap_action;
+		// O tap (de um binding com hold) só se confirma aqui. Para TOGGLE_TARGET,
+		// passa pelo detector de double-tap: 2 releases rápidos → DECK_NEXT. É isto
+		// que faz Win+Tab+Tab ciclar o deck (antes entregava TOGGLE_TARGET cru).
+		binding->seat->pending_action = (binding->tap_action == ACTION_TOGGLE_TARGET)
+			? resolve_toggle_tap()
+			: binding->tap_action;
 	}
 }
 
@@ -431,7 +443,33 @@ void seat_maybe_destroy(struct Seat *seat) {
 	free(seat);
 }
 
+static const char *action_name(enum Action a) {
+	switch (a) {
+	case ACTION_NONE: return "NONE";
+	case ACTION_SPAWN_TERMINAL: return "SPAWN_TERMINAL";
+	case ACTION_SPAWN_LAUNCHER: return "SPAWN_LAUNCHER";
+	case ACTION_SPAWN_SCREENSHOT: return "SPAWN_SCREENSHOT";
+	case ACTION_CLOSE_TARGET: return "CLOSE_TARGET";
+	case ACTION_TOGGLE_TARGET: return "TOGGLE_TARGET";
+	case ACTION_SWAP_MAIN_DECK: return "SWAP_MAIN_DECK";
+	case ACTION_DECK_NEXT: return "DECK_NEXT";
+	case ACTION_DECK_PREV: return "DECK_PREV";
+	case ACTION_SEND_TARGET_TO_DECK_BOTTOM: return "SEND_TO_DECK_BOTTOM";
+	case ACTION_PROMOTE_TARGET_TO_MAIN: return "PROMOTE_TO_MAIN";
+	case ACTION_MAXIMIZE_TARGET: return "MAXIMIZE";
+	case ACTION_RESTORE: return "RESTORE";
+	case ACTION_TOGGLE_MAXIMIZE: return "TOGGLE_MAXIMIZE";
+	case ACTION_MINIMIZE_TARGET: return "MINIMIZE";
+	case ACTION_UNMINIMIZE: return "UNMINIMIZE";
+	case ACTION_EXIT: return "EXIT";
+	}
+	return "?";
+}
+
 static void seat_action(struct Seat *seat, enum Action action) {
+	LOG_EVENT("[ACTION-DIAG] action=%d (%s) target=\"%s\"", (int)action,
+		action_name(action),
+		(seat->focused && seat->focused->title) ? seat->focused->title : "(none)");
 	switch (action) {
 	case ACTION_NONE:
 		break;
@@ -465,28 +503,37 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		break;
 	case ACTION_SWAP_MAIN_DECK:
 		md_swap_main_deck();
+		wm.pending_anim = ANIMATION_INTENT_SPRING; // main↔deck trocam de slot
 		wm.focus_dirty = true;
 		break;
 	case ACTION_DECK_NEXT:
+		// md_deck_next marca PER-WINDOW os dois papéis (a que sai → SLIDE_DECK_OUT,
+		// a que entra → SLIDE_IN). Não usa pending_anim global: o deck-switch afeta
+		// 2 janelas com intents distintos, que um único valor global não expressa.
 		md_deck_next();
 		wm.focus_dirty = true;
 		break;
 	case ACTION_DECK_PREV:
+		// md_deck_prev marca PER-WINDOW (sai → SLIDE_DECK_OUT_LEFT, entra →
+		// DECK_IN_RIGHT) — espelho do NEXT.
 		md_deck_prev();
 		wm.focus_dirty = true;
 		break;
 	case ACTION_SEND_TARGET_TO_DECK_BOTTOM:
 		md_send_target_to_deck_bottom();
+		wm.pending_anim = ANIMATION_INTENT_REFLOW_EASE;
 		wm.focus_dirty = true;
 		break;
 	case ACTION_PROMOTE_TARGET_TO_MAIN:
 		md_promote_target_to_main();
+		wm.pending_anim = ANIMATION_INTENT_REFLOW_EASE;
 		wm.focus_dirty = true;
 		break;
 	case ACTION_MAXIMIZE_TARGET: {
 		struct Window *target = target_window();
 		if (target != NULL && !wm.maximized) {
 			wm.maximized = true;
+			wm.pending_anim = ANIMATION_INTENT_REFLOW_EASE; // geometria cresce
 			wm.focus_dirty = true;
 		}
 		break;
@@ -494,6 +541,7 @@ static void seat_action(struct Seat *seat, enum Action action) {
 	case ACTION_RESTORE:
 		if (wm.maximized) {
 			wm.maximized = false;
+			wm.pending_anim = ANIMATION_INTENT_REFLOW_EASE;
 			wm.focus_dirty = true;
 		}
 		break;
@@ -501,18 +549,21 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		// Win+Shift (tap): keyd emite Ctrl+F19. Alterna maximize/restore.
 		if (target_window() != NULL) {
 			wm.maximized = !wm.maximized;
+			wm.pending_anim = ANIMATION_INTENT_REFLOW_EASE;
 			wm.focus_dirty = true;
 		}
 		break;
 	case ACTION_MINIMIZE_TARGET:
 		// Super+Down HOLD (P15): minimize the targeted window to the bar.
 		md_minimize_target();
+		wm.pending_anim = ANIMATION_INTENT_MINIMIZE;
 		wm.focus_dirty = true;
 		break;
 	case ACTION_UNMINIMIZE:
 		// Super+Up HOLD (P15): bring the most recently minimized window back
 		// (LIFO) as MAIN.
 		md_unminimize();
+		wm.pending_anim = ANIMATION_INTENT_UNMINIMIZE;
 		wm.focus_dirty = true;
 		break;
 	case ACTION_EXIT:

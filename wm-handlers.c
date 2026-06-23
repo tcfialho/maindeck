@@ -28,6 +28,7 @@
 #include "wm-log.h"
 #include "wm-state.h"
 #include "wm-layout.h"
+#include "wm-animation-intents.h"
 #include "wm-input.h"
 #include "wm-libinput.h"
 #include "wm-handlers.h"
@@ -844,13 +845,18 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 	if (!have_last_render_sig || sig != last_render_sig) {
 		size_t index = 0;
 		struct Window *window;
+		LOG_EVENT("[RENDER-DIAG] === render cycle start, pending_anim=%d ===", (int)wm.pending_anim);
 		wl_list_for_each(window, &wm.windows, link) {
 			if (window->parent != NULL || window->floating) continue;
+			LOG_EVENT("[RENDER-DIAG] pre-layout win=\"%s\" index=%zu minimized=%d last_applied_vis=%d applied_vis=%d",
+				window->title ? window->title : "", index, window->minimized,
+				window->last_applied_visible, window->applied_visible);
 			window_render_layout(window, index, &view);
 			if (!window->minimized) {
 				index++;
 			}
 		}
+		LOG_EVENT("[RENDER-DIAG] === tiled pass done, visible_count=%d ===", view.visible_count);
 		if (view.target != NULL) {
 			wm_place_top(view.target->node);
 		}
@@ -867,6 +873,10 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 		last_render_sig = sig;
 		have_last_render_sig = true;
 	}
+	// pending_anim é one-shot: a ação o declarou para ESTE ciclo de render e o
+	// relayout acima já o transmitiu às janelas afetadas. Zera sempre (mesmo se o
+	// sig não mudou) para não vazar a animação de uma ação para a próxima transição.
+	wm.pending_anim = ANIMATION_INTENT_NONE;
 	river_window_manager_v1_render_finish(window_manager_v1);
 }
 
@@ -879,6 +889,7 @@ static void wm_handle_window(void *data, struct river_window_manager_v1 *obj, st
 	window->obj = river_window;
 	window->node = river_window_v1_get_node(window->obj);
 	window->new = true;
+	window->last_close_intent = -1; // sentinela: força o 1º set_close_intent
 	river_window_v1_add_listener(window->obj, &river_window_listener, window);
 	md_insert_new_window(window);
 	clear_loading_notification();
@@ -968,7 +979,7 @@ static void handle_global(void *data, struct wl_registry *registry, uint32_t nam
 			/* Bind the highest version we and the compositor share. v6 adds
 			 * set_animation_intent (the P17 directional slides); degrade
 			 * gracefully to 5/4 against an older compositor. */
-			uint32_t bind_ver = version >= 6 ? 6 : (version >= 5 ? 5 : 4);
+			uint32_t bind_ver = version >= 7 ? 7 : (version >= 6 ? 6 : (version >= 5 ? 5 : 4));
 			window_manager_v1 = wl_registry_bind(registry, name, &river_window_manager_v1_interface,
 				bind_ver);
 		}

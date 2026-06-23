@@ -96,6 +96,12 @@ static struct IntentConfig intentConfig(AnimationIntent intent) {
             return (struct IntentConfig){.duration_ms = INTENT_MINIMIZE_MS, .easing = EASING_EASE_IN};
         case ANIMATION_INTENT_UNMINIMIZE:
             return (struct IntentConfig){.duration_ms = INTENT_UNMINIMIZE_MS, .easing = EASING_EASE_OUT};
+        case ANIMATION_INTENT_SLIDE_DECK_OUT_LEFT:
+            return (struct IntentConfig){.duration_ms = INTENT_SLIDE_DECK_OUT_MS, .easing = EASING_EASE_IN};
+        case ANIMATION_INTENT_DECK_IN_RIGHT:
+            return (struct IntentConfig){.duration_ms = INTENT_SLIDE_IN_MS, .easing = EASING_EASE_OUT};
+        case ANIMATION_INTENT_DECK_IN_LEFT:
+            return (struct IntentConfig){.duration_ms = INTENT_SLIDE_IN_MS, .easing = EASING_EASE_OUT};
         default:
             return (struct IntentConfig){.duration_ms = 0, .easing = EASING_LINEAR};
     }
@@ -116,6 +122,9 @@ const char *md_animation_intent_name(AnimationIntent intent) {
         case ANIMATION_INTENT_FS_CAROUSEL: return "FS_CAROUSEL";
         case ANIMATION_INTENT_MINIMIZE: return "MINIMIZE";
         case ANIMATION_INTENT_UNMINIMIZE: return "UNMINIMIZE";
+        case ANIMATION_INTENT_SLIDE_DECK_OUT_LEFT: return "SLIDE_DECK_OUT_LEFT";
+        case ANIMATION_INTENT_DECK_IN_RIGHT: return "DECK_IN_RIGHT";
+        case ANIMATION_INTENT_DECK_IN_LEFT: return "DECK_IN_LEFT";
         default: return "UNKNOWN";
     }
 }
@@ -154,19 +163,31 @@ void md_send_animation_intent(struct Window *window, AnimationIntent intent) {
                                          (uint32_t)config.easing);
 }
 
-/* Helper: determine intent based on acion context.
- * Used by wm-layout.c to automatically select the right animation for each action. */
-AnimationIntent md_intent_for_action(WindowAction action, size_t visible_count, int32_t window_index) {
-    switch (action) {
-        case WINDOW_ACTION_MINIMIZE:
-            return ANIMATION_INTENT_MINIMIZE;
-        case WINDOW_ACTION_MAXIMIZE:
-            return ANIMATION_INTENT_NONE; /* No animation for maximize itself */
-        case WINDOW_ACTION_RESTORE:
-            return ANIMATION_INTENT_NONE; /* No animation for restore itself */
-        default:
-            return ANIMATION_INTENT_NONE;
+/* Pré-registra a animação de close desta janela (sticky no compositor). Só
+ * reenvia quando muda (cache em last_close_intent). set_close_intent é since=7. */
+void md_send_close_intent(struct Window *window, AnimationIntent intent) {
+    LOG_EVENT("[CLOSE-DIAG] CALLED intent=%s", md_animation_intent_name(intent));
+    if (!window || !window->obj) {
+        LOG_EVENT("[CLOSE-DIAG]   REJECT: null window/obj", 0);
+        return;
     }
+
+    /* Request since=7; em compositor < 7 o opcode não existe — pular silenciosamente
+     * (a direção do close cai no default do compositor). */
+    if (wl_proxy_get_version((struct wl_proxy *)window->obj) < 7) {
+        LOG_EVENT("[CLOSE-DIAG]   REJECT: proxy version < 7", 0);
+        return;
+    }
+
+    /* Idempotente: nada a fazer se o compositor já tem este intent registrado. */
+    if (window->last_close_intent == (int32_t)intent) {
+        LOG_EVENT("[CLOSE-DIAG]   SKIP: cache hit", 0);
+        return;
+    }
+    window->last_close_intent = (int32_t)intent;
+    LOG_EVENT("[CLOSE-DIAG]   SEND set_close_intent v7", 0);
+
+    river_window_v1_set_close_intent(window->obj, (uint32_t)intent);
 }
 
 /* Helper: intent for opening a window. Context: is it solo or in a group? */
@@ -194,32 +215,14 @@ AnimationIntent md_intent_for_close(int32_t closing_window_index, size_t visible
     }
 }
 
-/* Helper: intent for deck navigation (next/prev). Always reflow, no special effect. */
-AnimationIntent md_intent_for_deck_navigate(void) {
-    return ANIMATION_INTENT_REFLOW_EASE;
-}
-
-/* Helper: intent for swap main↔deck. Spring geometry. */
-AnimationIntent md_intent_for_swap(void) {
-    return ANIMATION_INTENT_SPRING;
-}
-
-/* Helper: intent for focus nudge (Ctrl+Tab). Small lateral translate. */
+/* Helper: intent for focus nudge. Small lateral translate.
+ * (Ainda usado nos blocos de janelas transient/floating em wm-layout.c.) */
 AnimationIntent md_intent_for_nudge(void) {
     return ANIMATION_INTENT_NUDGE;
 }
 
-/* Helper: intent for fullscreen carousel (maximized app cycling). */
-AnimationIntent md_intent_for_fs_carousel(void) {
-    return ANIMATION_INTENT_FS_CAROUSEL;
-}
-
-/* Helper: intent for deck movement. */
-AnimationIntent md_intent_for_deck_move(void) {
-    return ANIMATION_INTENT_REFLOW_EASE;
-}
-
-/* Helper: intent for layout reflow. */
+/* Helper: intent for layout reflow.
+ * (Ainda usado nos blocos de janelas transient/floating em wm-layout.c.) */
 AnimationIntent md_intent_for_reflow(void) {
     return ANIMATION_INTENT_REFLOW_EASE;
 }
