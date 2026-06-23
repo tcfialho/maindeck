@@ -674,7 +674,19 @@ static void child_proposed_dimensions(struct Window *window, int32_t *width, int
 void md_insert_new_window(struct Window *window) {
 	wm.last_placed_top_node = NULL;
 	size_t count = window_count();
-	LOG_EVENT("new window: count_before=%zu", count);
+	// Visíveis ANTES da inserção decide o intent de abertura da janela nova:
+	// nenhuma visível → abre solo (FADE_OPEN, scale+fade); já há visível → abre
+	// em grupo (SLIDE_IN, desliza da esquerda virando o novo MAIN). Usa o count
+	// de VISÍVEIS (não window_count, que inclui minimizadas na barra) p/ não
+	// tratar como "grupo" um open que na tela é solo (só há uma minimizada).
+	size_t visible_before = visible_window_count();
+	LOG_EVENT("new window: count_before=%zu visible_before=%zu", count, visible_before);
+	// DECLARATIVO: a AÇÃO de abrir marca a janela nova com seu intent. Só ela
+	// anima no open; a antiga MAIN→DECK só reflui e a antiga DECK→hidden some sem
+	// animação (o caminho !visible não inventa intent sem declaração per-window).
+	window->pending_anim = (visible_before == 0)
+		? ANIMATION_INTENT_FADE_OPEN
+		: ANIMATION_INTENT_SLIDE_IN;
 	if (count == 0) {
 		// First window: just MAIN.
 		wl_list_insert(wm.windows.prev, &window->link);
@@ -945,31 +957,20 @@ void window_render_layout(struct Window *window, size_t index, const struct Layo
 	bool visible = view->maximized ? (window == view->target) : (index < 2 && index < (size_t)view->visible_count);
 	bool was_visible = window->last_applied_visible;
 	if (was_visible != visible) {
-		AnimationIntent intent;
-		// Prioridade do intent declarado: PER-WINDOW (a janela visada pela ação)
-		// > GLOBAL (wm.pending_anim, para ações que afetam várias janelas como
-		// deck-switch) > INFERENCIAL (helpers por index/contexto). O per-window
-		// evita que uma ação como UNMINIMIZE contamine as janelas colaterais
-		// (o DECK antigo que vira hidden deve animar SLIDE_DECK_OUT, não herdar
-		// UNMINIMIZE do pending_anim global).
-		uint32_t declared = (window->pending_anim != ANIMATION_INTENT_NONE)
-			? window->pending_anim
-			: wm.pending_anim;
-		if (visible) {
-			intent = (declared != ANIMATION_INTENT_NONE)
-				? (AnimationIntent)declared
-				: md_intent_for_open(view->visible_count > 1 ? view->visible_count - 1 : 0);
-		} else {
-			// DECLARATIVE: a ação já declarou o intent de saída. O index
-			// pós-reordenação NÃO é confiável aqui — a janela que sai do deck já
-			// foi movida para index≥2 antes do relayout, então md_intent_for_close
-			// cairia no branch errado (SLIDE_CLOSE em vez de SLIDE_DECK_OUT).
-			// Só usa o helper inferencial se a ação não declarou nada (fallback).
-			intent = (declared != ANIMATION_INTENT_NONE)
-				? (AnimationIntent)declared
-				: md_intent_for_close(index, view->visible_count + 1);
+		// DECLARATIVO PURO — SÓ per-window, ZERO fallback. O intent de uma janela
+		// que cruza a fronteira de visibilidade (vira visível ou some) vem
+		// EXCLUSIVAMENTE de window->pending_anim, gravado pela AÇÃO que a moveu:
+		//   open→FADE_OPEN/SLIDE_IN · deck-in→DECK_IN_LEFT/RIGHT ·
+		//   deck-out→SLIDE_DECK_OUT/_LEFT · minimize→MINIMIZE · unminimize→UNMINIMIZE.
+		// Sem declaração → NONE (não anima): a janela empurrada p/ hidden ao abrir
+		// uma 3ª janela some sem animação (igual ao protótipo), sem o SLIDE_CLOSE
+		// espúrio que o helper md_intent_for_close inventava. NÃO há fallback global
+		// nem inferencial aqui — se uma ação nova precisar animar uma transição de
+		// visibilidade, ela DEVE marcar a janela per-window (a regra do projeto).
+		AnimationIntent intent = (AnimationIntent)window->pending_anim;
+		if (intent != ANIMATION_INTENT_NONE) {
+			md_send_animation_intent(window, intent);
 		}
-		md_send_animation_intent(window, intent);
 		// Consome o intent per-window (one-shot) — não vaza para o próximo render.
 		window->pending_anim = ANIMATION_INTENT_NONE;
 	}
