@@ -32,7 +32,7 @@
 #endif
 
 #ifndef INTENT_REFLOW_EASE_MS
-#define INTENT_REFLOW_EASE_MS  280
+#define INTENT_REFLOW_EASE_MS  200
 #endif
 
 #ifndef INTENT_SPRING_MS

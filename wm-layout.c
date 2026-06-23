@@ -514,11 +514,12 @@ void md_swap_main_deck(void) {
 	struct Window *main = window_at(0);
 	struct Window *deck = window_at(1);
 	if (main == NULL || deck == NULL) return;
-	// DECLARATIVO: as DUAS janelas trocam de slot/tamanho — ambas animam SPRING.
-	// Marca per-window (não global): cada uma carrega seu intent; o river arma
-	// armMove(.spring) por declaração, não por inferência de geometria.
-	main->pending_anim = ANIMATION_INTENT_SPRING;
-	deck->pending_anim = ANIMATION_INTENT_SPRING;
+	// DECLARATIVO: as DUAS janelas trocam de slot/tamanho — ambas refluem.
+	// P17 removeu o spring do swap (usa `ease-in-out 0.20s`, igual ao reflow);
+	// marca REFLOW_EASE per-window → o river arma armMove(.ease_in_out 200ms) por
+	// declaração, não por inferência de geometria.
+	main->pending_anim = ANIMATION_INTENT_REFLOW_EASE;
+	deck->pending_anim = ANIMATION_INTENT_REFLOW_EASE;
 	move_first(deck);
 	wm.target_index = wm.target_index == 0 ? 1 : 0;
 	wm.maximized = false;
