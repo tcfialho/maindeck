@@ -571,11 +571,21 @@ static void window_destroy_closed(struct Window *window, bool flush_now) {
 			}
 		}
 	}
+	// Captura o papel ANTES de liberar: só um close de janela TILED (não
+	// transient/floating) pode deixar uma sobrevivente solo crescendo.
+	bool was_tiled = (window->parent == NULL && !window->floating);
 	wl_list_remove(&window->link);
 	free(window->app_id);
 	free(window->title);
 	free(window->identifier);
 	free(window);
+	// DECLARATIVO: se o close de uma tiled deixou exatamente 1 visível, marca-a
+	// p/ o grow-reveal (clip crescente) — a declaração que o close iniciado pelo
+	// cliente não tinha. O relayout seguinte consome o intent. (Substitui a
+	// inferência grew && visibleManagedCount()==1 do river.)
+	if (was_tiled) {
+		md_mark_grow_survivor_if_lone();
+	}
 }
 
 void window_maybe_destroy(struct Window *window) {

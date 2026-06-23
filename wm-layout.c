@@ -115,6 +115,20 @@ void mark_visible_tiled_anim(uint32_t intent) {
 	}
 }
 
+// Após um CLOSE (cliente fechou a janela e ela já saiu da lista), se sobrou
+// EXATAMENTE UMA janela tiled visível, marca-a com GROW_REVEAL: ela vai crescer
+// p/ preencher o espaço da que fechou, via clip crescente (P15 grow-reveal). É a
+// declaração que faltava p/ o close iniciado pelo cliente — ninguém "agiu" sobre
+// a sobrevivente (o cliente fechou sozinho), então o WM a marca aqui, no destroy.
+// Só dispara p/ lone survivor (sobra 1); com 2+ as sobreviventes só refluem.
+void md_mark_grow_survivor_if_lone(void) {
+	if (visible_window_count() != 1) return;
+	struct Window *survivor = window_at(0);
+	if (survivor != NULL) {
+		survivor->pending_anim = ANIMATION_INTENT_GROW_REVEAL;
+	}
+}
+
 int32_t window_index(struct Window *needle) {
 	int32_t i = 0;
 	struct Window *window;

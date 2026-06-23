@@ -23,6 +23,7 @@ typedef enum {
     ANIMATION_INTENT_SLIDE_DECK_OUT_LEFT = 0xc,
     ANIMATION_INTENT_DECK_IN_RIGHT = 0xd,
     ANIMATION_INTENT_DECK_IN_LEFT = 0xe,
+    ANIMATION_INTENT_GROW_REVEAL = 0xf,
 } AnimationIntent;
 
 /* Send animation intent to compositor for a specific window */

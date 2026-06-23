@@ -102,6 +102,8 @@ static struct IntentConfig intentConfig(AnimationIntent intent) {
             return (struct IntentConfig){.duration_ms = INTENT_SLIDE_IN_MS, .easing = EASING_EASE_OUT};
         case ANIMATION_INTENT_DECK_IN_LEFT:
             return (struct IntentConfig){.duration_ms = INTENT_SLIDE_IN_MS, .easing = EASING_EASE_OUT};
+        case ANIMATION_INTENT_GROW_REVEAL:
+            return (struct IntentConfig){.duration_ms = INTENT_REFLOW_EASE_MS, .easing = EASING_EASE_OUT};
         default:
             return (struct IntentConfig){.duration_ms = 0, .easing = EASING_LINEAR};
     }
@@ -125,6 +127,7 @@ const char *md_animation_intent_name(AnimationIntent intent) {
         case ANIMATION_INTENT_SLIDE_DECK_OUT_LEFT: return "SLIDE_DECK_OUT_LEFT";
         case ANIMATION_INTENT_DECK_IN_RIGHT: return "DECK_IN_RIGHT";
         case ANIMATION_INTENT_DECK_IN_LEFT: return "DECK_IN_LEFT";
+        case ANIMATION_INTENT_GROW_REVEAL: return "GROW_REVEAL";
         default: return "UNKNOWN";
     }
 }

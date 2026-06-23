@@ -43,6 +43,9 @@ void md_swap_main_deck(void);
    (AnimationIntent como uint32_t). Para ações que animam várias janelas com o
    mesmo efeito (maximize/restore/promote/send). Chamar após mutar a lista. */
 void mark_visible_tiled_anim(uint32_t intent);
+/* Após um close (janela já removida da lista): se sobrou 1 tiled visível, marca-a
+   com GROW_REVEAL p/ crescer e preencher. Chamar de window_destroy_closed. */
+void md_mark_grow_survivor_if_lone(void);
 void md_deck_next(void);
 void md_deck_prev(void);
 void md_send_target_to_deck_bottom(void);
