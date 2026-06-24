@@ -68,11 +68,16 @@ static void wm_notify_bar_windows(void) {
 		// Prefixos de estado por-janela (o WM é autoritativo, o zwlr não vê):
 		//   '!' = minimizada (a barra escurece o botão);
 		//   '+' = maximizada (a barra usa para habilitar Maximizar/Restaurar no
-		//         menu de contexto).
-		// São mutuamente exclusivos (minimizar zera wm.maximized), então no
-		// máximo um char de prefixo. A barra remove o prefixo antes de guardar o
-		// id para o ceifador de fantasmas.
-		const char *pfx = window->minimized ? "!" : (window == max_win ? "+" : "");
+		//         menu de contexto);
+		//   '#' = escondida (deck-overflow, idx >= 2): não minimizável → a barra
+		//         desabilita "Minimizar" no menu de contexto.
+		// São mutuamente exclusivos (minimizar zera wm.maximized; escondida não é
+		// nem uma nem outra), então no máximo um char de prefixo. A barra remove o
+		// prefixo antes de guardar o id para o ceifador de fantasmas.
+		const char *pfx =
+			window->minimized ? "!" :
+			(window == max_win ? "+" :
+			(window_index(window) >= 2 ? "#" : ""));
 		int n = snprintf(msg + off, sizeof(msg) - off, " %s%s", pfx, window->identifier);
 		if (n < 0 || (size_t)n >= sizeof(msg) - off) return; // não envia conjunto truncado
 		off += (size_t)n;

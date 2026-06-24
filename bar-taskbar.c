@@ -484,13 +484,16 @@ void bar_taskbar_set_wm_windows(const char *msg) {
     int  min_n = 0;
     char max_ids[BAR_MAX_TOPLEVELS][33];
     int  max_n = 0;
+    char hidden_ids[BAR_MAX_TOPLEVELS][33];
+    int  hidden_n = 0;
     int n = 0;
     while (*p != '\0' && n < BAR_MAX_TOPLEVELS) {
         while (*p == ' ' || *p == '\n') p++;
         if (*p == '\0') break;
         bool minimized = (*p == '!');
         bool maximized = (*p == '+');
-        if (minimized || maximized) p++; /* pula o prefixo */
+        bool hidden = (*p == '#');
+        if (minimized || maximized || hidden) p++; /* pula o prefixo */
         const char *start = p;
         while (*p != '\0' && *p != ' ' && *p != '\n') p++;
         size_t len = (size_t)(p - start);
@@ -506,6 +509,11 @@ void bar_taskbar_set_wm_windows(const char *msg) {
                 memcpy(max_ids[max_n], start, len);
                 max_ids[max_n][len] = '\0';
                 max_n++;
+            }
+            if (hidden && hidden_n < BAR_MAX_TOPLEVELS) {
+                memcpy(hidden_ids[hidden_n], start, len);
+                hidden_ids[hidden_n][len] = '\0';
+                hidden_n++;
             }
             n++;
         }
@@ -526,13 +534,18 @@ void bar_taskbar_set_wm_windows(const char *msg) {
         for (int j = 0; j < max_n; j++) {
             if (strcmp(max_ids[j], tl->identifier) == 0) { max = true; break; }
         }
+        bool hid = false;
+        for (int j = 0; j < hidden_n; j++) {
+            if (strcmp(hidden_ids[j], tl->identifier) == 0) { hid = true; break; }
+        }
         if (tl->minimized != min) {
             tl->minimized = min;
             bar_request_redraw_flags(bar, BAR_DIRTY_TASKBAR);
         }
-        /* maximized não altera o desenho do botão (sem redraw), só alimenta o
-         * menu de contexto — mas atualizamos sempre para refletir o estado. */
+        /* maximized/hidden não alteram o desenho do botão (sem redraw), só alimentam
+         * o menu de contexto — mas atualizamos sempre para refletir o estado. */
         tl->maximized = max;
+        tl->hidden = hid;
     }
 
     bar_taskbar_prune_ghosts();

@@ -1142,11 +1142,12 @@ void bar_taskbar_open_menu(int idx, int icon_x, int icon_w, uint32_t serial) {
     bool has_id = tl->identifier[0] != '\0';
     bool minimized = tl->minimized;
     bool maximized = tl->maximized;
+    bool hidden = tl->hidden;          /* deck-overflow: não minimizável (prefixo '#' do WM) */
     bool fullscreen = tl->fullscreen;
 
     bool en_close    = true; /* sempre */
     bool en_max      = has_id && !minimized && !maximized && !fullscreen;
-    bool en_min      = has_id && !minimized;          /* maximizada PODE minimizar */
+    bool en_min      = has_id && !minimized && !hidden; /* maximizada PODE minimizar; escondida NÃO */
     bool en_restore  = has_id && (minimized || maximized);
 
     g_menu_kind    = MENU_KIND_WINDOW;

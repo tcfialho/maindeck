@@ -35,6 +35,7 @@ struct BarToplevel {
     bool   activated;
     bool   minimized;
     bool   maximized;  /* autoritativo do WM (prefixo '+' em 'windows') */
+    bool   hidden;     /* autoritativo do WM (prefixo '#' = deck-overflow): não minimizável */
     bool   fullscreen;
     bool   has_parent;
     bool   closed;
