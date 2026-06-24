@@ -67,6 +67,7 @@ struct Window {
 	// output, including waybar.
 	bool fullscreen;
 	bool minimized; // force-hidden independente do índice; excluído da contagem visível; agrupado na cauda de wm.windows
+	bool minimized_from_deck; // origem ao minimizar: true=era deck visível (idx 1), false=era MAIN (idx 0). Só válido enquanto minimized==true.
 	bool applied_fullscreen; // what we last told the server, to act only on edges
 	struct river_output_v1 *fs_output;
 	uint32_t presentation_hint;

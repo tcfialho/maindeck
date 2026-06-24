@@ -373,15 +373,67 @@ void md_maximize_window(struct Window *window) {
 	log_state();
 }
 
+/* Primeira janela tiled VISÍVEL (não-minimizada, não-floating, sem parent),
+ * ignorando `skip`. n-ésima na ordem MainDeck: n=0 → MAIN, n=1 → deck visível.
+ * Diferente de window_at(), PULA minimized — essencial no restore, onde a janela
+ * que volta ainda está na lista (cauda) com minimized já zerado e poluiria a
+ * contagem. Retorna NULL se não houver. */
+static struct Window *nth_visible_skip(size_t n, struct Window *skip) {
+	size_t i = 0;
+	struct Window *window;
+	wl_list_for_each(window, &wm.windows, link) {
+		if (window->minimized || window->floating || window->parent != NULL) continue;
+		if (window == skip) continue;
+		if (i == n) return window;
+		i++;
+	}
+	return NULL;
+}
+
+/* Devolve uma janela recém-des-minimizada (caller já zerou w->minimized) ao papel
+ * de ONDE ela saiu, empurrando quem estava lá (Variante A — "empurra"):
+ *   - origem MAIN  → vira MAIN (idx 0); a MAIN atual desce p/ deck. O deck visível
+ *                    que for empurrado p/ oculto sai com SLIDE_DECK_OUT.
+ *   - origem DECK  → vira deck visível (idx 1), POR CIMA; o deck visível atual é
+ *                    empurrado p/ oculto (idx 2) e sai com SLIDE_DECK_OUT. Se NÃO há
+ *                    outra visível além da MAIN, w vira o deck sem empurrar ninguém.
+ * A janela que volta carrega UNMINIMIZE. Usa nth_visible_skip (pula minimized e o
+ * próprio w) — window_at() não serve aqui pois conta a w da cauda e outras
+ * minimizadas. Ajusta wm.target_index/maximized; o caller cuida de LOG/log_state. */
+static void restore_minimized_to_origin(struct Window *w) {
+	w->pending_anim = ANIMATION_INTENT_UNMINIMIZE;
+	struct Window *main = nth_visible_skip(0, w); // MAIN real (ignora w e minimizadas)
+	if (w->minimized_from_deck) {
+		struct Window *deck = nth_visible_skip(1, w); // deck visível real a empurrar
+		wl_list_remove(&w->link);
+		if (deck != NULL) {
+			// wl_list_insert(pos, elm) insere DEPOIS de pos. Ancorar em deck->link.prev
+			// põe w logo ANTES do deck → w idx 1 (por cima), deck idx 2 (oculto).
+			wl_list_insert(deck->link.prev, &w->link);
+			deck->pending_anim = ANIMATION_INTENT_SLIDE_DECK_OUT;
+		} else if (main != NULL) {
+			wl_list_insert(&main->link, &w->link); // após MAIN → w vira idx 1
+		} else {
+			wl_list_insert(&wm.windows, &w->link); // sem MAIN: w vira idx 0
+		}
+		wm.target_index = 1;
+	} else {
+		// origem MAIN: w vira idx 0; quem estiver no deck visível é empurrado p/ oculto.
+		struct Window *deck = nth_visible_skip(1, w); // deck visível atual (vira oculto)
+		if (deck != NULL) deck->pending_anim = ANIMATION_INTENT_SLIDE_DECK_OUT;
+		move_first(w);
+		wm.target_index = 0;
+	}
+	wm.maximized = false;
+}
+
 /* Menu de contexto: "Restaurar" estilo Windows — reverte minimizado OU
- * maximizado. Minimizado tem precedência (volta como MAIN). */
+ * maximizado. Minimizado tem precedência (volta à origem: main→main, deck→deck). */
 void md_restore_window(struct Window *window) {
 	if (window == NULL || window->closed) return;
 	if (window->minimized) {
 		window->minimized = false;
-		move_first(window);
-		wm.target_index = 0;
-		wm.maximized = false;
+		restore_minimized_to_origin(window); // main→main, deck→deck (empurra)
 		wm.focus_dirty = true;
 		LOG_EVENT("ctx-menu restore (unminimize): \"%s\"", window->title ? window->title : "");
 		log_state();
@@ -609,15 +661,39 @@ void md_promote_target_to_main(void) {
 }
 
 void md_minimize_window(struct Window *window) {
-	if (window == NULL || window->closed || window->minimized) return;
+	// Ignora floating: minimizar/restaurar opera no fluxo tiled MainDeck (origem
+	// main/deck). Uma floating não tem índice MainDeck (window_index = -1) e seria
+	// convertida em tiled no restore — então não entra aqui. (Guard de índice oculto
+	// fica fora a pedido: barrar oculta é só no menu, não no WM.)
+	if (window == NULL || window->closed || window->minimized || window->floating) return;
 	// A fullscreen window that gets minimized is reconciled by window_render_layout
 	// (the `fullscreen && !minimized` guard falls through to exit_fullscreen), so
 	// we only set the flag here and let the layout pass issue the protocol exit.
+	// Grava a ORIGEM antes de mexer na lista: idx 1 = deck visível, idx 0 = MAIN.
+	// Restaurar usa isso p/ devolver a janela ao papel de onde saiu (main→main,
+	// deck→deck). window_index ignora floating/parent (não minimized), mas aqui a
+	// janela ainda não foi marcada nem movida, então reflete o slot atual.
+	window->minimized_from_deck = (window_index(window) == 1);
+	// Captura o foco ATUAL antes de mexer na lista. A regra é "a janela que estava
+	// focada continua focada": minimizar uma janela diferente da focada (ex.: pelo
+	// menu da taskbar) NÃO deve roubar o foco de quem o usuário estava usando.
+	struct Window *focused_before = target_window();
+	bool minimizing_focused = (window == focused_before);
 	window->minimized = true;
 	// Marca ESTA janela (a que sai p/ a barra) com o intent per-window MINIMIZE.
 	window->pending_anim = ANIMATION_INTENT_MINIMIZE;
 	move_last(window);          // group at the tail; newest minimized is last
-	wm.target_index = 0;        // target the new MAIN (clamped below if needed)
+	if (minimizing_focused) {
+		// Minimizei a janela focada: o foco segue o PAPEL dela, não pula p/ a MAIN.
+		// Deck (idx 1) → alvo idx 1 (a janela oculta que sobe p/ o slot do deck);
+		// MAIN (idx 0) → alvo idx 0. clamp_target corrige se não houver idx 1.
+		wm.target_index = window->minimized_from_deck ? 1 : 0;
+	} else {
+		// Minimizei outra janela: a focada não muda de papel, mas pode ter caído de
+		// slot (se a minimizada estava à frente dela). Recomputa o índice dela.
+		int32_t fi = focused_before != NULL ? window_index(focused_before) : -1;
+		wm.target_index = fi >= 0 ? (uint32_t)fi : 0;
+	}
 	wm.maximized = false;
 	clamp_target();
 }
@@ -642,14 +718,11 @@ void md_unminimize(void) {
 	}
 	if (newest == NULL) return; // nothing minimized
 	newest->minimized = false;
-	// Marca ESTA janela (a que volta) com o intent per-window UNMINIMIZE. Assim o
-	// relayout sabe que ela (e só ela) deve animar como unminimize, não as
-	// colaterais (o DECK antigo que vira hidden deve animar como SLIDE_DECK_OUT,
-	// não herdar o pending_anim global).
-	newest->pending_anim = ANIMATION_INTENT_UNMINIMIZE;
-	move_first(newest);         // comes back as MAIN (mirror of the prototype)
-	wm.target_index = 0;
-	wm.maximized = false;
+	// Volta ao papel de origem (main→main, deck→deck, empurrando quem estava lá). O
+	// helper marca a janela que volta com UNMINIMIZE e o DECK deslocado com
+	// SLIDE_DECK_OUT — intents per-window, sem herdar pending_anim global.
+	restore_minimized_to_origin(newest);
+	wm.focus_dirty = true; // idem md_restore_window: a janela que volta deve receber foco
 	LOG_EVENT("unminimize (LIFO): \"%s\"", newest->title ? newest->title : "");
 	log_state();
 }
