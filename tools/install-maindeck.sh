@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 #
-# Build and deploy maindeck binaries to the current user's local bin dir.
+# ==============================================================================
+# SCRIPT DE INSTALAÇÃO DO MAINDECK (MAINDECK INSTALLER)
+# ==============================================================================
+# Nome: tools/install-maindeck.sh (antigo build-deploy.sh)
+# Finalidade: Compilar, instalar e implantar localmente os binários do MainDeck:
+#             - maindeck-wm
+#             - maindeck-bar
+#             - maindeck-menu
 #
-# Default restart order is deliberate:
-#   1. maindeck-menu: transient client, no supervisor expected.
-#   2. maindeck-wm: provider for the taskbar IPC socket.
-#   3. maindeck-bar: consumer of the WM IPC socket, restarted last.
-#
-# The script does not kill river or the river init loop. It only terminates
-# maindeck processes owned by the current user, by exact process name.
+# Este script lida com a compilação via meson/ninja, copia os executáveis para 
+# ~/.local/bin/ e reinicia os processos em execução na ordem correta:
+#   1. maindeck-menu (cliente transiente, sem supervisor esperado)
+#   2. maindeck-wm (provedor do socket IPC da taskbar)
+#   3. maindeck-bar (consumidor do socket IPC do WM, reiniciado por último)
+# ==============================================================================
 
 set -euo pipefail
 
@@ -25,7 +31,7 @@ RUN_TESTS=0
 
 usage() {
 	cat <<EOF
-Usage: tools/build-deploy.sh [options]
+Usage: tools/install-maindeck.sh [options]
 
 Options:
   --test        Run tools/test-transient-behavior.sh before deploy.

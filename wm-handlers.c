@@ -451,6 +451,11 @@ static void window_handle_fullscreen_requested(void *data, struct river_window_v
 	struct Window *window = data;
 	window->fullscreen = true;
 	window->fs_output = river_output;
+	// Fullscreen é sinal forte de "vire a janela principal": força o árbitro a conceder
+	// foco a esta janela mesmo que uma flutuante estivesse focada (desarma a guarda de
+	// wm-layout.c:535, que tem `&& !wm.focus_dirty`). Sem isto, jogo em fullscreen via
+	// Proton/XWayland podia abrir sem foco de teclado se uma floating segurava o foco.
+	wm.focus_dirty = true;
 	if (window->minimized) return; // fullscreen honrado no restore; não move na lista
 	int32_t idx = window_index(window);
 	if (idx == 0 || idx == 1) {
@@ -558,6 +563,9 @@ static void window_destroy_closed(struct Window *window, bool flush_now) {
 	}
 	if (wm.pending_float_focus == window) {
 		wm.pending_float_focus = NULL;
+	}
+	if (wm.pending_child_focus == window) {
+		wm.pending_child_focus = NULL;
 	}
 	struct Window *w;
 	wl_list_for_each(w, &wm.windows, link) {
@@ -776,20 +784,10 @@ static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *o
 	}
 	apply_pending_taskbar_activation();
 	apply_pending_window_action();
-	if (wm.pending_float_focus != NULL) {
-		struct Window *float_focus = wm.pending_float_focus;
-		wm.pending_float_focus = NULL;
-		if (!float_focus->closed && float_focus->floating) {
-			wl_list_for_each(seat, &wm.seats, link) {
-				if (seat->removed) continue;
-				river_seat_v1_clear_focus(seat->obj);
-				river_seat_v1_focus_window(seat->obj, float_focus->obj);
-				seat->focused = float_focus;
-			}
-			LOG_EVENT("floating focus applied: app_id=%s",
-				float_focus->app_id ? float_focus->app_id : "");
-		}
-	}
+	// A aplicação de pending_float_focus migrou para focus_target_on_seats (árbitro
+	// único de foco), no topo da precedência. Aqui só permanece o agendamento; o gate
+	// de focus_target_on_seats abaixo inclui pending_float_focus != NULL p/ garantir
+	// que rode mesmo sem layout_changed/focus_dirty.
 	clamp_target();
 
 	struct Output *primary = NULL;
@@ -830,7 +828,7 @@ static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *o
 		have_last_sig = true;
 	}
 
-	if (layout_changed || wm.focus_dirty) {
+	if (layout_changed || wm.focus_dirty || wm.pending_float_focus != NULL) {
 		focus_target_on_seats();
 		log_state();
 		wm.focus_dirty = false;

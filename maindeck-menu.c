@@ -19,6 +19,7 @@
 #include <poll.h>
 #include <ctype.h>
 #include <time.h>
+#include <pthread.h>
 
 #include <stdint.h>
 
@@ -52,6 +53,8 @@ typedef struct {
     char *icon;     // Nome/caminho do ícone
     bool terminal;  // Executar no terminal?
     cairo_surface_t *icon_surface; // Memoização do ícone
+    bool icon_loading; // Indica que o ícone está na fila de carregamento assíncrono
+    bool icon_loaded;  // Indica que o carregamento terminou (sucesso ou falha)
 } App;
 
 // Estrutura de estado global do app
@@ -103,6 +106,12 @@ typedef struct {
     char sock_path[108];
     int focus_timer_fd;
 
+    // Key repeat (cliente implementa o timer; compositor só informa rate/delay)
+    int32_t repeat_rate;       // teclas/segundo (0 = repeat desligado pelo compositor)
+    int32_t repeat_delay;      // ms até começar a repetir
+    int repeat_timer_fd;       // timerfd; -1 quando ocioso/não criado
+    uint32_t repeat_keycode;   // keycode do kernel (sem o +8) atualmente repetindo
+
     // Estado da UI
     char query[256];
     size_t query_len;
@@ -123,6 +132,24 @@ typedef struct {
     bool menu_has_kbd_focus;
     bool close_pending;
     struct timespec close_deadline;
+
+    // Thread e comunicação de carregamento de ícones assíncrono
+    int icon_pipe[2];
+    pthread_t icon_thread;
+    pthread_mutex_t icon_mutex;
+    pthread_cond_t icon_cond;
+    bool icon_thread_running;
+
+    // Estado de hover das setas de scroll
+    bool hover_scroll_up;
+    bool hover_scroll_down;
+
+    // Temporizador de repetição do clique do mouse
+    int mouse_repeat_timer_fd;
+    int mouse_repeat_action; // 1 = scroll up, 2 = scroll down
+
+    // Registro do último scroll de mouse para evitar briga de foco
+    struct timespec last_scroll_time;
 } AppState;
 
 static AppState g_app;
@@ -965,11 +992,79 @@ static void draw_rounded_rect(cairo_t *cr, double x, double y, double w, double 
     cairo_close_path(cr);
 }
 
+static void draw_top_rounded_rect(cairo_t *cr, double x, double y, double w, double h, double r) {
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, x + w - r, y + r, r, -M_PI_2, 0); // canto superior direito arredondado
+    cairo_line_to(cr, x + w, y + h);               // canto inferior direito reto (quadrado)
+    cairo_line_to(cr, x, y + h);                   // canto inferior esquerdo reto (quadrado)
+    cairo_arc(cr, x + r, y + r, r, M_PI, -M_PI_2);  // canto superior esquerdo arredondado
+    cairo_close_path(cr);
+}
+
 static cairo_surface_t *s_cs[2]   = { NULL, NULL };
 static cairo_t         *s_cr[2]   = { NULL, NULL };
 static PangoLayout     *s_lay[2]  = { NULL, NULL };
 static PangoFontDescription *s_font_desc = NULL;
 static int s_cs_w = 0, s_cs_h = 0;
+
+static void *icon_loader_thread(void *arg) {
+    AppState *app = (AppState *)arg;
+
+    while (app->running) {
+        pthread_mutex_lock(&app->icon_mutex);
+        while (app->running) {
+            bool found = false;
+            for (size_t i = 0; i < app->napps; i++) {
+                if (app->apps[i].icon && !app->apps[i].icon_surface && app->apps[i].icon_loading && !app->apps[i].icon_loaded) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+            pthread_cond_wait(&app->icon_cond, &app->icon_mutex);
+        }
+
+        if (!app->running) {
+            pthread_mutex_unlock(&app->icon_mutex);
+            break;
+        }
+
+        // Busca o primeiro app pendente de carregamento
+        int target_idx = -1;
+        char *icon_name = NULL;
+        for (size_t i = 0; i < app->napps; i++) {
+            if (app->apps[i].icon && !app->apps[i].icon_surface && app->apps[i].icon_loading && !app->apps[i].icon_loaded) {
+                target_idx = (int)i;
+                icon_name = strdup(app->apps[i].icon);
+                break;
+            }
+        }
+        pthread_mutex_unlock(&app->icon_mutex);
+
+        if (target_idx != -1 && icon_name) {
+            // Executa I/O de carregamento de ícone fora do lock do mutex
+            cairo_surface_t *raw_surf = bar_icon_get(icon_name, 18);
+            free(icon_name);
+
+            pthread_mutex_lock(&app->icon_mutex);
+            // Só grava na struct principal se ela ainda desejar o ícone (não cancelou)
+            if (app->apps[target_idx].icon_loading) {
+                if (raw_surf) {
+                    app->apps[target_idx].icon_surface = cairo_surface_reference(raw_surf);
+                }
+                app->apps[target_idx].icon_loaded = true;
+                app->apps[target_idx].icon_loading = false;
+
+                // Envia sinal para o poll da thread principal
+                char trigger = 1;
+                ssize_t wr = write(app->icon_pipe[1], &trigger, 1);
+                (void)wr;
+            }
+            pthread_mutex_unlock(&app->icon_mutex);
+        }
+    }
+    return NULL;
+}
 
 static void ensure_cairo_menu(AppState *app, unsigned char *data) {
     int b = app->cur_buf;
@@ -1034,7 +1129,7 @@ static bool render(void) {
     cairo_save(cr);
 
     // 1. Fundo do Menu (sólido combinando com a barra #1C1C24)
-    draw_rounded_rect(cr, 1, 1, app->menu_w - 2, app->menu_h - 2, 10);
+    draw_top_rounded_rect(cr, 1, 1, app->menu_w - 2, app->menu_h - 2, 10);
     cairo_set_source_rgba(cr, 0.11, 0.11, 0.14, 1.0);
     cairo_fill_preserve(cr);
 
@@ -1074,8 +1169,28 @@ static bool render(void) {
         cairo_fill(cr);
     }
 
+    // Desenha seta de scroll superior se houver itens acima
+    if (app->scroll_offset > 0) {
+        cairo_save(cr);
+        if (app->hover_scroll_up) {
+            draw_rounded_rect(cr, 12, 51, app->menu_w - 24, 6, 3);
+            cairo_set_source_rgba(cr, 0.22, 0.22, 0.30, 0.5); // Fundo suave no hover
+            cairo_fill(cr);
+            cairo_set_source_rgba(cr, 0.92, 0.92, 0.92, 1.0); // Brilhante
+        } else {
+            cairo_set_source_rgba(cr, 0.55, 0.55, 0.60, 0.5); // Meio-termo para contraste
+        }
+        cairo_set_line_width(cr, 1.5);
+        cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+        cairo_move_to(cr, app->menu_w / 2 - 6, 56);
+        cairo_line_to(cr, app->menu_w / 2, 52);
+        cairo_line_to(cr, app->menu_w / 2 + 6, 56);
+        cairo_stroke(cr);
+        cairo_restore(cr);
+    }
+
     // 3. Desenha a lista de aplicativos filtrados (com scroll)
-    int list_y = 56;
+    int list_y = 58;
     for (int i = 0; i < MAX_ITEMS; i++) {
         int idx = app->scroll_offset + i;
         if (idx >= (int)app->nfiltered) break;
@@ -1091,13 +1206,7 @@ static bool render(void) {
             cairo_fill(cr);
         }
 
-        // Carrega e desenha o ícone do aplicativo (memoizado por App com refcount simétrico)
-        if (a->icon && !a->icon_surface) {
-            cairo_surface_t *raw_surf = bar_icon_get(a->icon, 18);
-            if (raw_surf) {
-                a->icon_surface = cairo_surface_reference(raw_surf);
-            }
-        }
+        // A thread principal agora só desenha o ícone se ele já foi carregado pela thread secundária
         bar_icon_draw(cr, a->icon_surface, 20, list_y + 8, 18);
 
         pango_layout_set_text(layout, a->name, -1);
@@ -1106,6 +1215,70 @@ static bool render(void) {
         pango_cairo_show_layout(cr, layout);
 
         list_y += ITEM_HEIGHT;
+    }
+
+    // --- Gerenciamento de Cache de Ícones Ativo ---
+    // Mantemos uma janela deslizante (sliding window) de cache de 2 páginas ao redor do visor (atual + próxima)
+    {
+        int cache_start = app->scroll_offset;
+        int cache_end = app->scroll_offset + (2 * MAX_ITEMS);
+        if (cache_end > (int)app->nfiltered) cache_end = (int)app->nfiltered;
+
+        pthread_mutex_lock(&app->icon_mutex);
+
+        // 1. Aciona prefetch assíncrono para os ícones na vizinhança ativa
+        bool queue_signal = false;
+        for (int i = cache_start; i < cache_end; i++) {
+            App *a = &app->apps[app->filtered[i]];
+            if (a->icon && !a->icon_surface && !a->icon_loading && !a->icon_loaded) {
+                a->icon_loading = true;
+                queue_signal = true;
+            }
+        }
+        if (queue_signal) {
+            pthread_cond_signal(&app->icon_cond);
+        }
+
+        // 2. Liberar (evict) ícones distantes ou cancela carregamento em curso
+        bool *keep_icon = calloc(app->napps, sizeof(bool));
+        if (keep_icon) {
+            for (int i = cache_start; i < cache_end; i++) {
+                keep_icon[app->filtered[i]] = true;
+            }
+            for (size_t i = 0; i < app->napps; i++) {
+                if (!keep_icon[i]) {
+                    if (app->apps[i].icon_surface) {
+                        cairo_surface_destroy(app->apps[i].icon_surface);
+                        app->apps[i].icon_surface = NULL;
+                    }
+                    app->apps[i].icon_loading = false;
+                    app->apps[i].icon_loaded = false;
+                }
+            }
+            free(keep_icon);
+        }
+
+        pthread_mutex_unlock(&app->icon_mutex);
+    }
+
+    // Desenha seta de scroll inferior se houver itens abaixo
+    if (app->scroll_offset + MAX_ITEMS < (int)app->nfiltered) {
+        cairo_save(cr);
+        if (app->hover_scroll_down) {
+            draw_rounded_rect(cr, 12, 467, app->menu_w - 24, 8, 3);
+            cairo_set_source_rgba(cr, 0.22, 0.22, 0.30, 0.5); // Fundo suave no hover
+            cairo_fill(cr);
+            cairo_set_source_rgba(cr, 0.92, 0.92, 0.92, 1.0); // Brilhante
+        } else {
+            cairo_set_source_rgba(cr, 0.55, 0.55, 0.60, 0.5); // Meio-termo para contraste
+        }
+        cairo_set_line_width(cr, 1.5);
+        cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+        cairo_move_to(cr, app->menu_w / 2 - 6, 470);
+        cairo_line_to(cr, app->menu_w / 2, 474);
+        cairo_line_to(cr, app->menu_w / 2 + 6, 470);
+        cairo_stroke(cr);
+        cairo_restore(cr);
     }
 
     cairo_restore(cr);
@@ -1239,6 +1412,8 @@ static void destroy_capture_surface(void) {
 #endif
 
 // --- Callbacks de Teclado (XKB / input) ---
+static void disarm_repeat(AppState *app); // usado em keyboard_leave, definido com arm_repeat
+
 static void keyboard_keymap(void *data, struct wl_keyboard *kbd, uint32_t format, int fd, uint32_t size) {
     AppState *app = &g_app;
     if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
@@ -1288,21 +1463,70 @@ static void keyboard_leave(void *data, struct wl_keyboard *kbd, uint32_t serial,
         }
         app->menu_has_kbd_focus = false;
     }
+    // Perdeu o foco: cancela qualquer repeat em andamento (o release pode não chegar).
+    disarm_repeat(app);
 }
 
-static void keyboard_key(void *data, struct wl_keyboard *kbd, uint32_t serial, uint32_t time, uint32_t key, uint32_t state_val) {
-    (void)data; (void)kbd; (void)serial; (void)time;
-    AppState *app = &g_app;
-    if (!app->xkb_state) return;
+// Drena expirações já pendentes no timerfd (TFD_NONBLOCK -> EAGAIN quando vazio).
+// Necessário ao re-armar/desarmar: timerfd_settime NÃO limpa o contador já legível,
+// senão uma expiração antiga dispararia process_key para a nova tecla sem respeitar o delay.
+static void drain_repeat_fd(AppState *app) {
+    if (app->repeat_timer_fd < 0) return;
+    uint64_t expirations;
+    while (read(app->repeat_timer_fd, &expirations, sizeof(expirations)) == (ssize_t)sizeof(expirations)) {
+        // descarta
+    }
+}
 
-    if (state_val != WL_KEYBOARD_KEY_STATE_PRESSED) return;
+// Desarma o timer de repeat (chamado no release da tecla que repete e ao perder foco).
+static void disarm_repeat(AppState *app) {
+    if (app->repeat_timer_fd >= 0) {
+        struct itimerspec its;
+        memset(&its, 0, sizeof(its)); // it_value = 0 -> desarma
+        timerfd_settime(app->repeat_timer_fd, 0, &its, NULL);
+        drain_repeat_fd(app); // limpa expiração pendente para não disparar depois
+    }
+    app->repeat_keycode = 0;
+}
 
-    // keycode do Wayland = keycode do kernel (key) + 8
-    xkb_keysym_t sym = xkb_state_key_get_one_sym(app->xkb_state, key + 8);
+// Arma o timer de repeat para 'keycode' (do kernel): delay inicial, depois intervalo 1/rate.
+static void arm_repeat(AppState *app, uint32_t keycode) {
+    if (app->repeat_timer_fd < 0) return;
+    if (app->repeat_rate <= 0) return; // compositor desabilitou repeat
+
+    long delay_ms = app->repeat_delay > 0 ? app->repeat_delay : 0;
+    long interval_ms = 1000 / app->repeat_rate;
+    if (interval_ms < 1) interval_ms = 1; // protege contra rate altíssimo
+
+    struct itimerspec its;
+    its.it_value.tv_sec     = delay_ms / 1000;
+    its.it_value.tv_nsec    = (delay_ms % 1000) * 1000000L;
+    its.it_interval.tv_sec  = interval_ms / 1000;
+    its.it_interval.tv_nsec = (interval_ms % 1000) * 1000000L;
+    // delay_ms == 0 deixaria it_value zerado (= desarmado); usa o próprio intervalo
+    // como primeiro disparo (cópia exata, sem somar 1ms).
+    if (its.it_value.tv_sec == 0 && its.it_value.tv_nsec == 0) {
+        its.it_value = its.it_interval;
+    }
+    // Limpa qualquer expiração pendente antes de (re)armar — evita disparo imediato
+    // herdado de uma tecla anterior ao trocar de tecla sem soltar.
+    drain_repeat_fd(app);
+    timerfd_settime(app->repeat_timer_fd, 0, &its, NULL);
+    app->repeat_keycode = keycode;
+}
+
+// Processa o efeito de uma tecla (keycode do kernel; soma +8 internamente para o xkb).
+// Retorna true se a tecla é REPETÍVEL (deve continuar disparando enquanto pressionada).
+// Não-repetíveis: Enter/KP_Enter/Escape (encerram a interação).
+static bool process_key(AppState *app, uint32_t keycode) {
+    if (!app->xkb_state) return false;
+
+    // keycode do Wayland = keycode do kernel (keycode) + 8
+    xkb_keysym_t sym = xkb_state_key_get_one_sym(app->xkb_state, keycode + 8);
 
     if (sym == XKB_KEY_Escape) {
         app->running = false;
-        return;
+        return false;
     }
 
     if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter) {
@@ -1312,7 +1536,7 @@ static void keyboard_key(void *data, struct wl_keyboard *kbd, uint32_t serial, u
             spawn_app(selected_app);
         }
         app->running = false;
-        return;
+        return false;
     }
 
     if (sym == XKB_KEY_Down) {
@@ -1323,7 +1547,7 @@ static void keyboard_key(void *data, struct wl_keyboard *kbd, uint32_t serial, u
             app->sel = (app->sel + 1 < (int)app->nfiltered) ? app->sel + 1 : (int)app->nfiltered - 1;
         }
         app->dirty = true;
-        return;
+        return true;
     }
 
     if (sym == XKB_KEY_Up) {
@@ -1335,7 +1559,7 @@ static void keyboard_key(void *data, struct wl_keyboard *kbd, uint32_t serial, u
             }
         }
         app->dirty = true;
-        return;
+        return true;
     }
 
     if (sym == XKB_KEY_BackSpace) {
@@ -1349,7 +1573,7 @@ static void keyboard_key(void *data, struct wl_keyboard *kbd, uint32_t serial, u
             filter_apps();
             app->dirty = true;
         }
-        return;
+        return true;
     }
 
     // Alimentação e consulta do Compose State (dead keys / acentuação)
@@ -1372,17 +1596,17 @@ static void keyboard_key(void *data, struct wl_keyboard *kbd, uint32_t serial, u
             app->dirty = true;
         }
         xkb_compose_state_reset(app->xkb_compose_state);
-        return;
+        return true;
     } else if (status == XKB_COMPOSE_COMPOSING) {
         // Aguarda a composição ser completada (ex: pressionou '´')
-        return;
+        return true;
     } else if (status == XKB_COMPOSE_CANCELLED) {
         xkb_compose_state_reset(app->xkb_compose_state);
     }
 
     // Caractere imprimível normal (caso não seja sequência de compose ou compose tenha sido cancelado)
     char utf8[8];
-    int n = xkb_state_key_get_utf8(app->xkb_state, key + 8, utf8, sizeof(utf8));
+    int n = xkb_state_key_get_utf8(app->xkb_state, keycode + 8, utf8, sizeof(utf8));
     if (n > 0 && (unsigned char)utf8[0] >= 32 && app->query_len + (size_t)n < sizeof(app->query)) {
         memcpy(app->query + app->query_len, utf8, n);
         app->query_len += n;
@@ -1391,6 +1615,33 @@ static void keyboard_key(void *data, struct wl_keyboard *kbd, uint32_t serial, u
         app->sel = 0;
         filter_apps();
         app->dirty = true;
+    }
+    return true;
+}
+
+static void keyboard_key(void *data, struct wl_keyboard *kbd, uint32_t serial, uint32_t time, uint32_t key, uint32_t state_val) {
+    (void)data; (void)kbd; (void)serial; (void)time;
+    AppState *app = &g_app;
+    if (!app->xkb_state) return;
+
+    if (state_val == WL_KEYBOARD_KEY_STATE_RELEASED) {
+        // Só cancela o repeat se a tecla solta é a que está repetindo.
+        if (key == app->repeat_keycode) {
+            disarm_repeat(app);
+        }
+        return;
+    }
+
+    if (state_val != WL_KEYBOARD_KEY_STATE_PRESSED) return;
+
+    bool repeatable = process_key(app, key);
+
+    // Arma o repeat para teclas repetíveis (re-armar troca a tecla que repete);
+    // para não-repetíveis (Enter/Escape) ou se o repeat estiver desligado, garante desarme.
+    if (repeatable && app->running) {
+        arm_repeat(app, key);
+    } else {
+        disarm_repeat(app);
     }
 }
 
@@ -1403,7 +1654,12 @@ static void keyboard_modifiers(void *data, struct wl_keyboard *kbd, uint32_t ser
 }
 
 static void keyboard_repeat_info(void *data, struct wl_keyboard *kbd, int32_t rate, int32_t delay) {
-    (void)data; (void)kbd; (void)rate; (void)delay;
+    (void)data; (void)kbd;
+    AppState *app = &g_app;
+    // Apenas armazena; o timer de repeat é armado no press (keyboard_key).
+    // rate == 0 significa que o compositor desabilitou o repeat de teclado.
+    app->repeat_rate = rate;
+    app->repeat_delay = delay;
 }
 
 static const struct wl_keyboard_listener keyboard_listener = {
@@ -1435,11 +1691,42 @@ static void pointer_enter(void *d, struct wl_pointer *p, uint32_t s, struct wl_s
         pointer_set_default_cursor(s);
     }
 }
+static void disarm_mouse_repeat(AppState *app); // Forward declaration
+
 static void pointer_leave(void *d, struct wl_pointer *p, uint32_t s, struct wl_surface *surf) {
     (void)d; (void)p; (void)s;
     if (g_app.ptr_surface == surf) {
         g_app.ptr_surface = NULL;
     }
+    disarm_mouse_repeat(&g_app);
+}
+
+static void arm_mouse_repeat(AppState *app, int action) {
+    if (app->mouse_repeat_timer_fd < 0) return;
+
+    struct itimerspec its;
+    // Delay inicial de 350ms, depois repetição a cada 60ms para scroll fluido
+    its.it_value.tv_sec = 0;
+    its.it_value.tv_nsec = 350 * 1000000L;
+    its.it_interval.tv_sec = 0;
+    its.it_interval.tv_nsec = 60 * 1000000L;
+
+    // Drena expiração anterior
+    uint64_t expirations;
+    ssize_t rd = read(app->mouse_repeat_timer_fd, &expirations, sizeof(expirations));
+    (void)rd;
+
+    timerfd_settime(app->mouse_repeat_timer_fd, 0, &its, NULL);
+    app->mouse_repeat_action = action;
+}
+
+static void disarm_mouse_repeat(AppState *app) {
+    if (app->mouse_repeat_timer_fd < 0) return;
+
+    struct itimerspec its;
+    memset(&its, 0, sizeof(its));
+    timerfd_settime(app->mouse_repeat_timer_fd, 0, &its, NULL);
+    app->mouse_repeat_action = 0;
 }
 static void pointer_motion(void *d, struct wl_pointer *p, uint32_t t, wl_fixed_t sx, wl_fixed_t sy) {
     (void)d; (void)p; (void)t;
@@ -1450,14 +1737,31 @@ static void pointer_motion(void *d, struct wl_pointer *p, uint32_t t, wl_fixed_t
     if (app->ptr_surface == app->menu_surf) {
         double x = app->ptr_x;
         double y = app->ptr_y;
+
+        bool prev_hover_up = app->hover_scroll_up;
+        bool prev_hover_down = app->hover_scroll_down;
+
+        app->hover_scroll_up = (x >= 12 && x <= app->menu_w - 12 && y >= 51 && y < 57 && app->scroll_offset > 0);
+        app->hover_scroll_down = (x >= 12 && x <= app->menu_w - 12 && y >= 467 && y < 475 && app->scroll_offset + MAX_ITEMS < (int)app->nfiltered);
+
+        if (app->hover_scroll_up != prev_hover_up || app->hover_scroll_down != prev_hover_down) {
+            app->dirty = true;
+        }
+
         if (x >= 12 && x <= app->menu_w - 12) {
-            if (y >= 56 && y < 56 + (MAX_ITEMS * ITEM_HEIGHT)) {
-                int hover_idx = app->scroll_offset + (int)((y - 56) / ITEM_HEIGHT);
-                if (hover_idx >= 0 && hover_idx < (int)app->nfiltered) {
-                    if (app->focus_zone != ZONE_LIST || app->sel != hover_idx) {
-                        app->focus_zone = ZONE_LIST;
-                        app->sel = hover_idx;
-                        app->dirty = true;
+            if (y >= 58 && y < 58 + (MAX_ITEMS * ITEM_HEIGHT)) {
+                struct timespec now;
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                long elapsed_ms = (now.tv_sec - app->last_scroll_time.tv_sec) * 1000L +
+                                  (now.tv_nsec - app->last_scroll_time.tv_nsec) / 1000000L;
+                if (elapsed_ms >= 250) {
+                    int hover_idx = app->scroll_offset + (int)((y - 58) / ITEM_HEIGHT);
+                    if (hover_idx >= 0 && hover_idx < (int)app->nfiltered) {
+                        if (app->focus_zone != ZONE_LIST || app->sel != hover_idx) {
+                            app->focus_zone = ZONE_LIST;
+                            app->sel = hover_idx;
+                            app->dirty = true;
+                        }
                     }
                 }
             } else if (y >= 12 && y <= 46) {
@@ -1472,27 +1776,88 @@ static void pointer_motion(void *d, struct wl_pointer *p, uint32_t t, wl_fixed_t
 static void pointer_button(void *d, struct wl_pointer *p, uint32_t s, uint32_t t, uint32_t btn, uint32_t state) {
     (void)d; (void)p; (void)s; (void)t;
     AppState *app = &g_app;
-    if (state == 1 && btn == 0x110) { // 1 = WL_POINTER_BUTTON_STATE_PRESSED, 0x110 = BTN_LEFT
-        if (app->ptr_surface == app->menu_surf) {
-            double x = app->ptr_x;
-            double y = app->ptr_y;
-            // Verifica se clicou na área da lista (x >= 12 && x <= menu_w - 12)
-            if (x >= 12 && x <= app->menu_w - 12) {
-                if (y >= 56 && y < 56 + (MAX_ITEMS * ITEM_HEIGHT)) {
-                    int clicked_idx = app->scroll_offset + (int)((y - 56) / ITEM_HEIGHT);
-                    if (clicked_idx >= 0 && clicked_idx < (int)app->nfiltered) {
-                        App *selected_app = &app->apps[app->filtered[clicked_idx]];
-                        LOG_INFO("Mouse: clicou no aplicativo %s (%s)", selected_app->name, selected_app->exec);
-                        spawn_app(selected_app);
-                        app->running = false;
+
+    if (btn == 0x110) { // BTN_LEFT
+        if (state == 1) { // 1 = WL_POINTER_BUTTON_STATE_PRESSED
+            if (app->ptr_surface == app->menu_surf) {
+                double x = app->ptr_x;
+                double y = app->ptr_y;
+
+                // Clique no scroll superior
+                if (x >= 12 && x <= app->menu_w - 12 && y >= 51 && y < 57) {
+                    if (app->scroll_offset > 0) {
+                        if (app->focus_zone == ZONE_LIST) {
+                            app->sel = (app->sel > 0) ? app->sel - 1 : 0;
+                        } else {
+                            app->focus_zone = ZONE_LIST;
+                            app->sel = app->scroll_offset - 1;
+                        }
+                        app->dirty = true;
+                        arm_mouse_repeat(app, 1); // 1 = Scroll Up
+                    }
+                    return;
+                }
+
+                // Clique no scroll inferior
+                if (x >= 12 && x <= app->menu_w - 12 && y >= 467 && y < 475) {
+                    if (app->scroll_offset + MAX_ITEMS < (int)app->nfiltered) {
+                        if (app->focus_zone == ZONE_LIST) {
+                            app->sel = (app->sel + 1 < (int)app->nfiltered) ? app->sel + 1 : (int)app->nfiltered - 1;
+                        } else {
+                            app->focus_zone = ZONE_LIST;
+                            app->sel = app->scroll_offset + MAX_ITEMS;
+                        }
+                        app->dirty = true;
+                        arm_mouse_repeat(app, 2); // 2 = Scroll Down
+                    }
+                    return;
+                }
+
+                // Verifica se clicou na área da lista (x >= 12 && x <= menu_w - 12)
+                if (x >= 12 && x <= app->menu_w - 12) {
+                    if (y >= 58 && y < 58 + (MAX_ITEMS * ITEM_HEIGHT)) {
+                        int clicked_idx = app->scroll_offset + (int)((y - 58) / ITEM_HEIGHT);
+                        if (clicked_idx >= 0 && clicked_idx < (int)app->nfiltered) {
+                            App *selected_app = &app->apps[app->filtered[clicked_idx]];
+                            LOG_INFO("Mouse: clicou no aplicativo %s (%s)", selected_app->name, selected_app->exec);
+                            spawn_app(selected_app);
+                            app->running = false;
+                        }
                     }
                 }
             }
+        } else if (state == 0) { // WL_POINTER_BUTTON_STATE_RELEASED
+            disarm_mouse_repeat(app);
         }
     }
 }
 static void pointer_axis(void *d, struct wl_pointer *p, uint32_t t, uint32_t ax, wl_fixed_t val) {
-    (void)d; (void)p; (void)t; (void)ax; (void)val;
+    (void)d; (void)p; (void)t;
+    AppState *app = &g_app;
+    if (ax == WL_POINTER_AXIS_VERTICAL_SCROLL) {
+        clock_gettime(CLOCK_MONOTONIC, &app->last_scroll_time);
+        double dval = wl_fixed_to_double(val);
+        if (dval > 0) {
+            // Scroll para baixo: move a seleção para o próximo item
+            if (app->focus_zone == ZONE_SEARCH) {
+                app->focus_zone = ZONE_LIST;
+                app->sel = 0;
+            } else if (app->focus_zone == ZONE_LIST) {
+                app->sel = (app->sel + 1 < (int)app->nfiltered) ? app->sel + 1 : (int)app->nfiltered - 1;
+            }
+            app->dirty = true;
+        } else if (dval < 0) {
+            // Scroll para cima: move a seleção para o item anterior
+            if (app->focus_zone == ZONE_LIST) {
+                if (app->sel == 0) {
+                    app->focus_zone = ZONE_SEARCH;
+                } else {
+                    app->sel--;
+                }
+            }
+            app->dirty = true;
+        }
+    }
 }
 static void pointer_frame(void *data, struct wl_pointer *wl_pointer) {
     (void)data; (void)wl_pointer;
@@ -1669,10 +2034,28 @@ int main(int argc, char **argv) {
 
     memset(&g_app, 0, sizeof(AppState));
     g_app.focus_timer_fd = -1;
+    g_app.repeat_timer_fd = -1;
     g_app.shm_fd = -1;
     g_app.bg_shm_fd = -1;
     g_app.running = true;
     g_app.focus_zone = ZONE_SEARCH;
+    g_app.mouse_repeat_timer_fd = -1;
+    g_app.mouse_repeat_action = 0;
+
+    // Inicialização da thread assíncrona de ícones e pipe
+    pthread_mutex_init(&g_app.icon_mutex, NULL);
+    pthread_cond_init(&g_app.icon_cond, NULL);
+    g_app.icon_pipe[0] = -1;
+    g_app.icon_pipe[1] = -1;
+    if (pipe(g_app.icon_pipe) == 0) {
+        int flags = fcntl(g_app.icon_pipe[0], F_GETFL, 0);
+        fcntl(g_app.icon_pipe[0], F_SETFL, flags | O_NONBLOCK);
+    }
+    g_app.icon_thread_running = true;
+    if (pthread_create(&g_app.icon_thread, NULL, icon_loader_thread, &g_app) != 0) {
+        LOG_ERR("Falha ao criar thread secundária de ícones.");
+        g_app.icon_thread_running = false;
+    }
 
     // 1. IPC / Instância única
     if (!setup_ipc(is_mouse)) {
@@ -1757,6 +2140,18 @@ int main(int argc, char **argv) {
     // 6. Loop de eventos principal (prepare_read)
     int wl_fd = wl_display_get_fd(g_app.display);
 
+    // timerfd para o repeat de teclado (cliente implementa o repeat no Wayland)
+    g_app.repeat_timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    if (g_app.repeat_timer_fd < 0) {
+        LOG_ERR("timerfd_create (repeat) falhou: %s — repeat de tecla desativado", strerror(errno));
+    }
+
+    // timerfd para repetição de clique do mouse
+    g_app.mouse_repeat_timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    if (g_app.mouse_repeat_timer_fd < 0) {
+        LOG_ERR("timerfd_create (mouse repeat) falhou: %s — repeat do mouse desativado", strerror(errno));
+    }
+
     while (g_app.running) {
         while (wl_display_prepare_read(g_app.display) != 0) {
             wl_display_dispatch_pending(g_app.display);
@@ -1782,12 +2177,16 @@ int main(int argc, char **argv) {
             timeout = (int)diff_ms;
         }
 
-        struct pollfd fds[2] = {
+        // fd negativo (repeat_timer_fd == -1 se timerfd_create falhou) é ignorado pelo poll.
+        struct pollfd fds[5] = {
             { .fd = wl_fd, .events = POLLIN },
-            { .fd = g_app.sock_fd, .events = POLLIN }
+            { .fd = g_app.sock_fd, .events = POLLIN },
+            { .fd = g_app.repeat_timer_fd, .events = POLLIN },
+            { .fd = g_app.icon_pipe[0], .events = POLLIN },
+            { .fd = g_app.mouse_repeat_timer_fd, .events = POLLIN }
         };
 
-        int ret = poll(fds, 2, timeout);
+        int ret = poll(fds, 5, timeout);
         if (ret < 0) {
             wl_display_cancel_read(g_app.display);
             if (errno == EINTR) continue;
@@ -1830,6 +2229,59 @@ int main(int argc, char **argv) {
             }
         }
 
+        // Timer de repeat de teclado disparou
+        if (fds[2].revents & POLLIN) {
+            uint64_t expirations;
+            ssize_t rd = read(g_app.repeat_timer_fd, &expirations, sizeof(expirations));
+            (void)rd; // drena o contador; ignoramos o nº de expirações de propósito
+            // Só reprocessa se ainda estamos ativos e sem fechamento agendado: os
+            // eventos Wayland deste MESMO ciclo (release/leave/Escape) podem ter
+            // encerrado ou tirado o foco — o check de running no topo só vale no
+            // próximo ciclo. Reprocessa a tecla UMA vez por ciclo (evita avalanche
+            // se o loop atrasou); o it_interval do timerfd mantém a cadência.
+            if (g_app.running && !g_app.close_pending && g_app.repeat_keycode != 0) {
+                bool still_rep = process_key(&g_app, g_app.repeat_keycode);
+                if (!still_rep) {
+                    disarm_repeat(&g_app);
+                }
+            }
+        }
+
+        // Evento no pipe de ícones: novo ícone carregado em background
+        if (fds[3].revents & POLLIN) {
+            char discard[64];
+            while (read(g_app.icon_pipe[0], discard, sizeof(discard)) > 0);
+            g_app.dirty = true;
+        }
+
+        // Timer de repetição do clique do mouse disparou
+        if (fds[4].revents & POLLIN) {
+            uint64_t expirations;
+            ssize_t rd = read(g_app.mouse_repeat_timer_fd, &expirations, sizeof(expirations));
+            (void)rd;
+            if (g_app.running && !g_app.close_pending) {
+                if (g_app.mouse_repeat_action == 1) {
+                    // Scroll Up
+                    if (g_app.focus_zone == ZONE_LIST) {
+                        g_app.sel = (g_app.sel > 0) ? g_app.sel - 1 : 0;
+                        if (g_app.sel == 0) {
+                            g_app.focus_zone = ZONE_SEARCH;
+                        }
+                    }
+                    g_app.dirty = true;
+                } else if (g_app.mouse_repeat_action == 2) {
+                    // Scroll Down
+                    if (g_app.focus_zone == ZONE_SEARCH) {
+                        g_app.focus_zone = ZONE_LIST;
+                        g_app.sel = 0;
+                    } else if (g_app.focus_zone == ZONE_LIST) {
+                        g_app.sel = (g_app.sel + 1 < (int)g_app.nfiltered) ? g_app.sel + 1 : (int)g_app.nfiltered - 1;
+                    }
+                    g_app.dirty = true;
+                }
+            }
+        }
+
         // Desenha se mudou algo
         if (g_app.dirty && g_app.configured) {
             if (render()) {
@@ -1840,7 +2292,23 @@ int main(int argc, char **argv) {
 
     LOG_INFO("Encerrando maindeck-menu...");
 
+    // Encerra a thread secundária de ícones de forma graciosa
+    pthread_mutex_lock(&g_app.icon_mutex);
+    g_app.running = false;
+    pthread_cond_signal(&g_app.icon_cond);
+    pthread_mutex_unlock(&g_app.icon_mutex);
+
+    if (g_app.icon_thread_running) {
+        pthread_join(g_app.icon_thread, NULL);
+    }
+    if (g_app.icon_pipe[0] >= 0) close(g_app.icon_pipe[0]);
+    if (g_app.icon_pipe[1] >= 0) close(g_app.icon_pipe[1]);
+    pthread_mutex_destroy(&g_app.icon_mutex);
+    pthread_cond_destroy(&g_app.icon_cond);
+
     if (g_app.focus_timer_fd >= 0) close(g_app.focus_timer_fd);
+    if (g_app.repeat_timer_fd >= 0) close(g_app.repeat_timer_fd);
+    if (g_app.mouse_repeat_timer_fd >= 0) close(g_app.mouse_repeat_timer_fd);
 
     if (g_app.shm_data) munmap(g_app.shm_data, g_app.buf_size * 2);
     if (g_app.buffers[0]) wl_buffer_destroy(g_app.buffers[0]);

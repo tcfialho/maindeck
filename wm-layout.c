@@ -476,6 +476,14 @@ void apply_pending_window_action(void) {
 	case WINDOW_ACTION_RESTORE:
 		md_restore_window(window);
 		break;
+	case WINDOW_ACTION_CLOSE:
+		/* Mesmo caminho do fechar por teclado (ACTION_CLOSE_TARGET): o
+		 * compositor infere a direção da animação pela geometria no unmap.
+		 * Não passa pelo zwlr handle (que o river não escuta). */
+		river_window_v1_close(window->obj);
+		LOG_EVENT("ctx-menu close: \"%s\"", window->title ? window->title : "");
+		log_state();
+		break;
 	case WINDOW_ACTION_NONE:
 		break;
 	}
@@ -502,23 +510,43 @@ static void osd(const char *message) {
 void focus_target_on_seats(void) {
 	clamp_target();
 	struct Window *target = target_window();
-	struct Window *focus = target;
-	if (target != NULL) {
-		struct Window *w;
-		wl_list_for_each(w, &wm.windows, link) {
-			if (w->parent == NULL || !window_is_really_visible(w)) continue;
-			struct Window *root = w->parent;
-			int depth = 0;
-			while (root->parent != NULL && ++depth < 32) root = root->parent;
-			if (root == target) focus = w;
+	// Árbitro único de foco. Precedência: pending_float_focus > pending_child_focus >
+	// redirect-para-filha (md_effective_focus_window). A aplicação do float migrou do
+	// manage_start para cá, eliminando por construção a corrida float-vs-child.
+	struct Window *focus = md_effective_focus_window(target);
+
+	if (wm.pending_float_focus != NULL) {
+		// Maior precedência: flutuante recém-exibível pedindo foco (config-list, satty,
+		// primeira dimensão de uma floating). Setada pelos setters em wm-handlers.c.
+		struct Window *pf = wm.pending_float_focus;
+		wm.pending_float_focus = NULL;
+		if (!pf->closed && pf->floating) {
+			focus = pf;
+			wm.pending_child_focus = NULL; // a nova flutuante anula a interação pendente na filha
+		}
+	} else if (wm.pending_child_focus != NULL) {
+		// Interação de ponteiro registrou uma filha EXATA (raiz tiled): vence o redirect
+		// linear (que poderia escolher outra filha da mesma raiz). Só honra se ainda
+		// visível e pertencente ao target atual.
+		struct Window *pc = wm.pending_child_focus;
+		wm.pending_child_focus = NULL;
+		if (!pc->closed && pc->parent != NULL &&
+		    window_is_really_visible(pc) && root_window(pc) == target) {
+			focus = pc;
+			LOG_EVENT("child focus applied: \"%s\"", pc->title ? pc->title : "");
 		}
 	}
+
 	struct Seat *seat;
 	wl_list_for_each(seat, &wm.seats, link) {
 		if (seat->removed) continue;
 		if (seat->focused != NULL && seat->focused->floating && !seat->focused->closed && !wm.focus_dirty) {
 			continue;
 		}
+		// Evita re-emitir foco idêntico, MAS não quando focus_dirty — após focus_none da
+		// layer-shell (focus_none seta focus_dirty sem tocar seat->focused) o foco REAL
+		// foi limpo e seat->focused ficou obsoleto; re-emitir é necessário.
+		if (seat->focused == focus && !wm.focus_dirty) continue;
 		if (focus != NULL) {
 			river_seat_v1_clear_focus(seat->obj);
 			river_seat_v1_focus_window(seat->obj, focus->obj);
@@ -733,13 +761,29 @@ static int32_t clamp_implicit_child_dimension(int32_t value, int32_t min, int32_
 	return value > 0 ? value : 1;
 }
 
-static struct Window *root_window(struct Window *window) {
+struct Window *root_window(struct Window *window) {
 	struct Window *root = window;
 	int depth = 0;
 	while (root != NULL && root->parent != NULL && ++depth < 32) {
 		root = root->parent;
 	}
 	return root;
+}
+
+// Dada uma janela RAIZ (parent==NULL), retorna a filha visível mais relevante para
+// receber foco — a ÚLTIMA na ordem de wm.windows cuja raiz é `root` e que está
+// realmente visível. "Última" = topo da pilha de modais (children vão para a cauda em
+// window_handle_parent; o mais recente fica por último). Se não há filha visível,
+// retorna a própria raiz. NULL-safe.
+struct Window *md_effective_focus_window(struct Window *root) {
+	if (root == NULL) return NULL;
+	struct Window *focus = root;
+	struct Window *w;
+	wl_list_for_each(w, &wm.windows, link) {
+		if (w->parent == NULL || !window_is_really_visible(w)) continue;
+		if (root_window(w) == root) focus = w; // último match vence = topo da pilha
+	}
+	return focus;
 }
 
 static int32_t natural_implicit_child_dimension(int32_t current, int32_t min, int32_t max, int32_t cap, int32_t fallback) {

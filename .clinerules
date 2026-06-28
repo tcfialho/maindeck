@@ -4,6 +4,6 @@
 2. **Sem Proatividade Tóxica**: Não realize ações adicionais por conta própria (como rodar testes, instalar pacotes, fazer ajustes adicionais, criar commits ou propor alterações extras) se isso não foi explicitamente solicitado pelo usuário.
 3. **Sem Interpretações Criativas**: Cumpra as ordens claras e diretas exatamente como foram solicitadas, sem tentar inventar passos adicionais ou interpretar de forma criativa o que foi pedido.
 4. **Foco Estrito**: Apenas realize a ordem direta e clara do usuário.
-5. **Build e Deploy**: Para compilar, instalar e fazer deploy local dos binários do MainDeck, utilize sempre o script `tools/build-deploy.sh` disponível no repositório. Ele lida com o recompilamento, a cópia para a pasta `.local/bin` e o reinício seguro dos serviços.
+5. **Build e Deploy**: Para compilar, instalar e fazer deploy local dos binários do MainDeck, utilize sempre o script `tools/install-maindeck.sh` disponível no repositório. Ele lida com o recompilamento, a cópia para a pasta `.local/bin` e o reinício seguro dos serviços.
 6. **Sem Listas Fixas (Solução Porca)**: Nunca proponha, crie ou sugira soluções baseadas em listas fixas de nomes de janelas, títulos ou identificadores de processos, seja em código rígido (hardcoded) ou via arquivos de configuração do usuário. Soluções baseadas em listas estáticas são consideradas arquiteturas falhas e devem ser totalmente evitadas.
 7. **Confirmação de Commit**: Nunca crie ou execute commits no Git sem perguntar e obter autorização explícita do usuário para cada commit específico.

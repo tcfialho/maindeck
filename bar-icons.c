@@ -10,6 +10,7 @@
 
 #include <librsvg/rsvg.h>
 #include <cairo/cairo.h>
+#include <gdk-pixbuf/gdk-pixbuf.h>
 
 #include "bar-icons.h"
 #include "bar-log.h"
@@ -159,27 +160,43 @@ static bool scan_dir_recursive(const char *dir_path, const char *icon_name, char
         char full_path[1024];
         snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, entry->d_name);
 
+        struct stat lst;
+        if (lstat(full_path, &lst) != 0) {
+            continue;
+        }
+
+        /* Resolve o tipo real seguindo symlink: flatpak --user exporta os
+         * ícones como symlinks para .../app/<id>/current/active/export/...
+         * Diretórios symlinkados são pulados (evita loops); arquivos regulares
+         * apontados por symlink são aceitos. */
+        bool is_symlink = S_ISLNK(lst.st_mode);
         struct stat st;
-        if (lstat(full_path, &st) == 0) {
-            if (S_ISLNK(st.st_mode)) {
-                continue; // Pula links simbólicos para evitar loops infinitos
+        if (is_symlink) {
+            if (stat(full_path, &st) != 0) {
+                continue; // symlink quebrado
             }
-            if (S_ISDIR(st.st_mode)) {
-                if (scan_dir_recursive(full_path, icon_name, path_out, cap)) {
+        } else {
+            st = lst;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            if (is_symlink) {
+                continue; // não recursar em diretório via symlink (anti-loop)
+            }
+            if (scan_dir_recursive(full_path, icon_name, path_out, cap)) {
+                found = true;
+                break;
+            }
+        } else if (S_ISREG(st.st_mode)) {
+            const char *filename = entry->d_name;
+            size_t len = strlen(filename);
+            size_t name_len = strlen(icon_name);
+            if (len > name_len && strncmp(filename, icon_name, name_len) == 0) {
+                const char *ext = filename + name_len;
+                if (strcmp(ext, ".png") == 0 || strcmp(ext, ".svg") == 0 || strcmp(ext, ".xpm") == 0) {
+                    snprintf(path_out, cap, "%s", full_path);
                     found = true;
                     break;
-                }
-            } else if (S_ISREG(st.st_mode)) {
-                const char *filename = entry->d_name;
-                size_t len = strlen(filename);
-                size_t name_len = strlen(icon_name);
-                if (len > name_len && strncmp(filename, icon_name, name_len) == 0) {
-                    const char *ext = filename + name_len;
-                    if (strcmp(ext, ".png") == 0 || strcmp(ext, ".svg") == 0 || strcmp(ext, ".xpm") == 0) {
-                        snprintf(path_out, cap, "%s", full_path);
-                        found = true;
-                        break;
-                    }
                 }
             }
         }
@@ -195,26 +212,32 @@ static bool scan_dir_recursive(const char *dir_path, const char *icon_name, char
 
 static int find_icon_path(const char *icon_name, int size, char *path_out, size_t cap) {
     /* Try exact size first, then common sizes */
-    static const int sizes[] = { 32, 24, 48, 16, 64, 128, 256, 0 };
+    static const int sizes[] = { 32, 24, 48, 16, 64, 128, 256, 512, 0 };
 
     /* Directories to search */
     const char *themes[] = { "hicolor", "breeze", "breeze-dark", "Papirus", NULL };
     
     char local_icons_dir[512] = "";
     char local_pixmaps_dir[512] = "";
+    char local_flatpak_icons_dir[512] = "";
     const char *home = getenv("HOME");
     if (home) {
         snprintf(local_icons_dir, sizeof(local_icons_dir), "%s/.local/share/icons", home);
         snprintf(local_pixmaps_dir, sizeof(local_pixmaps_dir), "%s/.local/share/pixmaps", home);
+        snprintf(local_flatpak_icons_dir, sizeof(local_flatpak_icons_dir), "%s/.local/share/flatpak/exports/share/icons", home);
     }
 
-    const char *base_dirs[5];
+    const char *base_dirs[6];
     int base_dirs_n = 0;
     if (local_icons_dir[0]) {
         base_dirs[base_dirs_n++] = local_icons_dir;
     }
     base_dirs[base_dirs_n++] = "/usr/share/icons";
     base_dirs[base_dirs_n++] = "/usr/local/share/icons";
+    /* Flatpak per-user (--user installs) antes do system-wide */
+    if (local_flatpak_icons_dir[0]) {
+        base_dirs[base_dirs_n++] = local_flatpak_icons_dir;
+    }
     base_dirs[base_dirs_n++] = "/var/lib/flatpak/exports/share/icons";
     base_dirs[base_dirs_n++] = NULL;
 
@@ -286,9 +309,12 @@ static cairo_surface_t *load_icon_to_cairo_surface(const char *path, int size) {
     size_t len = strlen(path);
 
     bool is_svg = false;
+    bool is_ico = false;
     if (len > 4) {
         if (strcasecmp(path + len - 4, ".svg") == 0) {
             is_svg = true;
+        } else if (strcasecmp(path + len - 4, ".ico") == 0) {
+            is_ico = true;
         }
     }
 
@@ -327,6 +353,68 @@ static cairo_surface_t *load_icon_to_cairo_surface(const char *path, int size) {
 
         cairo_destroy(cr);
         g_object_unref(handle);
+    } else if (is_ico) {
+        /* .ico (e formatos não-PNG/SVG): cairo não decodifica nativamente.
+         * Usa gdk-pixbuf para decodificar e copia os pixels manualmente para
+         * uma surface cairo ARGB32 (sem gdk_cairo_set_source_pixbuf, que é GTK). */
+        GError *error = NULL;
+        GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file_at_scale(path, size, size, TRUE, &error);
+        if (!pixbuf) {
+            if (error) {
+                LOG_WARN("icons: gdk-pixbuf failed to load %s: %s", path, error->message);
+                g_error_free(error);
+            }
+            return NULL;
+        }
+
+        int pw = gdk_pixbuf_get_width(pixbuf);
+        int ph = gdk_pixbuf_get_height(pixbuf);
+        int n_channels = gdk_pixbuf_get_n_channels(pixbuf);
+        int src_stride = gdk_pixbuf_get_rowstride(pixbuf);
+        const guchar *src_pixels = gdk_pixbuf_get_pixels(pixbuf);
+        bool has_alpha = gdk_pixbuf_get_has_alpha(pixbuf);
+
+        surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
+        if (cairo_surface_status(surf) != CAIRO_STATUS_SUCCESS) {
+            cairo_surface_destroy(surf);
+            g_object_unref(pixbuf);
+            return NULL;
+        }
+
+        cairo_surface_flush(surf);
+        unsigned char *dst_pixels = cairo_image_surface_get_data(surf);
+        int dst_stride = cairo_image_surface_get_stride(surf);
+
+        /* Centraliza caso o aspect-ratio do .ico não seja quadrado (at_scale
+         * preserva proporção, então pw/ph podem ser <= size). */
+        int off_x = (size - pw) / 2;
+        if (off_x < 0) off_x = 0;
+        int off_y = (size - ph) / 2;
+        if (off_y < 0) off_y = 0;
+
+        int copy_w = pw < size ? pw : size;
+        int copy_h = ph < size ? ph : size;
+
+        for (int y = 0; y < copy_h; y++) {
+            const guchar *src_row = src_pixels + (size_t)y * src_stride;
+            unsigned char *dst_row = dst_pixels + (size_t)(y + off_y) * dst_stride + (size_t)off_x * 4;
+            for (int x = 0; x < copy_w; x++) {
+                const guchar *sp = src_row + (size_t)x * n_channels;
+                unsigned char r = sp[0];
+                unsigned char g = sp[1];
+                unsigned char b = sp[2];
+                unsigned char a = (has_alpha && n_channels == 4) ? sp[3] : 255;
+                /* cairo ARGB32 little-endian = bytes B,G,R,A com alpha pré-multiplicado */
+                unsigned char *dp = dst_row + (size_t)x * 4;
+                dp[0] = (unsigned char)((b * a + 127) / 255);
+                dp[1] = (unsigned char)((g * a + 127) / 255);
+                dp[2] = (unsigned char)((r * a + 127) / 255);
+                dp[3] = a;
+            }
+        }
+
+        cairo_surface_mark_dirty(surf);
+        g_object_unref(pixbuf);
     } else {
         cairo_surface_t *img = cairo_image_surface_create_from_png(path);
         if (cairo_surface_status(img) != CAIRO_STATUS_SUCCESS) {

@@ -482,8 +482,11 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		last_launcher_spawn_valid = true;
 		break;
 	case ACTION_CLOSE_TARGET: {
-		// Flutuante focada (ex.: satty) fecha primeiro; o alvo tiled fica como está.
-		if (seat->focused != NULL && seat->focused->floating && !seat->focused->closed) {
+		// Flutuante OU filha focada (ex.: satty, diálogo modal) fecha primeiro; o alvo
+		// tiled fica como está. Sem o teste de parent, Win+Del/Alt+F4 com a filha focada
+		// cairia em target_window() e fecharia a PAI. Órfãs já são tratadas no destroy.
+		if (seat->focused != NULL && !seat->focused->closed &&
+		    (seat->focused->floating || seat->focused->parent != NULL)) {
 			river_window_v1_close(seat->focused->obj);
 			break;
 		}
@@ -637,6 +640,32 @@ void seat_manage(struct Seat *seat) {
 				wm.maximized = false;
 			}
 			wm.focus_dirty = true;
+		} else if (seat->interacted->parent != NULL) {
+			// Interação recaiu sobre uma FILHA (diálogo/modal). Dois casos pela RAIZ:
+			struct Window *root = root_window(seat->interacted);
+			if (root->floating) {
+				// Raiz floating (ex.: satty/diálogo de config com sub-diálogo): a raiz
+				// não tem índice MainDeck. Foca a filha DIRETO, simétrico ao tratamento
+				// de floating abaixo. (Registrar pending_child_focus não funcionaria:
+				// focus_target_on_seats exige root_window(pc)==target, e target é tiled.)
+				river_seat_v1_clear_focus(seat->obj);
+				river_seat_v1_focus_window(seat->obj, seat->interacted->obj);
+				seat->focused = seat->interacted;
+			} else {
+				// Raiz tiled: sobe à raiz, torna-a o target (para a filha ser "do alvo")
+				// e registra a filha EXATA como foco pendente — focus_target_on_seats
+				// aplica no fim do cycle (última palavra), mantendo toda decisão de foco
+				// num lugar só.
+				int32_t ridx = window_index(root);
+				if (ridx == 0 || ridx == 1) {
+					if (ridx != (int32_t)wm.target_index) {
+						wm.target_index = (uint32_t)ridx;
+						wm.maximized = false;
+					}
+				}
+				wm.pending_child_focus = seat->interacted;
+				wm.focus_dirty = true;
+			}
 		} else if (seat->interacted->floating) {
 			river_seat_v1_clear_focus(seat->obj);
 			river_seat_v1_focus_window(seat->obj, seat->interacted->obj);

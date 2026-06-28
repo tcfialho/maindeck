@@ -1259,8 +1259,13 @@ void bar_tray_menu_activate(int row, uint32_t time) {
             /* Por identifier (estável). Só cai no índice quando a janela não
              * tem identifier — caso (raro: ghost/transient) em que Fechar é o
              * único item ativo e não há chave estável melhor que o índice. */
+            /* Fecha pelo IPC do WM (river_window_v1_close): mesmo caminho do
+             * fechar por teclado e dos outros itens — o river ganha a animação
+             * de close-intent. O zwlr handle NÃO é escutado pelo compositor,
+             * então caía no vazio. Sem identifier (ghost/transient) cai no
+             * índice via zwlr, único caso sem chave estável melhor. */
             if (g_menu_win_id[0])
-                bar_taskbar_close_by_id(g_menu_win_id);
+                bar_taskbar_send_wm("close", g_menu_win_id);
             else
                 bar_taskbar_close(g_menu_win_idx);
             break;

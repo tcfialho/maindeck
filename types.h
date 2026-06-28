@@ -121,6 +121,7 @@ enum WindowAction {
 	WINDOW_ACTION_MINIMIZE,
 	WINDOW_ACTION_MAXIMIZE,
 	WINDOW_ACTION_RESTORE,
+	WINDOW_ACTION_CLOSE,
 };
 
 typedef enum WindowAction WindowAction;
@@ -180,6 +181,12 @@ struct WindowManager {
 	// Flutuante a focar no próximo manage_start (focus_window é window
 	// management state e só pode ser feito dentro da manage sequence).
 	struct Window *pending_float_focus;
+	// Filha (parent!=NULL) a focar no próximo manage cycle, registrada por uma
+	// interação de ponteiro que recaiu sobre ela quando a raiz é tiled. Guardamos a
+	// filha EXATA clicada para não deixar o redirect linear de focus_target_on_seats
+	// escolher outra filha da mesma raiz. NULL = nada pendente. Aplicada (e zerada)
+	// em focus_target_on_seats, abaixo de pending_float_focus na precedência.
+	struct Window *pending_child_focus;
 };
 
 struct DeviceState {

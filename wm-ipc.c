@@ -134,6 +134,8 @@ static void ipc_handle_message(const char *msg) {
 		ipc_schedule_window_action(WINDOW_ACTION_MAXIMIZE, "maximize", id);
 	} else if ((id = ipc_match_verb(msg, "restore")) != NULL) {
 		ipc_schedule_window_action(WINDOW_ACTION_RESTORE, "restore", id);
+	} else if ((id = ipc_match_verb(msg, "close")) != NULL) {
+		ipc_schedule_window_action(WINDOW_ACTION_CLOSE, "close", id);
 	} else {
 		LOG_WARN("IPC: comando desconhecido ignorado: %s", msg);
 	}

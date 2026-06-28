@@ -69,4 +69,9 @@ void move_last(struct Window *window);
 void wm_place_top(struct river_node_v1 *node);
 bool window_is_really_visible(struct Window *w);
 bool window_is_really_visible_view(struct Window *w, const struct LayoutView *view);
+/* Sobe da janela até a raiz (parent==NULL), com guarda anti-ciclo (depth<32). */
+struct Window *root_window(struct Window *window);
+/* Dada uma raiz, retorna a filha visível mais relevante (topo da pilha de modais)
+   para receber foco, ou a própria raiz se não houver filha visível. NULL-safe. */
+struct Window *md_effective_focus_window(struct Window *root);
 #endif /* WM_LAYOUT_H */

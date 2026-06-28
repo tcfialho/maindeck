@@ -106,7 +106,10 @@ toplevel_protocols = wl_mod.scan_xml(
 cairo_dep  = dependency('cairo')
 pangocairo = dependency('pangocairo')
 librsvg_dep = dependency('librsvg-2.0')
+gdkpixbuf_dep = dependency('gdk-pixbuf-2.0')
 dbus       = dependency('dbus-1')
+threads_dep = dependency('threads')
+
 
 bar_protocols = wl_mod.scan_xml(
   'protocol/wlr-layer-shell-unstable-v1.xml',
@@ -137,6 +140,7 @@ executable(
     cairo_dep,
     pangocairo,
     librsvg_dep,
+    gdkpixbuf_dep,
     dbus,
   ],
   include_directories: include_directories('vendor'),
@@ -156,6 +160,8 @@ executable(
     cairo_dep,
     pangocairo,
     librsvg_dep,
+    gdkpixbuf_dep,
+    threads_dep,
   ],
   install: true,
 )
