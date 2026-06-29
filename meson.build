@@ -44,6 +44,9 @@ add_project_arguments(cc.get_supported_arguments([
 	'-fprefetch-loop-arrays',
 	'-finline-limit=10000',
 	'-fno-math-errno',
+	# Compatibilidade do PGO para tolerar mudanças pequenas de código
+	'-Wno-coverage-mismatch',
+	'-Wno-missing-profile',
 ]), language: 'c')
 
 # Injetar mimalloc globalmente
