@@ -339,6 +339,7 @@ int main(void) {
     g_bar.hover_index   = -1;
     g_bar.menu_hover_row = -1;
     g_bar.height    = 32;
+    bar_icons_init();
     bar_game_mode_reset_notifications();
 
     /* Load config */
@@ -428,12 +429,14 @@ int main(void) {
         }
 
         int notify_fd = g_bar.notify_sock;
-        struct pollfd pfds[3] = {
+        int icon_fd = bar_icons_get_notify_fd();
+        struct pollfd pfds[4] = {
             { .fd = wl_fd,     .events = POLLIN },
             { .fd = tray_fd,   .events = tray_fd >= 0   ? POLLIN : 0 },
             { .fd = notify_fd, .events = notify_fd >= 0 ? POLLIN : 0 },
+            { .fd = icon_fd,   .events = icon_fd >= 0   ? POLLIN : 0 },
         };
-        nfds_t nfds = 3;
+        nfds_t nfds = 4;
 
         int ret = poll(pfds, nfds, timer_ms);
 
@@ -489,6 +492,10 @@ int main(void) {
                         }
                     }
                 }
+            }
+            if (icon_fd >= 0 && (pfds[3].revents & POLLIN)) {
+                bar_icons_notify_done();
+                bar_request_redraw(&g_bar);
             }
             timer_ms = ms_until_next_minute();
         }

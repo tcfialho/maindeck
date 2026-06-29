@@ -85,6 +85,20 @@ struct HitArea {
     int     x, y, w, h;
 };
 
+#define BAR_MAX_PENDING 64
+
+typedef struct {
+    bool in_use;
+    bool done;
+    void *handle;
+    char app_id[128];
+    char title[256];
+    char identifier[33];
+    bool activated;
+    bool fullscreen;
+    uint64_t seq_num;
+} PendingEntry;
+
 /* ------------------------------------------------------------------ */
 /* Global bar state                                                     */
 /* ------------------------------------------------------------------ */
@@ -122,10 +136,9 @@ struct BarState {
     struct BarToplevel *toplevels[BAR_MAX_TOPLEVELS];
     int                toplevel_n;
 
-    /* Ext toplevels: parallel array by arrival order */
-    struct ext_foreign_toplevel_handle_v1 *ext_handles[BAR_MAX_TOPLEVELS];
-    char ext_identifiers[BAR_MAX_TOPLEVELS][33];
-    int  ext_n;
+    /* Pending entries for correlation matching */
+    PendingEntry zwlr_pending[BAR_MAX_PENDING];
+    PendingEntry ext_pending[BAR_MAX_PENDING];
 
     /* Conjunto de janelas vivas segundo o WM (ceifador de fantasmas).
      * Atualizado via "windows id1 id2 ..." no notify socket. */

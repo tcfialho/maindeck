@@ -27,13 +27,15 @@ cc = meson.get_compiler('c')
 add_project_arguments(cc.get_supported_arguments([
 	'-D_POSIX_C_SOURCE=200809L',
 	'-Wno-unused-parameter',
-	# Bloco de Compilação Agressiva Segura
-	'-O3',
+	# Bloco de Compilação Agressiva (Segura + Unsafe)
+	'-Ofast',
 	'-march=native',
 	'-mtune=native',
 	'-mavx2',
 	'-mfma',
-	'-ffast-math',
+	'-fstrict-aliasing',
+	'-faggressive-loop-optimizations',
+	'-fomit-frame-pointer',
 	'-fvect-cost-model=cheap',
 	'-fipa-pta',
 	'-fno-semantic-interposition',
@@ -106,9 +108,7 @@ toplevel_protocols = wl_mod.scan_xml(
 cairo_dep  = dependency('cairo')
 pangocairo = dependency('pangocairo')
 librsvg_dep = dependency('librsvg-2.0')
-gdkpixbuf_dep = dependency('gdk-pixbuf-2.0')
 dbus       = dependency('dbus-1')
-threads_dep = dependency('threads')
 
 
 bar_protocols = wl_mod.scan_xml(
@@ -140,7 +140,6 @@ executable(
     cairo_dep,
     pangocairo,
     librsvg_dep,
-    gdkpixbuf_dep,
     dbus,
   ],
   include_directories: include_directories('vendor'),
@@ -160,8 +159,6 @@ executable(
     cairo_dep,
     pangocairo,
     librsvg_dep,
-    gdkpixbuf_dep,
-    threads_dep,
   ],
   install: true,
 )

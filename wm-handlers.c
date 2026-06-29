@@ -28,6 +28,8 @@
 #include "wm-log.h"
 #include "wm-state.h"
 #include "wm-layout.h"
+
+static void apply_output_presentation_modes(void);
 #include "wm-animation-intents.h"
 #include "wm-input.h"
 #include "wm-libinput.h"
@@ -501,6 +503,7 @@ static void window_handle_presentation_hint(void *data, struct river_window_v1 *
 		return;
 	}
 	window->presentation_hint = hint;
+	apply_output_presentation_modes();
 }
 static void window_handle_identifier(void *data, struct river_window_v1 *obj, const char *identifier) {
 	struct Window *window = data;

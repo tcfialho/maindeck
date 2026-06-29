@@ -19,7 +19,6 @@
 #include <poll.h>
 #include <ctype.h>
 #include <time.h>
-#include <pthread.h>
 
 #include <stdint.h>
 
@@ -53,8 +52,6 @@ typedef struct {
     char *icon;     // Nome/caminho do ícone
     bool terminal;  // Executar no terminal?
     cairo_surface_t *icon_surface; // Memoização do ícone
-    bool icon_loading; // Indica que o ícone está na fila de carregamento assíncrono
-    bool icon_loaded;  // Indica que o carregamento terminou (sucesso ou falha)
 } App;
 
 // Estrutura de estado global do app
@@ -132,13 +129,6 @@ typedef struct {
     bool menu_has_kbd_focus;
     bool close_pending;
     struct timespec close_deadline;
-
-    // Thread e comunicação de carregamento de ícones assíncrono
-    int icon_pipe[2];
-    pthread_t icon_thread;
-    pthread_mutex_t icon_mutex;
-    pthread_cond_t icon_cond;
-    bool icon_thread_running;
 
     // Estado de hover das setas de scroll
     bool hover_scroll_up;
@@ -1007,65 +997,6 @@ static PangoLayout     *s_lay[2]  = { NULL, NULL };
 static PangoFontDescription *s_font_desc = NULL;
 static int s_cs_w = 0, s_cs_h = 0;
 
-static void *icon_loader_thread(void *arg) {
-    AppState *app = (AppState *)arg;
-
-    while (app->running) {
-        pthread_mutex_lock(&app->icon_mutex);
-        while (app->running) {
-            bool found = false;
-            for (size_t i = 0; i < app->napps; i++) {
-                if (app->apps[i].icon && !app->apps[i].icon_surface && app->apps[i].icon_loading && !app->apps[i].icon_loaded) {
-                    found = true;
-                    break;
-                }
-            }
-            if (found) break;
-            pthread_cond_wait(&app->icon_cond, &app->icon_mutex);
-        }
-
-        if (!app->running) {
-            pthread_mutex_unlock(&app->icon_mutex);
-            break;
-        }
-
-        // Busca o primeiro app pendente de carregamento
-        int target_idx = -1;
-        char *icon_name = NULL;
-        for (size_t i = 0; i < app->napps; i++) {
-            if (app->apps[i].icon && !app->apps[i].icon_surface && app->apps[i].icon_loading && !app->apps[i].icon_loaded) {
-                target_idx = (int)i;
-                icon_name = strdup(app->apps[i].icon);
-                break;
-            }
-        }
-        pthread_mutex_unlock(&app->icon_mutex);
-
-        if (target_idx != -1 && icon_name) {
-            // Executa I/O de carregamento de ícone fora do lock do mutex
-            cairo_surface_t *raw_surf = bar_icon_get(icon_name, 18);
-            free(icon_name);
-
-            pthread_mutex_lock(&app->icon_mutex);
-            // Só grava na struct principal se ela ainda desejar o ícone (não cancelou)
-            if (app->apps[target_idx].icon_loading) {
-                if (raw_surf) {
-                    app->apps[target_idx].icon_surface = cairo_surface_reference(raw_surf);
-                }
-                app->apps[target_idx].icon_loaded = true;
-                app->apps[target_idx].icon_loading = false;
-
-                // Envia sinal para o poll da thread principal
-                char trigger = 1;
-                ssize_t wr = write(app->icon_pipe[1], &trigger, 1);
-                (void)wr;
-            }
-            pthread_mutex_unlock(&app->icon_mutex);
-        }
-    }
-    return NULL;
-}
-
 static void ensure_cairo_menu(AppState *app, unsigned char *data) {
     int b = app->cur_buf;
     if (s_cs[b] && s_cs_w == app->menu_w && s_cs_h == app->menu_h)
@@ -1206,7 +1137,13 @@ static bool render(void) {
             cairo_fill(cr);
         }
 
-        // A thread principal agora só desenha o ícone se ele já foi carregado pela thread secundária
+        // Carrega o ícone inline (síncrono) e memoiza na primeira renderização
+        if (a->icon && !a->icon_surface) {
+            cairo_surface_t *raw_surf = bar_icon_get(a->icon, 18);
+            if (raw_surf) {
+                a->icon_surface = cairo_surface_reference(raw_surf);
+            }
+        }
         bar_icon_draw(cr, a->icon_surface, 20, list_y + 8, 18);
 
         pango_layout_set_text(layout, a->name, -1);
@@ -1215,50 +1152,6 @@ static bool render(void) {
         pango_cairo_show_layout(cr, layout);
 
         list_y += ITEM_HEIGHT;
-    }
-
-    // --- Gerenciamento de Cache de Ícones Ativo ---
-    // Mantemos uma janela deslizante (sliding window) de cache de 2 páginas ao redor do visor (atual + próxima)
-    {
-        int cache_start = app->scroll_offset;
-        int cache_end = app->scroll_offset + (2 * MAX_ITEMS);
-        if (cache_end > (int)app->nfiltered) cache_end = (int)app->nfiltered;
-
-        pthread_mutex_lock(&app->icon_mutex);
-
-        // 1. Aciona prefetch assíncrono para os ícones na vizinhança ativa
-        bool queue_signal = false;
-        for (int i = cache_start; i < cache_end; i++) {
-            App *a = &app->apps[app->filtered[i]];
-            if (a->icon && !a->icon_surface && !a->icon_loading && !a->icon_loaded) {
-                a->icon_loading = true;
-                queue_signal = true;
-            }
-        }
-        if (queue_signal) {
-            pthread_cond_signal(&app->icon_cond);
-        }
-
-        // 2. Liberar (evict) ícones distantes ou cancela carregamento em curso
-        bool *keep_icon = calloc(app->napps, sizeof(bool));
-        if (keep_icon) {
-            for (int i = cache_start; i < cache_end; i++) {
-                keep_icon[app->filtered[i]] = true;
-            }
-            for (size_t i = 0; i < app->napps; i++) {
-                if (!keep_icon[i]) {
-                    if (app->apps[i].icon_surface) {
-                        cairo_surface_destroy(app->apps[i].icon_surface);
-                        app->apps[i].icon_surface = NULL;
-                    }
-                    app->apps[i].icon_loading = false;
-                    app->apps[i].icon_loaded = false;
-                }
-            }
-            free(keep_icon);
-        }
-
-        pthread_mutex_unlock(&app->icon_mutex);
     }
 
     // Desenha seta de scroll inferior se houver itens abaixo
@@ -2042,21 +1935,6 @@ int main(int argc, char **argv) {
     g_app.mouse_repeat_timer_fd = -1;
     g_app.mouse_repeat_action = 0;
 
-    // Inicialização da thread assíncrona de ícones e pipe
-    pthread_mutex_init(&g_app.icon_mutex, NULL);
-    pthread_cond_init(&g_app.icon_cond, NULL);
-    g_app.icon_pipe[0] = -1;
-    g_app.icon_pipe[1] = -1;
-    if (pipe(g_app.icon_pipe) == 0) {
-        int flags = fcntl(g_app.icon_pipe[0], F_GETFL, 0);
-        fcntl(g_app.icon_pipe[0], F_SETFL, flags | O_NONBLOCK);
-    }
-    g_app.icon_thread_running = true;
-    if (pthread_create(&g_app.icon_thread, NULL, icon_loader_thread, &g_app) != 0) {
-        LOG_ERR("Falha ao criar thread secundária de ícones.");
-        g_app.icon_thread_running = false;
-    }
-
     // 1. IPC / Instância única
     if (!setup_ipc(is_mouse)) {
         return 1;
@@ -2178,15 +2056,14 @@ int main(int argc, char **argv) {
         }
 
         // fd negativo (repeat_timer_fd == -1 se timerfd_create falhou) é ignorado pelo poll.
-        struct pollfd fds[5] = {
+        struct pollfd fds[4] = {
             { .fd = wl_fd, .events = POLLIN },
             { .fd = g_app.sock_fd, .events = POLLIN },
             { .fd = g_app.repeat_timer_fd, .events = POLLIN },
-            { .fd = g_app.icon_pipe[0], .events = POLLIN },
             { .fd = g_app.mouse_repeat_timer_fd, .events = POLLIN }
         };
 
-        int ret = poll(fds, 5, timeout);
+        int ret = poll(fds, 4, timeout);
         if (ret < 0) {
             wl_display_cancel_read(g_app.display);
             if (errno == EINTR) continue;
@@ -2247,15 +2124,8 @@ int main(int argc, char **argv) {
             }
         }
 
-        // Evento no pipe de ícones: novo ícone carregado em background
-        if (fds[3].revents & POLLIN) {
-            char discard[64];
-            while (read(g_app.icon_pipe[0], discard, sizeof(discard)) > 0);
-            g_app.dirty = true;
-        }
-
         // Timer de repetição do clique do mouse disparou
-        if (fds[4].revents & POLLIN) {
+        if (fds[3].revents & POLLIN) {
             uint64_t expirations;
             ssize_t rd = read(g_app.mouse_repeat_timer_fd, &expirations, sizeof(expirations));
             (void)rd;
@@ -2292,19 +2162,7 @@ int main(int argc, char **argv) {
 
     LOG_INFO("Encerrando maindeck-menu...");
 
-    // Encerra a thread secundária de ícones de forma graciosa
-    pthread_mutex_lock(&g_app.icon_mutex);
     g_app.running = false;
-    pthread_cond_signal(&g_app.icon_cond);
-    pthread_mutex_unlock(&g_app.icon_mutex);
-
-    if (g_app.icon_thread_running) {
-        pthread_join(g_app.icon_thread, NULL);
-    }
-    if (g_app.icon_pipe[0] >= 0) close(g_app.icon_pipe[0]);
-    if (g_app.icon_pipe[1] >= 0) close(g_app.icon_pipe[1]);
-    pthread_mutex_destroy(&g_app.icon_mutex);
-    pthread_cond_destroy(&g_app.icon_cond);
 
     if (g_app.focus_timer_fd >= 0) close(g_app.focus_timer_fd);
     if (g_app.repeat_timer_fd >= 0) close(g_app.repeat_timer_fd);

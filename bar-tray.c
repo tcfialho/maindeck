@@ -624,7 +624,16 @@ int bar_tray_count(void) { return g_item_n; }
 
 cairo_surface_t *bar_tray_icon(int idx) {
     if (idx < 0 || idx >= g_item_n) return NULL;
-    return g_items[idx].icon;
+    struct TrayItem *it = &g_items[idx];
+    if (!it->icon && it->icon_name[0]) {
+        cairo_surface_t *s = bar_icon_get(it->icon_name, ICON_SIZE);
+        if (!s) s = bar_icon_get(it->service, ICON_SIZE);
+        if (s) {
+            cairo_surface_reference(s);
+            it->icon = s;
+        }
+    }
+    return it->icon;
 }
 
 const char *bar_tray_title(int idx) {

@@ -47,25 +47,49 @@ static void bar_update_render_suppressed(void) {
 /* ------------------------------------------------------------------ */
 /* zwlr handlers                                                        */
 /* ------------------------------------------------------------------ */
+static uint64_t g_pending_seq = 0;
+
+static bool is_zwlr_pending(void *data) {
+    struct BarState *bar = &g_bar;
+    return (data >= (void*)&bar->zwlr_pending[0] &&
+            data < (void*)&bar->zwlr_pending[BAR_MAX_PENDING]);
+}
+
+static bool is_ext_pending(void *data) {
+    struct BarState *bar = &g_bar;
+    return (data >= (void*)&bar->ext_pending[0] &&
+            data < (void*)&bar->ext_pending[BAR_MAX_PENDING]);
+}
+
+static void try_match_pending(void);
 
 static void tl_title(void *data,
     struct zwlr_foreign_toplevel_handle_v1 *h, const char *s) {
     (void)h;
-    struct BarToplevel *tl = data;
-    snprintf(tl->title, sizeof(tl->title), "%s", s ? s : "");
-    bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
+    if (is_zwlr_pending(data)) {
+        PendingEntry *pe = data;
+        snprintf(pe->title, sizeof(pe->title), "%s", s ? s : "");
+    } else {
+        struct BarToplevel *tl = data;
+        snprintf(tl->title, sizeof(tl->title), "%s", s ? s : "");
+        bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
+    }
 }
 
 static void tl_app_id(void *data,
     struct zwlr_foreign_toplevel_handle_v1 *h, const char *s) {
     (void)h;
-    struct BarToplevel *tl = data;
-    snprintf(tl->app_id, sizeof(tl->app_id), "%s", s ? s : "");
-    /* Load icon on first app_id */
-    if (!tl->icon_surface && s && s[0]) {
-        tl->icon_surface = bar_icon_get(s, 18);
+    if (is_zwlr_pending(data)) {
+        PendingEntry *pe = data;
+        snprintf(pe->app_id, sizeof(pe->app_id), "%s", s ? s : "");
+    } else {
+        struct BarToplevel *tl = data;
+        snprintf(tl->app_id, sizeof(tl->app_id), "%s", s ? s : "");
+        if (!tl->icon_surface && s && s[0]) {
+            tl->icon_surface = bar_icon_get(s, 18);
+        }
+        bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
     }
-    bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
 }
 
 static void tl_oe(void *d, struct zwlr_foreign_toplevel_handle_v1 *h,
@@ -77,6 +101,18 @@ static void tl_ol(void *d, struct zwlr_foreign_toplevel_handle_v1 *h,
 static void tl_state(void *data,
     struct zwlr_foreign_toplevel_handle_v1 *h, struct wl_array *st) {
     (void)h;
+    if (is_zwlr_pending(data)) {
+        PendingEntry *pe = data;
+        bool act = false, fs = false;
+        uint32_t *s;
+        wl_array_for_each(s, st) {
+            if (*s == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED) act = true;
+            if (*s == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_FULLSCREEN) fs = true;
+        }
+        pe->activated = act;
+        pe->fullscreen = fs;
+        return;
+    }
     struct BarToplevel *tl = data;
     bool act = false, fs = false;
     uint32_t *s;
@@ -85,29 +121,12 @@ static void tl_state(void *data,
         if (*s == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_FULLSCREEN) fs = true;
     }
     tl->activated = act;
-    /* tl->minimized is owned exclusively by the WM (bar_taskbar_set_wm_windows):
-     * river never emits the zwlr MINIMIZED state because hide() is ambiguous
-     * (minimize vs deck-overflow), so reading it here would just clobber the
-     * WM's authoritative value back to false. */
     tl->fullscreen = fs;
     bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
-    /* Only suppress render if app_id is known — if empty, fullscreen arrived
-     * before the first done; tl_done will call bar_update_render_suppressed
-     * once app_id is guaranteed to be set by the compositor. */
     if (tl->app_id[0])
         bar_update_render_suppressed();
 }
 
-static void tl_done(void *data,
-    struct zwlr_foreign_toplevel_handle_v1 *h) {
-    (void)h;
-    (void)data;
-    /* app_id is stable after the first done — process any deferred fullscreen */
-    bar_update_render_suppressed();
-    bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
-}
-
-/* Remove a entrada idx da taskbar, destruindo o proxy zwlr e liberando o slot. */
 static void taskbar_remove_entry(int idx) {
     struct BarState *bar = &g_bar;
     struct BarToplevel *tl = bar->toplevels[idx];
@@ -116,6 +135,9 @@ static void taskbar_remove_entry(int idx) {
     }
     if (tl->zwlr_handle) {
         zwlr_foreign_toplevel_handle_v1_destroy(tl->zwlr_handle);
+    }
+    if (tl->ext_handle) {
+        ext_foreign_toplevel_handle_v1_destroy(tl->ext_handle);
     }
     free(tl);
     int rem = bar->toplevel_n - idx - 1;
@@ -127,31 +149,49 @@ static void taskbar_remove_entry(int idx) {
     bar->toplevels[bar->toplevel_n] = NULL;
 }
 
+static void tl_done(void *data,
+    struct zwlr_foreign_toplevel_handle_v1 *h) {
+    (void)h;
+    if (is_zwlr_pending(data)) {
+        PendingEntry *pe = data;
+        pe->done = true;
+        try_match_pending();
+    } else {
+        bar_update_render_suppressed();
+        bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
+    }
+}
+
 static void tl_closed(void *data,
     struct zwlr_foreign_toplevel_handle_v1 *h) {
     struct BarState *bar = &g_bar;
-    struct BarToplevel *tl = data;
-
-    int idx = -1;
-    for (int i = 0; i < bar->toplevel_n; i++) {
-        if (bar->toplevels[i] == tl) { idx = i; break; }
-    }
-
-    if (idx >= 0) {
-        taskbar_remove_entry(idx); /* destrói o proxy (tl->zwlr_handle == h) */
-    } else {
+    if (is_zwlr_pending(data)) {
+        PendingEntry *pe = data;
+        pe->in_use = false;
         zwlr_foreign_toplevel_handle_v1_destroy(h);
+    } else {
+        struct BarToplevel *tl = data;
+        int idx = -1;
+        for (int i = 0; i < bar->toplevel_n; i++) {
+            if (bar->toplevels[i] == tl) { idx = i; break; }
+        }
+        if (idx >= 0) {
+            taskbar_remove_entry(idx);
+        } else {
+            zwlr_foreign_toplevel_handle_v1_destroy(h);
+        }
+        bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
+        bar_update_render_suppressed();
     }
-    bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
-    bar_update_render_suppressed();
     LOG_INFO("taskbar: toplevel closed, remaining=%d", g_bar.toplevel_n);
 }
 
 static void tl_parent(void *d,
     struct zwlr_foreign_toplevel_handle_v1 *h,
     struct zwlr_foreign_toplevel_handle_v1 *p) {
-    struct BarToplevel *tl = d;
     (void)h;
+    if (is_zwlr_pending(d)) return;
+    struct BarToplevel *tl = d;
     bool has_parent = p != NULL;
     if (tl && tl->has_parent != has_parent) {
         tl->has_parent = has_parent;
@@ -180,35 +220,33 @@ static void mgr_toplevel(void *data,
     struct zwlr_foreign_toplevel_handle_v1 *h) {
     (void)data; (void)mgr;
     struct BarState *bar = &g_bar;
-    if (bar->toplevel_n >= BAR_MAX_TOPLEVELS) {
-        LOG_WARN("taskbar: too many toplevels, ignoring");
+    
+    int idx = -1;
+    for (int i = 0; i < BAR_MAX_PENDING; i++) {
+        if (!bar->zwlr_pending[i].in_use) {
+            idx = i;
+            break;
+        }
+    }
+    
+    if (idx < 0) {
+        LOG_WARN("taskbar: pending queue full, destroying new toplevel");
         zwlr_foreign_toplevel_handle_v1_destroy(h);
         return;
     }
- 
-    int idx = bar->toplevel_n;
-    struct BarToplevel *tl = calloc(1, sizeof(*tl));
-    if (!tl) {
-        LOG_ERR("taskbar: calloc failed for new toplevel");
-        zwlr_foreign_toplevel_handle_v1_destroy(h);
-        return;
-    }
-    tl->zwlr_handle = h;
-    clock_gettime(CLOCK_MONOTONIC, &tl->created);
-    bar->toplevels[idx] = tl;
- 
-    /* Lockstep: if ext already arrived at same position, link it */
-    if (idx < bar->ext_n) {
-        tl->ext_handle = bar->ext_handles[idx];
-        snprintf(tl->identifier, sizeof(tl->identifier), "%s", bar->ext_identifiers[idx]);
-    }
- 
-    bar->toplevel_n++;
-    bar_request_redraw_flags(bar, BAR_DIRTY_TASKBAR);
-    zwlr_foreign_toplevel_handle_v1_add_listener(h, &tl_listener, tl);
-    bar_update_render_suppressed();
- 
-    LOG_INFO("taskbar: new toplevel idx=%d (total=%d)", idx, bar->toplevel_n);
+    
+    PendingEntry *pe = &bar->zwlr_pending[idx];
+    pe->in_use = true;
+    pe->done = false;
+    pe->handle = h;
+    pe->app_id[0] = '\0';
+    pe->title[0] = '\0';
+    pe->identifier[0] = '\0';
+    pe->activated = false;
+    pe->fullscreen = false;
+    pe->seq_num = ++g_pending_seq;
+    
+    zwlr_foreign_toplevel_handle_v1_add_listener(h, &tl_listener, pe);
 }
 
 static void mgr_finished(void *d,
@@ -221,72 +259,141 @@ const struct zwlr_foreign_toplevel_manager_v1_listener bar_mgr_listener = {
 
 /* ------------------------------------------------------------------ */
 /* ext-foreign-toplevel handlers                                        */
-/* ------------------------------------------------------------------ */
-
-static void ext_identifier(void *data,
+/* ------------------------------------------------------------------ */static void ext_identifier(void *data,
     struct ext_foreign_toplevel_handle_v1 *handle,
     const char *id) {
     (void)handle;
-    struct BarState *bar = &g_bar;
-
-    /* Find which ext slot this is */
-    int ext_idx = -1;
-    for (int i = 0; i < bar->ext_n; i++) {
-        if (bar->ext_handles[i] == handle) { ext_idx = i; break; }
+    if (is_ext_pending(data)) {
+        PendingEntry *pe = data;
+        snprintf(pe->identifier, sizeof(pe->identifier), "%s", id ? id : "");
     }
-    if (ext_idx < 0) return;
+}
 
-    snprintf(bar->ext_identifiers[ext_idx], 33, "%s", id ? id : "");
+static void ext_title(void *data,
+    struct ext_foreign_toplevel_handle_v1 *h, const char *t) {
+    (void)h;
+    if (is_ext_pending(data)) {
+        PendingEntry *pe = data;
+        snprintf(pe->title, sizeof(pe->title), "%s", t ? t : "");
+    }
+}
 
-    /* Link to zwlr at same position if it exists */
-    if (ext_idx < bar->toplevel_n) {
-        struct BarToplevel *tl = bar->toplevels[ext_idx];
-        if (tl) {
-            tl->ext_handle = handle;
-            snprintf(tl->identifier, sizeof(tl->identifier), "%s", id ? id : "");
-            LOG_INFO("taskbar: ext identifier=%s linked to zwlr idx=%d", id ? id : "", ext_idx);
+static void ext_app_id(void *data,
+    struct ext_foreign_toplevel_handle_v1 *h, const char *a) {
+    (void)h;
+    if (is_ext_pending(data)) {
+        PendingEntry *pe = data;
+        snprintf(pe->app_id, sizeof(pe->app_id), "%s", a ? a : "");
+    }
+}
+
+static void try_match_pending(void) {
+    struct BarState *bar = &g_bar;
+    while (1) {
+        PendingEntry *zwlr_pe = NULL;
+        for (int i = 0; i < BAR_MAX_PENDING; i++) {
+            PendingEntry *pe = &bar->zwlr_pending[i];
+            if (!pe->in_use || !pe->done) continue;
+            if (pe->app_id[0] == '\0' && pe->title[0] == '\0') continue;
+            if (!zwlr_pe || pe->seq_num < zwlr_pe->seq_num) {
+                zwlr_pe = pe;
+            }
+        }
+        if (!zwlr_pe) break;
+
+        PendingEntry *best_ext_pe = NULL;
+        for (int j = 0; j < BAR_MAX_PENDING; j++) {
+            PendingEntry *ext_pe = &bar->ext_pending[j];
+            if (!ext_pe->in_use || !ext_pe->done) continue;
+
+            if (strcmp(zwlr_pe->app_id, ext_pe->app_id) == 0 &&
+                strcmp(zwlr_pe->title, ext_pe->title) == 0) {
+                if (!best_ext_pe || ext_pe->seq_num < best_ext_pe->seq_num) {
+                    best_ext_pe = ext_pe;
+                }
+            }
+        }
+
+        if (best_ext_pe) {
+            if (bar->toplevel_n >= BAR_MAX_TOPLEVELS) {
+                LOG_WARN("taskbar: too many toplevels, cannot add matched entry");
+                zwlr_pe->in_use = false;
+                best_ext_pe->in_use = false;
+                continue;
+            }
+
+            struct BarToplevel *tl = calloc(1, sizeof(*tl));
+            if (!tl) {
+                LOG_ERR("taskbar: calloc failed for matched toplevel");
+                zwlr_pe->in_use = false;
+                best_ext_pe->in_use = false;
+                continue;
+            }
+
+            tl->zwlr_handle = zwlr_pe->handle;
+            tl->ext_handle = best_ext_pe->handle;
+            snprintf(tl->identifier, sizeof(tl->identifier), "%s", best_ext_pe->identifier);
+            snprintf(tl->title, sizeof(tl->title), "%s", zwlr_pe->title);
+            snprintf(tl->app_id, sizeof(tl->app_id), "%s", zwlr_pe->app_id);
+            tl->activated = zwlr_pe->activated;
+            tl->fullscreen = zwlr_pe->fullscreen;
+            clock_gettime(CLOCK_MONOTONIC, &tl->created);
+
+            if (tl->app_id[0]) {
+                tl->icon_surface = bar_icon_get(tl->app_id, 18);
+            }
+
+            bar->toplevels[bar->toplevel_n] = tl;
+            bar->toplevel_n++;
+
+            zwlr_foreign_toplevel_handle_v1_set_user_data(tl->zwlr_handle, tl);
+            ext_foreign_toplevel_handle_v1_set_user_data(tl->ext_handle, tl);
+
+            zwlr_pe->in_use = false;
+            best_ext_pe->in_use = false;
+
+            bar_request_redraw_flags(bar, BAR_DIRTY_TASKBAR);
+            bar_update_render_suppressed();
+
+            LOG_INFO("taskbar: matched app_id=%s title=%s identifier=%s act=%d fs=%d",
+                tl->app_id, tl->title, tl->identifier, tl->activated, tl->fullscreen);
+        } else {
+            break;
         }
     }
 }
 
-static void ext_title(void *d,
-    struct ext_foreign_toplevel_handle_v1 *h, const char *t) {
-    (void)d; (void)h; (void)t;
-}
-
-static void ext_app_id(void *d,
-    struct ext_foreign_toplevel_handle_v1 *h, const char *a) {
-    (void)d; (void)h; (void)a;
-}
-
-static void ext_done(void *d,
+static void ext_done(void *data,
     struct ext_foreign_toplevel_handle_v1 *h) {
-    (void)d; (void)h;
+    (void)h;
+    if (is_ext_pending(data)) {
+        PendingEntry *pe = data;
+        pe->done = true;
+        try_match_pending();
+    }
 }
 
 static void ext_closed(void *data,
     struct ext_foreign_toplevel_handle_v1 *handle) {
     struct BarState *bar = &g_bar;
-    int ext_idx = -1;
-    for (int i = 0; i < bar->ext_n; i++) {
-        if (bar->ext_handles[i] == handle) { ext_idx = i; break; }
+    if (is_ext_pending(data)) {
+        PendingEntry *pe = data;
+        pe->in_use = false;
+        ext_foreign_toplevel_handle_v1_destroy(handle);
+    } else {
+        struct BarToplevel *tl = NULL;
+        for (int i = 0; i < bar->toplevel_n; i++) {
+            if (bar->toplevels[i]->ext_handle == handle) {
+                tl = bar->toplevels[i];
+                break;
+            }
+        }
+        if (tl) {
+            tl->ext_handle = NULL;
+            tl->identifier[0] = '\0';
+        }
+        ext_foreign_toplevel_handle_v1_destroy(handle);
     }
-    if (ext_idx < 0) return;
-
-    /* Shift ext arrays */
-    int rem = bar->ext_n - ext_idx - 1;
-    if (rem > 0) {
-        memmove(&bar->ext_handles[ext_idx],
-                &bar->ext_handles[ext_idx+1],
-                (size_t)rem * sizeof(bar->ext_handles[0]));
-        memmove(&bar->ext_identifiers[ext_idx],
-                &bar->ext_identifiers[ext_idx+1],
-                (size_t)rem * sizeof(bar->ext_identifiers[0]));
-    }
-    bar->ext_n--;
-
-    ext_foreign_toplevel_handle_v1_destroy(handle);
-    (void)data;
 }
 
 static const struct ext_foreign_toplevel_handle_v1_listener ext_handle_listener = {
@@ -302,14 +409,33 @@ static void ext_list_toplevel(void *data,
     struct ext_foreign_toplevel_handle_v1 *handle) {
     (void)data; (void)list;
     struct BarState *bar = &g_bar;
-    if (bar->ext_n >= BAR_MAX_TOPLEVELS) return;
 
-    int idx = bar->ext_n;
-    bar->ext_handles[idx]        = handle;
-    bar->ext_identifiers[idx][0] = '\0';
-    bar->ext_n++;
+    int idx = -1;
+    for (int i = 0; i < BAR_MAX_PENDING; i++) {
+        if (!bar->ext_pending[i].in_use) {
+            idx = i;
+            break;
+        }
+    }
 
-    ext_foreign_toplevel_handle_v1_add_listener(handle, &ext_handle_listener, handle);
+    if (idx < 0) {
+        LOG_WARN("taskbar: pending queue full, destroying new ext toplevel");
+        ext_foreign_toplevel_handle_v1_destroy(handle);
+        return;
+    }
+
+    PendingEntry *pe = &bar->ext_pending[idx];
+    pe->in_use = true;
+    pe->done = false;
+    pe->handle = handle;
+    pe->app_id[0] = '\0';
+    pe->title[0] = '\0';
+    pe->identifier[0] = '\0';
+    pe->activated = false;
+    pe->fullscreen = false;
+    pe->seq_num = ++g_pending_seq;
+
+    ext_foreign_toplevel_handle_v1_add_listener(handle, &ext_handle_listener, pe);
 }
 
 static void ext_list_finished(void *d,
@@ -417,26 +543,6 @@ static bool wm_set_contains(const char *id) {
     return false;
 }
 
-/* Remove também o lado ext do par, para manter os arrays em lockstep. */
-static void taskbar_remove_ext_by_identifier(const char *id) {
-    struct BarState *bar = &g_bar;
-    for (int i = 0; i < bar->ext_n; i++) {
-        if (strcmp(bar->ext_identifiers[i], id) != 0) continue;
-        if (bar->ext_handles[i]) {
-            ext_foreign_toplevel_handle_v1_destroy(bar->ext_handles[i]);
-        }
-        int rem = bar->ext_n - i - 1;
-        if (rem > 0) {
-            memmove(&bar->ext_handles[i], &bar->ext_handles[i+1],
-                    (size_t)rem * sizeof(bar->ext_handles[0]));
-            memmove(&bar->ext_identifiers[i], &bar->ext_identifiers[i+1],
-                    (size_t)rem * sizeof(bar->ext_identifiers[0]));
-        }
-        bar->ext_n--;
-        return;
-    }
-}
-
 void bar_taskbar_prune_ghosts(void) {
     struct BarState *bar = &g_bar;
     if (!bar->wm_set_valid) return;
@@ -457,10 +563,7 @@ void bar_taskbar_prune_ghosts(void) {
 
         LOG_WARN("taskbar: removendo fantasma \"%s\" app_id=%s id=%s (desconhecido pelo WM)",
             tl->title, tl->app_id, tl->identifier);
-        char id[33];
-        snprintf(id, sizeof(id), "%s", tl->identifier);
         taskbar_remove_entry(i);
-        taskbar_remove_ext_by_identifier(id);
         removed = true;
         i--;
     }

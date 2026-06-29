@@ -17,6 +17,11 @@ void bar_icon_draw(cairo_t *cr, cairo_surface_t *icon, double x, double y, int s
  * Do NOT free; valid as long as the original `name` string exists. */
 const char *bar_icon_nf_glyph(const char *name);
 
+void bar_icons_init(void);
+int  bar_icons_get_notify_fd(void);
+void bar_icons_notify_done(void);
+
 void bar_icons_cleanup(void);
 
 #endif /* BAR_ICONS_H */
+
