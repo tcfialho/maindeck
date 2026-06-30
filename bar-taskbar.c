@@ -289,14 +289,18 @@ static void ext_app_id(void *data,
 
 static void try_match_pending(void) {
     struct BarState *bar = &g_bar;
+    bool tried[BAR_MAX_PENDING] = {0};
     while (1) {
         PendingEntry *zwlr_pe = NULL;
+        int zwlr_idx = -1;
         for (int i = 0; i < BAR_MAX_PENDING; i++) {
+            if (tried[i]) continue;
             PendingEntry *pe = &bar->zwlr_pending[i];
             if (!pe->in_use || !pe->done) continue;
             if (pe->app_id[0] == '\0' && pe->title[0] == '\0') continue;
             if (!zwlr_pe || pe->seq_num < zwlr_pe->seq_num) {
                 zwlr_pe = pe;
+                zwlr_idx = i;
             }
         }
         if (!zwlr_pe) break;
@@ -358,7 +362,7 @@ static void try_match_pending(void) {
             LOG_INFO("taskbar: matched app_id=%s title=%s identifier=%s act=%d fs=%d",
                 tl->app_id, tl->title, tl->identifier, tl->activated, tl->fullscreen);
         } else {
-            break;
+            tried[zwlr_idx] = true;
         }
     }
 }
