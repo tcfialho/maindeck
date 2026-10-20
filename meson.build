@@ -85,6 +85,7 @@ exe = executable(
   'maindeck-wm',
   'wm-ipc.c',
   'wm-log.c',
+  'diagnostics.c',
   'wm-layout.c',
   'wm-input.c',
   'wm-libinput.c',
@@ -112,6 +113,7 @@ cairo_dep  = dependency('cairo')
 pangocairo = dependency('pangocairo')
 librsvg_dep = dependency('librsvg-2.0')
 dbus       = dependency('dbus-1')
+threads_dep = dependency('threads')
 
 
 bar_protocols = wl_mod.scan_xml(
@@ -124,6 +126,7 @@ bar_protocols = wl_mod.scan_xml(
 executable(
   'maindeck-bar',
   'bar-main.c',
+  'diagnostics.c',
   'bar-surface.c',
   'bar-render.c',
   'bar-taskbar.c',
@@ -143,6 +146,7 @@ executable(
     cairo_dep,
     pangocairo,
     librsvg_dep,
+    threads_dep,
     dbus,
   ],
   include_directories: include_directories('vendor'),
@@ -152,6 +156,7 @@ executable(
 executable(
   'maindeck-menu',
   'maindeck-menu.c',
+  'diagnostics.c',
   'bar-icons.c',
   bar_protocols,
   tablet_protocol,
@@ -162,6 +167,7 @@ executable(
     cairo_dep,
     pangocairo,
     librsvg_dep,
+    threads_dep,
   ],
   install: true,
 )
@@ -175,3 +181,5 @@ executable(
   ],
   install: false,
 )
+
+install_data('tools/maindeck-diagnostics', install_dir: get_option('bindir'), install_mode: 'rwxr-xr-x')

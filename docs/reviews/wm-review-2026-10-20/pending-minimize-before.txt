@@ -1,0 +1,12 @@
+PASS: pending-parent-close
+PASS: floating-child-visible
+PASS: pending-float-focus
+PASS: taskbar-from-floating
+PASS: minimize-child
+PASS: orphan-after-minimized
+tests/run-state-regressions.sh: line 12: 142010 Aborted                    ASAN_OPTIONS=detect_leaks=0 "$work_dir/state-tests" "$test_case" > "$work_dir/$test_case.log" 2>&1
+FAIL: pending-minimize
+state-tests: tests/wm-state-regressions.c:107: main: Assertion `w->pending && wl_list_empty(&wm.windows)' failed.
+PASS: node-released
+PASS: output-removed-fullscreen
+PASS: cycle-rejected

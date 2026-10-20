@@ -34,7 +34,7 @@ usage() {
 Usage: tools/install-maindeck.sh [options]
 
 Options:
-  --test        Run tools/test-transient-behavior.sh before deploy.
+  --test        Run state, rendering and headless integration tests before deploy.
   --no-restart  Build/install only; do not restart running processes.
   --dry-run     Print actions without executing them.
   -h, --help    Show this help.
@@ -201,7 +201,11 @@ build() {
 
 run_tests() {
 	if [ "$RUN_TESTS" -eq 1 ]; then
-		run "$REPO_DIR/tools/test-transient-behavior.sh"
+		run bash "$REPO_DIR/tests/run-state-regressions.sh"
+		run bash "$REPO_DIR/tests/run-performance-regressions.sh"
+		run python3 "$REPO_DIR/tools/test-window-classification.py"
+		run python3 "$REPO_DIR/tools/test-wm-lifecycle.py"
+		run python3 "$REPO_DIR/tools/test-desktop-performance.py"
 	fi
 }
 
@@ -218,6 +222,7 @@ install_binaries() {
 		run install -m755 "$src" "$tmp"
 		run mv -f "$tmp" "$dst"
 	done
+	run install -m755 "$REPO_DIR/tools/maindeck-diagnostics" "$INSTALL_DIR/maindeck-diagnostics"
 }
 
 restart_processes() {

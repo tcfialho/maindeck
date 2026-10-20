@@ -131,6 +131,8 @@ struct BarState {
     int                  shm_fd;
     int                  buf_width, buf_height, buf_stride, buf_size;
     int                  cur_buf;
+    int                  last_buf;
+    bool                 buffer_busy[2];
 
     /* Toplevels */
     struct BarToplevel *toplevels[BAR_MAX_TOPLEVELS];

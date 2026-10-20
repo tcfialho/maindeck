@@ -12,6 +12,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/timerfd.h>
+#include <sys/inotify.h>
 #include <sys/resource.h>
 #include <malloc.h>
 #include <fcntl.h>
@@ -19,6 +20,8 @@
 #include <poll.h>
 #include <ctype.h>
 #include <time.h>
+#include <spawn.h>
+#include <signal.h>
 
 #include <stdint.h>
 
@@ -33,6 +36,7 @@
 #include "viewporter-client-protocol.h"
 #include "cursor-shape-v1-client-protocol.h"
 #include "bar-icons.h"
+#include "diagnostics.h"
 
 #define MENU_WIDTH 320
 #define MENU_HEIGHT 480
@@ -41,7 +45,7 @@
 #define SOCKET_NAME "maindeck-menu.sock"
 #define FOCUS_DELAY_MS 80
 
-#define LOG_INFO(...) do { fprintf(stdout, "[menu:info] "); fprintf(stdout, __VA_ARGS__); fprintf(stdout, "\n"); } while(0)
+#define LOG_INFO(...) do { if (md_diagnostic_level() >= 2) { fprintf(stdout, "[menu:info] "); fprintf(stdout, __VA_ARGS__); fprintf(stdout, "\n"); } } while(0)
 #define LOG_ERR(...) do { fprintf(stderr, "[menu:err] "); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } while(0)
 
 // Estutura de aplicativo (.desktop)
@@ -143,6 +147,32 @@ typedef struct {
 } AppState;
 
 static AppState g_app;
+static bool menu_visible = true;
+static bool menu_hide_pending;
+static void menu_hide(void);
+static void menu_show(void);
+static uint64_t catalog_fingerprint;
+static int catalog_watch_fd = -1;
+static bool catalog_dirty;
+static void catalog_watch(char **dirs, size_t n) {
+    if (catalog_watch_fd < 0) catalog_watch_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (catalog_watch_fd < 0) return;
+    for (size_t i = 0; i < n; i++) inotify_add_watch(catalog_watch_fd, dirs[i],
+        IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_CREATE | IN_DELETE | IN_DELETE_SELF | IN_ATTRIB);
+}
+static void catalog_collect_changes(void) {
+    if (catalog_watch_fd < 0) return;
+    char events[4096];
+    while (read(catalog_watch_fd, events, sizeof(events)) > 0) catalog_dirty = true;
+}
+static uint64_t catalog_hash(char **dirs, int64_t *mtimes, size_t n) {
+    uint64_t hash = 1469598103934665603ULL;
+    for (size_t i = 0; i < n; i++) {
+        for (const unsigned char *p = (const unsigned char *)dirs[i]; *p; p++) hash = (hash ^ *p) * 1099511628211ULL;
+        hash = (hash ^ (uint64_t)mtimes[i]) * 1099511628211ULL;
+    }
+    return hash;
+}
 
 // --- Helper: Shared memory allocation ---
 static int create_shm_file(size_t size) {
@@ -493,7 +523,7 @@ get_mtimes:
     for (size_t i = 0; i < count; i++) {
         struct stat st;
         if (stat(dirs[i], &st) == 0) {
-            mtimes[i] = (int64_t)st.st_mtime;
+            mtimes[i] = (int64_t)st.st_mtim.tv_sec * 1000000000 + st.st_mtim.tv_nsec;
         } else {
             mtimes[i] = -1;
         }
@@ -845,33 +875,32 @@ static void filter_apps(void) {
 
 // --- Spawn de Aplicativo ---
 static void spawn_app(App *app) {
-    pid_t pid = fork();
-    if (pid == 0) {
-        setsid();
-        // fecha fds herdados por segurança
-        for (int i = 3; i < 256; i++) close(i);
-        // redireciona 0/1/2
-        int devnull = open("/dev/null", O_RDWR);
-        if (devnull >= 0) {
-            dup2(devnull, 0);
-            dup2(devnull, 1);
-            dup2(devnull, 2);
-            close(devnull);
-        }
-
-        if (app->terminal) {
-            const char *term = getenv("TERMINAL");
-            if (!term) term = "kitty"; // fallback
-            char *cmd;
-            if (asprintf(&cmd, "%s -e %s", term, app->exec) >= 0) {
-                execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
-                free(cmd);
-            }
-        } else {
-            execl("/bin/sh", "sh", "-c", app->exec, (char *)NULL);
-        }
-        _exit(127);
+    // The icon loader is threaded: do not run malloc/stdio after fork.
+    char *terminal_command = NULL;
+    const char *command = app->exec;
+    if (app->terminal) {
+        const char *term = getenv("TERMINAL");
+        if (!term) term = "kitty";
+        if (asprintf(&terminal_command, "%s -e %s", term, app->exec) < 0) return;
+        command = terminal_command;
     }
+    posix_spawn_file_actions_t actions;
+    posix_spawnattr_t attr;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addclosefrom_np(&actions, 3);
+    posix_spawnattr_init(&attr);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
+    char *args[] = { "sh", "-c", (char *)command, NULL };
+    extern char **environ;
+    pid_t pid;
+    int err = posix_spawn(&pid, "/bin/sh", &actions, &attr, args, environ);
+    if (err) LOG_ERR("cannot launch %s: %s", app->name, strerror(err));
+    posix_spawnattr_destroy(&attr);
+    posix_spawn_file_actions_destroy(&actions);
+    free(terminal_command);
 }
 
 // --- IPC: Instância única e Toggle ---
@@ -902,7 +931,7 @@ static bool setup_ipc(bool is_mouse) {
         int temp_fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
         bool sent = false;
         if (temp_fd >= 0) {
-            const char *cmd = is_mouse ? "M" : "C";
+            const char *cmd = is_mouse ? "M" : "T";
             if (sendto(temp_fd, cmd, 1, 0, (struct sockaddr *)&addr, sizeof(addr)) >= 0) {
                 sent = true;
             }
@@ -1137,7 +1166,7 @@ static bool render(void) {
             cairo_fill(cr);
         }
 
-        // Carrega o ícone inline (síncrono) e memoiza na primeira renderização
+        // Queue missing icons; completion wakes the loop to replace placeholders.
         if (a->icon && !a->icon_surface) {
             cairo_surface_t *raw_surf = bar_icon_get(a->icon, 18);
             if (raw_surf) {
@@ -1412,13 +1441,13 @@ static void arm_repeat(AppState *app, uint32_t keycode) {
 // Retorna true se a tecla é REPETÍVEL (deve continuar disparando enquanto pressionada).
 // Não-repetíveis: Enter/KP_Enter/Escape (encerram a interação).
 static bool process_key(AppState *app, uint32_t keycode) {
-    if (!app->xkb_state) return false;
+    if (!menu_visible || menu_hide_pending || !app->xkb_state) return false;
 
     // keycode do Wayland = keycode do kernel (keycode) + 8
     xkb_keysym_t sym = xkb_state_key_get_one_sym(app->xkb_state, keycode + 8);
 
     if (sym == XKB_KEY_Escape) {
-        app->running = false;
+        menu_hide_pending = true;
         return false;
     }
 
@@ -1428,7 +1457,7 @@ static bool process_key(AppState *app, uint32_t keycode) {
             LOG_INFO("Executando aplicativo: %s (%s)", selected_app->name, selected_app->exec);
             spawn_app(selected_app);
         }
-        app->running = false;
+        menu_hide_pending = true;
         return false;
     }
 
@@ -1667,6 +1696,7 @@ static void pointer_motion(void *d, struct wl_pointer *p, uint32_t t, wl_fixed_t
     }
 }
 static void pointer_button(void *d, struct wl_pointer *p, uint32_t s, uint32_t t, uint32_t btn, uint32_t state) {
+    if (!menu_visible || menu_hide_pending) return;
     (void)d; (void)p; (void)s; (void)t;
     AppState *app = &g_app;
 
@@ -1714,7 +1744,7 @@ static void pointer_button(void *d, struct wl_pointer *p, uint32_t s, uint32_t t
                             App *selected_app = &app->apps[app->filtered[clicked_idx]];
                             LOG_INFO("Mouse: clicou no aplicativo %s (%s)", selected_app->name, selected_app->exec);
                             spawn_app(selected_app);
-                            app->running = false;
+                            menu_hide_pending = true;
                         }
                     }
                 }
@@ -1853,10 +1883,17 @@ static void menu_layer_configure(void *data, struct zwlr_layer_surface_v1 *surf,
     int new_w = w > 0 ? (int)w : MENU_WIDTH;
     int new_h = h > 0 ? (int)h : MENU_HEIGHT;
 
-    if (!app->configured || new_w != app->menu_w || new_h != app->menu_h) {
+    if (!app->shm_data || new_w != app->menu_w || new_h != app->menu_h) {
         app->menu_w = new_w;
         app->menu_h = new_h;
 
+        // Cairo contexts must not retain the old SHM mapping after resize.
+        for (int i = 0; i < 2; i++) {
+            if (s_lay[i]) { g_object_unref(s_lay[i]); s_lay[i] = NULL; }
+            if (s_cr[i]) { cairo_destroy(s_cr[i]); s_cr[i] = NULL; }
+            if (s_cs[i]) { cairo_surface_destroy(s_cs[i]); s_cs[i] = NULL; }
+        }
+        s_cs_w = s_cs_h = 0;
         // Desaloca buffers antigos se redimensionado
         if (app->shm_data) {
             munmap(app->shm_data, app->buf_size * 2);
@@ -1868,15 +1905,15 @@ static void menu_layer_configure(void *data, struct zwlr_layer_surface_v1 *surf,
         }
 
         create_menu_buffers(new_w, new_h);
-        app->configured = true;
-        app->dirty = true;
     }
+    app->configured = true;
+    app->dirty = true;
 }
 
 static void menu_layer_closed(void *data, struct zwlr_layer_surface_v1 *surf) {
     (void)data; (void)surf;
     LOG_INFO("menu: layer surface closed");
-    g_app.running = false;
+    menu_hide_pending = true;
 }
 
 static const struct zwlr_layer_surface_v1_listener menu_layer_listener = {
@@ -1908,8 +1945,66 @@ static void create_menu_surface(void) {
     wl_surface_commit(app->menu_surf);
 }
 
+static void menu_hide(void) {
+    AppState *app = &g_app;
+    menu_hide_pending = false;
+    if (!menu_visible) return;
+    menu_visible = false;
+    app->configured = false;
+    app->close_pending = false;
+    app->menu_has_kbd_focus = false;
+    disarm_repeat(app);
+    struct itimerspec stop = {0};
+    if (app->mouse_repeat_timer_fd >= 0) timerfd_settime(app->mouse_repeat_timer_fd, 0, &stop, NULL);
+    app->mouse_repeat_action = 0;
+    app->ptr_surface = NULL;
+    if (app->menu_layer) { zwlr_layer_surface_v1_destroy(app->menu_layer); app->menu_layer = NULL; }
+    if (app->menu_surf) { wl_surface_destroy(app->menu_surf); app->menu_surf = NULL; }
+    LOG_INFO("menu hidden (resident)");
+}
+
+static void menu_show(void) {
+    if (menu_visible) return;
+    catalog_collect_changes();
+    char **dirs = NULL;
+    int64_t *mtimes = NULL;
+    size_t n = 0;
+    build_watch_dirs(&dirs, &mtimes, &n);
+    uint64_t fingerprint = catalog_hash(dirs, mtimes, n);
+    catalog_watch(dirs, n);
+    if (catalog_dirty || fingerprint != catalog_fingerprint) {
+        bar_icons_retry_missing();
+        for (size_t i = 0; i < g_app.napps; i++) {
+            free(g_app.apps[i].id); free(g_app.apps[i].name);
+            free(g_app.apps[i].exec); free(g_app.apps[i].icon);
+            if (g_app.apps[i].icon_surface) cairo_surface_destroy(g_app.apps[i].icon_surface);
+        }
+        free(g_app.apps); g_app.apps = NULL; g_app.napps = g_app.capacity = 0;
+        load_all_apps_from_list(dirs, n);
+        free(g_app.filtered); free(g_app.scores);
+        g_app.filtered = calloc(g_app.napps + 1, sizeof(int));
+        g_app.scores = calloc(g_app.napps + 1, sizeof(int));
+        if (!g_app.filtered || !g_app.scores) { LOG_ERR("cannot refresh app catalog"); exit(1); }
+        catalog_fingerprint = fingerprint;
+        catalog_dirty = false;
+        LOG_INFO("application catalog refreshed");
+    }
+    free_watch_dirs(dirs, mtimes, n);
+    g_app.query[0] = 0; g_app.query_len = 0;
+    g_app.sel = g_app.scroll_offset = 0;
+    g_app.focus_zone = ZONE_SEARCH;
+    g_app.hover_scroll_up = g_app.hover_scroll_down = false;
+    g_app.close_pending = menu_hide_pending = false;
+    if (g_app.xkb_compose_state) xkb_compose_state_reset(g_app.xkb_compose_state);
+    filter_apps();
+    menu_visible = true;
+    create_menu_surface();
+    LOG_INFO("menu shown (resident)");
+}
+
 // --- Main ---
 int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
 #ifdef __GLIBC__
     mallopt(M_ARENA_MAX, 1);
 #endif
@@ -1917,6 +2012,7 @@ int main(int argc, char **argv) {
     setrlimit(RLIMIT_STACK, &stk);
 
     srand((unsigned int)time(NULL));
+    signal(SIGCHLD, SIG_IGN);
 
     bool is_mouse = false;
     for (int i = 1; i < argc; i++) {
@@ -1942,6 +2038,7 @@ int main(int argc, char **argv) {
 
     LOG_INFO("Inicializando maindeck-menu...");
 
+    bar_icons_init();
     // 2. Carrega lista de aplicativos
     char **watch_dirs = NULL;
     int64_t *watch_mtimes = NULL;
@@ -1964,6 +2061,8 @@ int main(int argc, char **argv) {
             write_cache(cache_path, watch_dirs, watch_mtimes, watch_n);
         }
     }
+    catalog_fingerprint = catalog_hash(watch_dirs, watch_mtimes, watch_n);
+    catalog_watch(watch_dirs, watch_n);
     free_watch_dirs(watch_dirs, watch_mtimes, watch_n);
     LOG_INFO("Carregados %zu aplicativos", g_app.napps);
 
@@ -2048,22 +2147,24 @@ int main(int argc, char **argv) {
                          + (g_app.close_deadline.tv_nsec - now.tv_nsec) / 1000000L;
             if (diff_ms <= 0) {
                 LOG_INFO("Timer de fechamento expirou. Fechando.");
-                g_app.running = false;
+                menu_hide();
                 wl_display_cancel_read(g_app.display);
-                break;
+                continue;
             }
             timeout = (int)diff_ms;
         }
 
         // fd negativo (repeat_timer_fd == -1 se timerfd_create falhou) é ignorado pelo poll.
-        struct pollfd fds[4] = {
+        struct pollfd fds[6] = {
             { .fd = wl_fd, .events = POLLIN },
             { .fd = g_app.sock_fd, .events = POLLIN },
             { .fd = g_app.repeat_timer_fd, .events = POLLIN },
-            { .fd = g_app.mouse_repeat_timer_fd, .events = POLLIN }
+            { .fd = g_app.mouse_repeat_timer_fd, .events = POLLIN },
+            { .fd = bar_icons_get_notify_fd(), .events = POLLIN },
+            { .fd = catalog_watch_fd, .events = POLLIN }
         };
 
-        int ret = poll(fds, 4, timeout);
+        int ret = poll(fds, 6, timeout);
         if (ret < 0) {
             wl_display_cancel_read(g_app.display);
             if (errno == EINTR) continue;
@@ -2074,7 +2175,7 @@ int main(int argc, char **argv) {
             wl_display_cancel_read(g_app.display);
             if (g_app.close_pending) {
                 LOG_INFO("Timer de fechamento expirou no poll. Fechando.");
-                g_app.running = false;
+                menu_hide();
             }
             continue;
         }
@@ -2094,14 +2195,15 @@ int main(int argc, char **argv) {
             if (r > 0) {
                 buf[r] = '\0';
                 LOG_INFO("IPC: Comando %s recebido no socket", buf);
-                if (buf[0] == 'M') {
-                    if (g_app.close_pending) {
-                        LOG_INFO("Cancelando fechamento pendente devido a clique no Iniciar.");
-                        g_app.close_pending = false;
-                        g_app.dirty = true;
-                    }
-                } else {
+                if (buf[0] == 'Q') {
                     g_app.running = false;
+                } else if (buf[0] == 'M') {
+                    if (!menu_visible) menu_show();
+                    else { g_app.close_pending = false; g_app.dirty = true; }
+                } else if (buf[0] == 'T') {
+                    if (menu_visible) menu_hide(); else menu_show();
+                } else if (buf[0] == 'C') {
+                    menu_hide();
                 }
             }
         }
@@ -2116,7 +2218,7 @@ int main(int argc, char **argv) {
             // encerrado ou tirado o foco — o check de running no topo só vale no
             // próximo ciclo. Reprocessa a tecla UMA vez por ciclo (evita avalanche
             // se o loop atrasou); o it_interval do timerfd mantém a cadência.
-            if (g_app.running && !g_app.close_pending && g_app.repeat_keycode != 0) {
+            if (g_app.running && menu_visible && !menu_hide_pending && !g_app.close_pending && g_app.repeat_keycode != 0) {
                 bool still_rep = process_key(&g_app, g_app.repeat_keycode);
                 if (!still_rep) {
                     disarm_repeat(&g_app);
@@ -2129,7 +2231,7 @@ int main(int argc, char **argv) {
             uint64_t expirations;
             ssize_t rd = read(g_app.mouse_repeat_timer_fd, &expirations, sizeof(expirations));
             (void)rd;
-            if (g_app.running && !g_app.close_pending) {
+            if (g_app.running && menu_visible && !menu_hide_pending && !g_app.close_pending) {
                 if (g_app.mouse_repeat_action == 1) {
                     // Scroll Up
                     if (g_app.focus_zone == ZONE_LIST) {
@@ -2152,8 +2254,14 @@ int main(int argc, char **argv) {
             }
         }
 
+        if (fds[4].revents & POLLIN) {
+            bar_icons_notify_done();
+            if (menu_visible) g_app.dirty = true;
+        }
+        if (fds[5].revents & POLLIN) catalog_collect_changes();
+        if (menu_hide_pending) menu_hide();
         // Desenha se mudou algo
-        if (g_app.dirty && g_app.configured) {
+        if (menu_visible && g_app.dirty && g_app.configured) {
             if (render()) {
                 g_app.dirty = false;
             }
@@ -2164,6 +2272,7 @@ int main(int argc, char **argv) {
 
     g_app.running = false;
 
+    if (catalog_watch_fd >= 0) close(catalog_watch_fd);
     if (g_app.focus_timer_fd >= 0) close(g_app.focus_timer_fd);
     if (g_app.repeat_timer_fd >= 0) close(g_app.repeat_timer_fd);
     if (g_app.mouse_repeat_timer_fd >= 0) close(g_app.mouse_repeat_timer_fd);

@@ -8,6 +8,12 @@ from gi.repository import Gtk, Gdk, GLib
 # Evita bufferização no stdout para sincronização em tempo real com o test runner
 sys.stdout.reconfigure(line_buffering=True)
 
+def observe(window):
+    if '--events' in sys.argv:
+        window.connect('focus-in-event', lambda w, e: print(f'FOCUS {w.get_title()}') or False)
+        window.connect('size-allocate', lambda w, box: print(f'SIZE {w.get_title()} {box.width}x{box.height}'))
+
+
 class TestApp:
     def __init__(self):
         # Configurar estilos CSS para diferenciar as cores das janelas
@@ -52,6 +58,7 @@ class TestApp:
         box.pack_start(lbl, True, True, 0)
         parent.add(box)
         
+        observe(parent)
         parent.show_all()
         self.windows["TESTPARENT"] = parent
 
@@ -87,6 +94,7 @@ class TestApp:
         box.pack_start(lbl, True, True, 0)
         window.add(box)
         
+        observe(window)
         window.show_all()
         self.windows[name] = window
 

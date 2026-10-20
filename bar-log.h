@@ -1,5 +1,6 @@
 #ifndef BAR_LOG_H
 #define BAR_LOG_H
+#include "diagnostics.h"
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -18,14 +19,7 @@ static inline void bar_log_write(const char *level, const char *fmt, va_list ap)
     fputc('\n', stderr);
 }
 
-static inline int bar_verbose(void) {
-    static int v = -1;
-    if (v < 0) {
-        const char *e = getenv("MAINDECK_LOG");
-        v = (e && (e[0] == 'd' || e[0] == 'D')) ? 1 : 0;
-    }
-    return v;
-}
+static inline int bar_verbose(void) { return md_diagnostic_level() >= 2; }
 
 #define LOG_INFO(...) do { \
     if (bar_verbose()) { \

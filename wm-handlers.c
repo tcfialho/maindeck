@@ -41,12 +41,12 @@ static void wm_notify_bar_send(const char *msg, size_t len) {
 	if (dir == NULL || dir[0] == '\0') return;
 	char path[108];
 	if ((size_t)snprintf(path, sizeof(path), "%s/maindeck-bar.sock", dir) >= sizeof(path)) return;
-	int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+	static int fd = -1;
+	if (fd < 0) fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
 	if (fd < 0) return;
 	struct sockaddr_un addr = { .sun_family = AF_UNIX };
 	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
 	sendto(fd, msg, len, 0, (struct sockaddr *)&addr, sizeof(addr));
-	close(fd);
 }
 
 static void wm_notify_bar_fullscreen(bool on) {
@@ -58,6 +58,9 @@ static void wm_notify_bar_fullscreen(bool on) {
 // usa isso para podar entradas fantasma: toplevels que o compositor ainda
 // anuncia (handles vazados de janelas que morreram antes do map, ex.: zenity
 // do protonfixes) mas que não existem mais para o WM.
+static bool bar_snapshot_requested;
+void wm_request_bar_snapshot(void) { bar_snapshot_requested = true; }
+
 static void wm_notify_bar_windows(void) {
 	char msg[4096];
 	size_t off = (size_t)snprintf(msg, sizeof(msg), "windows");
@@ -84,7 +87,16 @@ static void wm_notify_bar_windows(void) {
 		if (n < 0 || (size_t)n >= sizeof(msg) - off) return; // não envia conjunto truncado
 		off += (size_t)n;
 	}
-	wm_notify_bar_send(msg, off);
+	static char previous[4096];
+	static time_t last_sent;
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	if (bar_snapshot_requested || strcmp(previous, msg) != 0 || now.tv_sec - last_sent >= 5) {
+		wm_notify_bar_send(msg, off);
+		bar_snapshot_requested = false;
+		memcpy(previous, msg, off + 1);
+		last_sent = now.tv_sec;
+	}
 }
 
 static void clear_loading_notification(void) {
@@ -171,6 +183,17 @@ static const struct river_layer_shell_output_v1_listener layer_shell_output_list
 
 void output_maybe_destroy(struct Output *output) {
 	if (!output->removed) return;
+	// Never marshal a reference to an output object after destroying its proxy.
+	struct wl_list *lists[] = { &wm.windows, &wm.pending_windows };
+	for (size_t i = 0; i < 2; i++) {
+		struct Window *w;
+		wl_list_for_each(w, lists[i], link) {
+			if (w->fs_output == output->obj) {
+				w->fs_output = NULL;
+				w->applied_fullscreen = false;
+			}
+		}
+	}
 	if (output->shell_output != NULL) {
 		river_layer_shell_output_v1_destroy(output->shell_output);
 		output->shell_output = NULL;
@@ -233,6 +256,8 @@ static void window_handle_dimensions(void *data, struct river_window_v1 *obj, in
 		}
 
 		if (window->parent != NULL && !window->closed && window_is_really_visible(window)) {
+			if (first_dims && root_window(window)->floating)
+				wm.pending_child_focus = window;
 			river_window_manager_v1_manage_dirty(window_manager_v1);
 		}
 		// Primeira dimensão de uma flutuante: ela acabou de virar exibível —
@@ -340,6 +365,49 @@ static void maybe_apply_implicit_parenting_for(struct Window *window, bool title
 	maybe_apply_implicit_parenting();
 }
 
+// Classify only after parent/app_id/hints have arrived. Sharing an app_id
+// does not imply a transient relationship (e.g. two terminal/browser windows).
+static void classify_pending_window(struct Window *window) {
+	wl_list_remove(&window->link); // sai de pending_windows
+	window->pending = false;
+
+	if (window->parent != NULL) {
+		// Parent real chegou no mesmo lote (window_handle_parent guardou sem inserir).
+		wl_list_insert(wm.windows.prev, &window->link); // cauda = filha
+		LOG_EVENT("pending window classified as child (declared parent): \"%s\" parent=\"%s\" app_id=%s",
+		          window->title ? window->title : "",
+		          window->parent->title ? window->parent->title : "",
+		          window->app_id ? window->app_id : "");
+		return;
+	}
+
+	if (window->floating || window->minimized) {
+		wl_list_insert(wm.windows.prev, &window->link);
+		return;
+	}
+
+	// Raiz independente — equivalente ao antigo md_insert_new_window().
+	size_t visible_before = visible_window_count();
+	window->pending_anim = (visible_before == 0)
+		? ANIMATION_INTENT_FADE_OPEN
+		: ANIMATION_INTENT_SLIDE_IN;
+	wl_list_insert(&wm.windows, &window->link); // cabeça = novo MAIN
+	wm.target_index = 0;
+	wm.maximized = false;
+	wm.focus_dirty = true;
+	LOG_EVENT("pending window classified as independent root: \"%s\" app_id=%s visible_before=%zu",
+	          window->title ? window->title : "",
+	          window->app_id ? window->app_id : "",
+	          visible_before);
+}
+
+static void classify_pending_windows(void) {
+	struct Window *window, *tmp;
+	wl_list_for_each_safe(window, tmp, &wm.pending_windows, link) {
+		classify_pending_window(window);
+	}
+}
+
 // steal_focus: true só para a lista manual (comportamento atual preservado).
 // keep_client_size: true quando as dimensões atuais do cliente já são o tamanho desejado.
 static void window_designate_floating(struct Window *window, const char *reason,
@@ -348,7 +416,7 @@ static void window_designate_floating(struct Window *window, const char *reason,
 	window->floating = true;
 	window->autofloat = !steal_focus;
 	window->floating_size_proposed = keep_client_size;
-	move_last(window);
+	if (!window->pending) move_last(window);
 	LOG_EVENT("window designated as floating (%s): app_id=%s title=\"%s\" hint=%dx%d..%dx%d size=%dx%d",
 		reason, window->app_id ? window->app_id : "",
 		window->title ? window->title : "",
@@ -404,6 +472,23 @@ static void window_handle_parent(void *data, struct river_window_v1 *obj, struct
 	(void)obj;
 	struct Window *new_parent = parent ? river_window_v1_get_user_data(parent) : NULL;
 	if (new_parent == window) new_parent = NULL; // Prevent self-parenting
+	// STAGING: janela ainda em wm.pending_windows — só grava o parent real que
+	// chegou neste lote. A classificação completa (insert como filha/root) acontece
+	// em classify_pending_window no próximo manage_start. move_last/
+	// md_insert_new_window (logo abaixo) pressupõem pertencer a wm.windows.
+	if (window->pending) {
+		// Virando filha declarada (parent != NULL): aplica o MESMO reset do caminho
+		// não-pending abaixo (floating/autofloat/implicit/transient zerados) — garante
+		// consistência caso a config-list tenha designado floating via app_id neste lote.
+		window->parent = new_parent;
+		if (new_parent != NULL) {
+			window->floating = false;
+			window->autofloat = false;
+			window->implicit_parent = false;
+			window->transient_size_proposed = false;
+		}
+		return;
+	}
 	if (window->parent == new_parent) {
 		if (new_parent != NULL) window->implicit_parent = false;
 		return;
@@ -557,7 +642,12 @@ static void window_destroy_closed(struct Window *window, bool flush_now) {
 		wm_notify_bar_fullscreen(false);
 	struct Seat *seat;
 	wl_list_for_each(seat, &wm.seats, link) {
-		if (seat->focused == window) seat->focused = NULL;
+		if (seat->focused == window) {
+			seat->focused = NULL;
+			struct Window *root = root_window(window);
+			if (root != window && !root->closed && root->floating)
+				wm.pending_float_focus = root;
+		}
 		if (seat->interacted == window) seat->interacted = NULL;
 	}
 	if (wm.last_placed_top_node == window->node) {
@@ -569,14 +659,22 @@ static void window_destroy_closed(struct Window *window, bool flush_now) {
 	if (wm.pending_child_focus == window) {
 		wm.pending_child_focus = NULL;
 	}
-	struct Window *w;
-	wl_list_for_each(w, &wm.windows, link) {
-		if (w->parent == window) {
+	// Children may still be staged when their parent closes in the same batch.
+	struct wl_list *lists[] = { &wm.windows, &wm.pending_windows };
+	for (size_t i = 0; i < 2; i++) {
+		struct Window *w;
+		wl_list_for_each(w, lists[i], link) {
+			if (w->parent != window) continue;
 			w->parent = NULL;
 			w->implicit_parent = false;
 			w->transient_size_proposed = false;
+			w->child_size_clamped = false;
+			w->tile_settled = false;
+			w->tile_proposed_w = w->tile_proposed_h = 0;
+			w->tile_proposed_prev_w = w->tile_proposed_prev_h = 0;
 		}
 	}
+	if (window->node != NULL) river_node_v1_destroy(window->node);
 	river_window_v1_destroy(window->obj);
 	if (flush_now && wm_display != NULL) {
 		int rc = wl_display_flush(wm_display);
@@ -774,12 +872,23 @@ static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *o
 	wl_list_for_each_safe(window, window_tmp, &wm.windows, link) {
 		window_maybe_destroy(window);
 	}
+	// STAGING sweep: janelas em wm.pending_windows que fecharam antes do
+	// manage_start (abriu e fechou no mesmo lote). window_maybe_destroy é
+	// genérico quanto à lista (só wl_list_remove + cleanup) — funciona aqui.
+	wl_list_for_each_safe(window, window_tmp, &wm.pending_windows, link) {
+		window_maybe_destroy(window);
+	}
 	struct Seat *seat, *seat_tmp;
 	wl_list_for_each_safe(seat, seat_tmp, &wm.seats, link) {
 		seat_maybe_destroy(seat);
 	}
 
 	process_hold_timers();
+
+	classify_pending_windows();
+	// Pending windows were not in wm.windows when app_id/title arrived.
+	// Apply the explicit compatibility rule now that all roots are classified.
+	maybe_apply_implicit_parenting();
 
 	wl_list_for_each(seat, &wm.seats, link) {
 		seat_manage(seat);
@@ -830,7 +939,7 @@ static void wm_handle_manage_start(void *data, struct river_window_manager_v1 *o
 		have_last_sig = true;
 	}
 
-	if (layout_changed || wm.focus_dirty || wm.pending_float_focus != NULL) {
+	if (layout_changed || wm.focus_dirty || wm.pending_float_focus != NULL || wm.pending_child_focus != NULL) {
 		focus_target_on_seats();
 		log_state();
 		wm.focus_dirty = false;
@@ -860,10 +969,10 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 	if (!have_last_render_sig || sig != last_render_sig) {
 		size_t index = 0;
 		struct Window *window;
-		LOG_EVENT("[RENDER-DIAG] === render cycle start, pending_anim=%d ===", (int)wm.pending_anim);
+		LOG_TRACE("[RENDER-DIAG] === render cycle start, pending_anim=%d ===", (int)wm.pending_anim);
 		wl_list_for_each(window, &wm.windows, link) {
 			if (window->parent != NULL || window->floating) continue;
-			LOG_EVENT("[RENDER-DIAG] pre-layout win=\"%s\" index=%zu minimized=%d last_applied_vis=%d applied_vis=%d",
+			LOG_TRACE("[RENDER-DIAG] pre-layout win=\"%s\" index=%zu minimized=%d last_applied_vis=%d applied_vis=%d",
 				window->title ? window->title : "", index, window->minimized,
 				window->last_applied_visible, window->applied_visible);
 			window_render_layout(window, index, &view);
@@ -871,12 +980,12 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 				index++;
 			}
 		}
-		LOG_EVENT("[RENDER-DIAG] === tiled pass done, visible_count=%d ===", view.visible_count);
+		LOG_TRACE("[RENDER-DIAG] === tiled pass done, visible_count=%d ===", view.visible_count);
 		if (view.target != NULL) {
 			wm_place_top(view.target->node);
 		}
 		wl_list_for_each(window, &wm.windows, link) {
-			if (window->parent == NULL) continue;
+			if (window->parent == NULL || root_window(window)->floating) continue;
 			window_render_layout(window, 0, &view);
 		}
 		// Flutuantes por último: camada mais alta, acima do alvo tiled e dos
@@ -884,6 +993,12 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 		wl_list_for_each(window, &wm.windows, link) {
 			if (window->parent != NULL || !window->floating) continue;
 			window_render_layout(window, 0, &view);
+			// Keep floating dialogs above their root, including nested dialogs.
+			struct Window *child;
+			wl_list_for_each(child, &wm.windows, link) {
+				if (child->parent != NULL && root_window(child) == window)
+					window_render_layout(child, 0, &view);
+			}
 		}
 		last_render_sig = sig;
 		have_last_render_sig = true;
@@ -906,7 +1021,12 @@ static void wm_handle_window(void *data, struct river_window_manager_v1 *obj, st
 	window->new = true;
 	window->last_close_intent = -1; // sentinela: força o 1º set_close_intent
 	river_window_v1_add_listener(window->obj, &river_window_listener, window);
-	md_insert_new_window(window);
+	// STAGING: não promove a MAIN aqui. app_id/title/parent/dimensions_hint
+	// chegam no MESMO lote, antes do próximo manage_start; classificamos lá
+	// (classify_pending_window) para não balançar o layout MAIN/DECK quando a
+	// janela for depois virar filha/floating. Até lá fica em wm.pending_windows.
+	window->pending = true;
+	wl_list_insert(wm.pending_windows.prev, &window->link);
 	clear_loading_notification();
 }
 
@@ -982,6 +1102,7 @@ const struct river_window_manager_v1_listener wm_listener = {
 void wm_init(void) {
 	wl_list_init(&wm.outputs);
 	wl_list_init(&wm.windows);
+	wl_list_init(&wm.pending_windows);
 	wl_list_init(&wm.seats);
 	wm.target_index = 0;
 	wm.maximized = false;

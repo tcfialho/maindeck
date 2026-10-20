@@ -119,6 +119,11 @@ static const char *ipc_match_verb(const char *msg, const char *verb) {
 
 static void ipc_handle_message(const char *msg) {
 	const char *id;
+	if (!strcmp(msg, "sync")) {
+		wm_request_bar_snapshot();
+		river_window_manager_v1_manage_dirty(window_manager_v1);
+		return;
+	}
 	if ((id = ipc_match_verb(msg, "activate")) != NULL) {
 		if (!valid_identifier(id)) {
 			LOG_WARN("IPC: identifier inválido ignorado: %s", id);
@@ -214,7 +219,10 @@ int main(void) {
 			break;
 		}
 
+		if (md_diagnostic_level() >= 2) log_flush();
 		int timeout_ms = compute_poll_timeout();
+		// Keep snapshots fresh for a restarted bar even when the desktop is idle.
+		if (timeout_ms < 0 || timeout_ms > 5000) timeout_ms = 5000;
 		struct pollfd pfd[2] = {
 			{ .fd = wl_display_get_fd(display), .events = POLLIN },
 			{ .fd = ipc_fd, .events = ipc_fd >= 0 ? POLLIN : 0 },
@@ -242,6 +250,7 @@ int main(void) {
 			// Timeout: a hold threshold was reached
 			wl_display_cancel_read(display);
 			process_hold_timers();
+			river_window_manager_v1_manage_dirty(window_manager_v1);
 			if (wl_display_dispatch_pending(display) < 0) break;
 		}
 	}

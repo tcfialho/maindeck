@@ -144,7 +144,16 @@ static void xkb_binding_destroy(struct XkbBinding *binding) {
 static void xkb_binding_create(struct Seat *seat, uint32_t mods, xkb_keysym_t keysym,
 		enum Action tap_action, enum Action hold_action) {
 	struct XkbBinding *binding = calloc(1, sizeof(struct XkbBinding));
+	if (binding == NULL) {
+		LOG_WARN("allocating keyboard binding failed");
+		return;
+	}
 	binding->obj = river_xkb_bindings_v1_get_xkb_binding(xkb_bindings_v1, seat->obj, keysym, mods);
+	if (binding->obj == NULL) {
+		free(binding);
+		LOG_WARN("creating keyboard binding proxy failed");
+		return;
+	}
 	binding->seat = seat;
 	binding->tap_action = tap_action;
 	binding->hold_action = hold_action;
@@ -177,7 +186,16 @@ static void pointer_binding_destroy(struct PointerBinding *binding) {
 
 static void pointer_binding_create(struct Seat *seat, uint32_t mods, uint32_t button, enum Action action) {
 	struct PointerBinding *binding = calloc(1, sizeof(struct PointerBinding));
+	if (binding == NULL) {
+		LOG_WARN("allocating pointer binding failed");
+		return;
+	}
 	binding->obj = river_seat_v1_get_pointer_binding(seat->obj, button, mods);
+	if (binding->obj == NULL) {
+		free(binding);
+		LOG_WARN("creating pointer binding proxy failed");
+		return;
+	}
 	binding->seat = seat;
 	binding->action = action;
 	river_pointer_binding_v1_add_listener(binding->obj, &river_pointer_binding_listener, binding);
@@ -467,7 +485,7 @@ static const char *action_name(enum Action a) {
 }
 
 static void seat_action(struct Seat *seat, enum Action action) {
-	LOG_EVENT("[ACTION-DIAG] action=%d (%s) target=\"%s\"", (int)action,
+	if (action != ACTION_NONE) LOG_EVENT("[ACTION-DIAG] action=%d (%s) target=\"%s\"", (int)action,
 		action_name(action),
 		(seat->focused && seat->focused->title) ? seat->focused->title : "(none)");
 	switch (action) {
@@ -477,7 +495,19 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		spawn_command("kitty");
 		break;
 	case ACTION_SPAWN_LAUNCHER:
-		g_menu_pid = spawn_command("maindeck-menu");
+		{
+			bool sent = false;
+			const char *dir = getenv("XDG_RUNTIME_DIR");
+			struct sockaddr_un addr = { .sun_family = AF_UNIX };
+			if (dir && snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/maindeck-menu.sock", dir) < (int)sizeof(addr.sun_path)) {
+				int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+				if (fd >= 0) {
+					sent = sendto(fd, "T", 1, 0, (struct sockaddr *)&addr, sizeof(addr)) == 1;
+					close(fd);
+				}
+			}
+			if (!sent) g_menu_pid = spawn_command("maindeck-menu");
+		}
 		clock_gettime(CLOCK_MONOTONIC, &last_launcher_spawn);
 		last_launcher_spawn_valid = true;
 		break;

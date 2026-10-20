@@ -1,0 +1,10 @@
+PASS: 8 show/hide cycles reuse PID and clear every surface; observed show+capture times ms: 15.2, 15.3, 17.5, 17.2, 16.8, 17.5, 15.3, 19.3
+PASS: WM shortcut toggles resident launcher without a new process
+PASS: Escape, query reset and visual identity survive resident reopen
+PASS: application launch works with asynchronous loader active
+PASS: installed apps are detected on reopen
+PASS: catalog watcher detects in-place application edits
+Diagnóstico: debug (avisos e erros permanecem ativos; atualização em até 1 s)
+Diagnóstico: off (avisos e erros permanecem ativos; atualização em até 1 s)
+PASS: diagnostics toggle live while processes remain unchanged
+PASS: 3 fullscreen surface recreation cycles preserve the bar image

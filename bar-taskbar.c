@@ -71,6 +71,7 @@ static void tl_title(void *data,
         snprintf(pe->title, sizeof(pe->title), "%s", s ? s : "");
     } else {
         struct BarToplevel *tl = data;
+        if (!strcmp(tl->title, s ? s : "")) return;
         snprintf(tl->title, sizeof(tl->title), "%s", s ? s : "");
         bar_request_redraw_flags(&g_bar, BAR_DIRTY_TASKBAR);
     }

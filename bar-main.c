@@ -396,6 +396,11 @@ int main(void) {
     /* IPC socket */
     ipc_init();
 
+    if (g_bar.ipc_sock >= 0) {
+        struct sockaddr_un addr = { .sun_family = AF_UNIX };
+        snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", g_bar.ipc_path);
+        sendto(g_bar.ipc_sock, "sync", 4, 0, (struct sockaddr *)&addr, sizeof(addr));
+    }
     /* Create layer surface */
     bar_surface_create();
     bg_surface_create();

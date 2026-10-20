@@ -1,0 +1,58 @@
+FAIL: pending-parent-close
+=================================================================
+==136006==ERROR: AddressSanitizer: heap-use-after-free on address 0x7c8e021e0080 at pc 0x56434d35e726 bp 0x7ffdd31ddc40 sp 0x7ffdd31ddc30
+READ of size 8 at 0x7c8e021e0080 thread T0
+    #0 0x56434d35e725 in classify_pending_window tests/../wm-handlers.c:352
+    #1 0x56434d35e725 in classify_pending_windows tests/../wm-handlers.c:382
+    #2 0x56434d3687d0 in main tests/wm-state-regressions.c:64
+    #3 0x7f9e03427c6d  (/usr/lib/libc.so.6+0x27c6d) (BuildId: 0481b3aba465048295b38e77daf6d474d17dc545)
+    #4 0x7f9e03427daa in __libc_start_main (/usr/lib/libc.so.6+0x27daa) (BuildId: 0481b3aba465048295b38e77daf6d474d17dc545)
+    #5 0x56434d35b604 in _start (/tmp/maindeck-state-test.0YqVLp/state-tests+0x5e604) (BuildId: 8b0353fa9d261296612beea0f5be0a4ec8de80aa)
+
+0x7c8e021e0080 is located 64 bytes inside of 176-byte region [0x7c8e021e0040,0x7c8e021e00f0)
+freed by thread T0 here:
+    #0 0x7f9e0415eda1  (/usr/lib/libasan.so.8+0x15eda1) (BuildId: 07514fafdd549d834cdd73d686195a09c5bbd488)
+    #1 0x56434d360e81 in window_destroy_closed tests/../wm-handlers.c:656
+    #2 0x56434d3610e3 in window_maybe_destroy tests/../wm-handlers.c:668
+    #3 0x56434d3687cb in main tests/wm-state-regressions.c:62
+    #4 0x7f9e03427c6d  (/usr/lib/libc.so.6+0x27c6d) (BuildId: 0481b3aba465048295b38e77daf6d474d17dc545)
+    #5 0x7ffdd31e032f  (<unknown module>)
+
+previously allocated by thread T0 here:
+    #0 0x7f9e041605e9 in calloc (/usr/lib/libasan.so.8+0x1605e9) (BuildId: 07514fafdd549d834cdd73d686195a09c5bbd488)
+    #1 0x56434d35c3dd in add_window tests/wm-state-regressions.c:40
+    #2 0x56434d36872b in main tests/wm-state-regressions.c:59
+    #3 0x7f9e03427c6d  (/usr/lib/libc.so.6+0x27c6d) (BuildId: 0481b3aba465048295b38e77daf6d474d17dc545)
+    #4 0x7ffdd31e032f  (<unknown module>)
+
+SUMMARY: AddressSanitizer: heap-use-after-free tests/../wm-handlers.c:352 in classify_pending_window
+Shadow bytes around the buggy address:
+  0x7c8e021dfe00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7c8e021dfe80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7c8e021dff00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7c8e021dff80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7c8e021e0000: fa fa fa fa fa fa fa fa fd fd fd fd fd fd fd fd
+=>0x7c8e021e0080:[fd]fd fd fd fd fd fd fd fd fd fd fd fd fd fa fa
+  0x7c8e021e0100: fa fa fa fa fa fa 00 00 00 00 00 00 00 00 00 00
+tests/run-state-regressions.sh: line 12: 136008 Aborted                    ASAN_OPTIONS=detect_leaks=0 "$work_dir/state-tests" "$test_case" > "$work_dir/$test_case.log" 2>&1
+FAIL: floating-child-visible
+state-tests: tests/wm-state-regressions.c:70: main: Assertion `window_is_really_visible_view(child, &view)' failed.
+tests/run-state-regressions.sh: line 12: 136010 Aborted                    ASAN_OPTIONS=detect_leaks=0 "$work_dir/state-tests" "$test_case" > "$work_dir/$test_case.log" 2>&1
+FAIL: pending-float-focus
+state-tests: tests/wm-state-regressions.c:80: main: Assertion `seat.focused == b && focused_request == b->obj' failed.
+tests/run-state-regressions.sh: line 12: 136012 Aborted                    ASAN_OPTIONS=detect_leaks=0 "$work_dir/state-tests" "$test_case" > "$work_dir/$test_case.log" 2>&1
+FAIL: taskbar-from-floating
+state-tests: tests/wm-state-regressions.c:89: main: Assertion `seat.focused == root' failed.
+tests/run-state-regressions.sh: line 12: 136014 Aborted                    ASAN_OPTIONS=detect_leaks=0 "$work_dir/state-tests" "$test_case" > "$work_dir/$test_case.log" 2>&1
+FAIL: minimize-child
+state-tests: tests/wm-state-regressions.c:94: main: Assertion `!child->minimized && target_window() == root' failed.
+tests/run-state-regressions.sh: line 12: 136016 Aborted                    ASAN_OPTIONS=detect_leaks=0 "$work_dir/state-tests" "$test_case" > "$work_dir/$test_case.log" 2>&1
+FAIL: orphan-after-minimized
+state-tests: tests/wm-state-regressions.c:102: main: Assertion `target_window() == child' failed.
+tests/run-state-regressions.sh: line 12: 136018 Aborted                    ASAN_OPTIONS=detect_leaks=0 "$work_dir/state-tests" "$test_case" > "$work_dir/$test_case.log" 2>&1
+FAIL: node-released
+state-tests: tests/wm-state-regressions.c:108: main: Assertion `nodes_destroyed == 1' failed.
+tests/run-state-regressions.sh: line 12: 136020 Aborted                    ASAN_OPTIONS=detect_leaks=0 "$work_dir/state-tests" "$test_case" > "$work_dir/$test_case.log" 2>&1
+FAIL: output-removed-fullscreen
+state-tests: tests/wm-state-regressions.c:117: main: Assertion `w->fs_output == NULL && !w->applied_fullscreen' failed.
+PASS: cycle-rejected

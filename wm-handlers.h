@@ -6,6 +6,7 @@
 void output_maybe_destroy(struct Output *output);
 void window_maybe_destroy(struct Window *window);
 void wm_init(void);
+void wm_request_bar_snapshot(void);
 
 extern const struct river_window_manager_v1_listener wm_listener;
 extern const struct wl_registry_listener registry_listener;

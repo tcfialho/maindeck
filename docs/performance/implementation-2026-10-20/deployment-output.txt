@@ -1,0 +1,22 @@
+[deploy] repo: /home/tcfialho/Documents/poc/maindeck-wm
+[deploy] build dir: /home/tcfialho/Documents/poc/maindeck-wm/build
+[deploy] install dir: /home/tcfialho/.local/bin
+[deploy] + meson compile -C /home/tcfialho/Documents/poc/maindeck-wm/build
+ninja: Entering directory `/home/tcfialho/Documents/poc/maindeck-wm/build'
+ninja: no work to do.
+INFO: autodetecting backend as ninja
+INFO: calculating backend command to run: /usr/bin/ninja -C /home/tcfialho/Documents/poc/maindeck-wm/build
+[deploy] + mkdir -p /home/tcfialho/.local/bin
+[deploy] + install -m755 /home/tcfialho/Documents/poc/maindeck-wm/build/maindeck-wm /home/tcfialho/.local/bin/maindeck-wm.tmp.252517
+[deploy] + mv -f /home/tcfialho/.local/bin/maindeck-wm.tmp.252517 /home/tcfialho/.local/bin/maindeck-wm
+[deploy] + install -m755 /home/tcfialho/Documents/poc/maindeck-wm/build/maindeck-bar /home/tcfialho/.local/bin/maindeck-bar.tmp.252517
+[deploy] + mv -f /home/tcfialho/.local/bin/maindeck-bar.tmp.252517 /home/tcfialho/.local/bin/maindeck-bar
+[deploy] + install -m755 /home/tcfialho/Documents/poc/maindeck-wm/build/maindeck-menu /home/tcfialho/.local/bin/maindeck-menu.tmp.252517
+[deploy] + mv -f /home/tcfialho/.local/bin/maindeck-menu.tmp.252517 /home/tcfialho/.local/bin/maindeck-menu
+[deploy] + install -m755 /home/tcfialho/Documents/poc/maindeck-wm/tools/maindeck-diagnostics /home/tcfialho/.local/bin/maindeck-diagnostics
+[deploy] maindeck-menu is not running
+[deploy] stopping maindeck-wm: 152457
+[deploy] maindeck-wm restarted: 252551
+[deploy] stopping maindeck-bar: 4422
+[deploy] maindeck-bar restarted: 252618
+[deploy] deploy complete

@@ -1,0 +1,4 @@
+PASS: two same-app toplevels remain independent
+PASS: Chromium-like minimum hints do not shrink a new toplevel
+PASS: fixed-size dialogs still float after pending classification
+PASS: declared dialog preserves 800x600 natural size above DECK

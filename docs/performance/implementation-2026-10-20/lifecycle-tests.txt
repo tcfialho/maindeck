@@ -1,0 +1,8 @@
+PASS: same-app GTK windows tile independently
+PASS: opening a second floating window gives it keyboard focus
+PASS: taskbar activation transfers focus from floating to tiled
+PASS: floating child is visible above its parent and receives focus
+PASS: closing a floating child restores focus to its root
+PASS: minimize/restore returns focus to the restored root
+PASS: fullscreen window can minimize, restore and exit fullscreen
+PASS: opt-in compatibility dialog uses client natural dimensions

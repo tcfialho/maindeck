@@ -169,26 +169,26 @@ void md_send_animation_intent(struct Window *window, AnimationIntent intent) {
 /* Pré-registra a animação de close desta janela (sticky no compositor). Só
  * reenvia quando muda (cache em last_close_intent). set_close_intent é since=7. */
 void md_send_close_intent(struct Window *window, AnimationIntent intent) {
-    LOG_EVENT("[CLOSE-DIAG] CALLED intent=%s", md_animation_intent_name(intent));
+    LOG_TRACE("[CLOSE-DIAG] CALLED intent=%s", md_animation_intent_name(intent));
     if (!window || !window->obj) {
-        LOG_EVENT("[CLOSE-DIAG]   REJECT: null window/obj", 0);
+        LOG_TRACE("[CLOSE-DIAG]   REJECT: null window/obj", 0);
         return;
     }
 
     /* Request since=7; em compositor < 7 o opcode não existe — pular silenciosamente
      * (a direção do close cai no default do compositor). */
     if (wl_proxy_get_version((struct wl_proxy *)window->obj) < 7) {
-        LOG_EVENT("[CLOSE-DIAG]   REJECT: proxy version < 7", 0);
+        LOG_TRACE("[CLOSE-DIAG]   REJECT: proxy version < 7", 0);
         return;
     }
 
     /* Idempotente: nada a fazer se o compositor já tem este intent registrado. */
     if (window->last_close_intent == (int32_t)intent) {
-        LOG_EVENT("[CLOSE-DIAG]   SKIP: cache hit", 0);
+        LOG_TRACE("[CLOSE-DIAG]   SKIP: cache hit", 0);
         return;
     }
     window->last_close_intent = (int32_t)intent;
-    LOG_EVENT("[CLOSE-DIAG]   SEND set_close_intent v7", 0);
+    LOG_TRACE("[CLOSE-DIAG]   SEND set_close_intent v7", 0);
 
     river_window_v1_set_close_intent(window->obj, (uint32_t)intent);
 }

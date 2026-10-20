@@ -33,6 +33,8 @@ void log_init(void) {
 	}
 }
 
+void log_flush(void) { if (log_file) fflush(log_file); }
+
 void log_close(void) {
 	if (log_file != NULL) {
 		fclose(log_file);
@@ -43,19 +45,13 @@ void log_close(void) {
 // Nível de log: WARN/erros sempre; verboso (INFO/EVENT/STATE) só com
 // MAINDECK_LOG=debug. Lido uma vez (cache). O gate fica no TOPO de md_log,
 // antes de qualquer formatação, então linha suprimida custa ~0.
-int md_verbose(void) {
-	static int v = -1;
-	if (v < 0) {
-		const char *e = getenv("MAINDECK_LOG");
-		v = (e && (e[0] == 'd' || e[0] == 'D')) ? 1 : 0; // "debug"
-	}
-	return v;
-}
+int md_verbose(void) { return md_diagnostic_level() >= 3; }
 
 void md_log(const char *level, const char *fmt, ...) {
 	// WARN (level[0]=='W') sempre passa; o resto só em verboso.
 	bool is_warn = (level[0] == 'W');
-	if (!is_warn && !md_verbose()) return;
+	int required = is_warn ? 1 : level[0] == 'I' ? 2 : level[0] == 'T' ? 4 : 3;
+	if (md_diagnostic_level() < required) return;
 	// Destino único: maindeck.log (stderr vira session.log via init do River —
 	// escrita dupla evitada gravando só aqui). Mas se o log_file não abriu, um
 	// WARN não pode sumir: cai pro stderr como rede de segurança.
@@ -79,7 +75,7 @@ void md_log(const char *level, const char *fmt, ...) {
 	va_end(ap);
 
 	fprintf(out, "[%s.%03ld] [%s] %s\n", tbuf, ts.tv_nsec / 1000000, level, msg);
-	if (is_warn || level[0] == 'E' || level[0] == 'C') {
+	if (is_warn) {
 		fflush(out);
 	}
 }

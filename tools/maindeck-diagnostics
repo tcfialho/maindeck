@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""Switch diagnostics live for the current desktop session."""
+import os
+from pathlib import Path
+import sys
+import subprocess
+import tempfile
+
+runtime = os.environ.get('XDG_RUNTIME_DIR')
+if not runtime:
+    raise SystemExit('XDG_RUNTIME_DIR não definido')
+path = Path(runtime) / 'maindeck-log-level'
+level = sys.argv[1] if len(sys.argv) > 1 else 'status'
+if level == 'status':
+    print('Nível:', path.read_text().strip() if path.exists() else os.environ.get('MAINDECK_LOG', 'warn'))
+    for component in ('maindeck-wm', 'maindeck-bar', 'maindeck-menu'):
+        result = subprocess.run(['pgrep', '-u', str(os.getuid()), '-x', component], text=True, capture_output=True)
+        print(component + ':', 'PID ' + ', '.join(result.stdout.split()) if result.returncode == 0 else 'sem processo')
+    for socket in ('maindeck-wm.sock', 'maindeck-bar.sock', 'maindeck-menu.sock'):
+        print(socket + ':', 'presente' if (Path(runtime) / socket).is_socket() else 'ausente')
+elif level in ('warn', 'info', 'debug', 'trace', 'off'):
+    fd, name = tempfile.mkstemp(prefix='.maindeck-log-', dir=runtime)
+    with os.fdopen(fd, 'w') as f:
+        f.write(('warn' if level == 'off' else level) + '\n')
+    os.replace(name, path)
+    print('Diagnóstico:', level, '(avisos e erros permanecem ativos; atualização em até 1 s)')
+else:
+    raise SystemExit('Uso: maindeck-diagnostics [status|warn|info|debug|trace|off]')

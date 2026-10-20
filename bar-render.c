@@ -354,6 +354,8 @@ static void draw_taskbar(cairo_t *cr, int x_start, int x_end, int h) {
             cairo_fill(cr);
         }
 
+        /* A pending async icon becomes available on the next redraw. */
+        if (!tl->icon_surface && tl->app_id[0]) tl->icon_surface = bar_icon_get(tl->app_id, ICON_SIZE);
         /* Icon */
         int text_x = x + BTN_PAD;
         if (tl->icon_surface) {
@@ -614,34 +616,48 @@ void bar_render(void) {
     ensure_cairo(bar, data);
     int b = bar->cur_buf;
     cairo_t *cr = s_cr[b];
+    cairo_surface_mark_dirty(s_cs[b]);
     PangoLayout *lay = s_lay[b];
 
+    static int cached_ql, cached_status, cached_tray;
+    bool full = !bar->prev_boxes_valid || (bar->dirty_flags & BAR_DIRTY_ALL);
+    uint32_t flags;
+    int ql_end, status_start, tray_start;
+retry:
+    flags = full ? 15 : bar->dirty_flags;
     cairo_save(cr);
-
-    /* Background */
+    if (!full) {
+        int boundaries[] = { 0, cached_ql + 4, cached_tray - 4, cached_status - 8, w };
+        for (int i = 0; i < 4; i++) {
+            if (flags & (1u << i)) cairo_rectangle(cr, boundaries[i], 0, boundaries[i + 1] - boundaries[i], h);
+        }
+        cairo_clip(cr);
+    }
     set_col(cr, COL_BG);
     cairo_paint(cr);
-
-    /* Clear hit areas */
-    bar->hit_n = 0;
-
-    /* Quick-launch (left) */
-    int ql_end = draw_quicklaunch(cr, lay, h);
-
-    /* Separator */
+    // Preserve hit areas belonging to untouched sections.
+    int keep = 0;
+    for (int i = 0; !full && i < bar->hit_n; i++) {
+        uint32_t bit = bar->hit_areas[i].type == HIT_QL ? BAR_DIRTY_QUICKLAUNCH :
+                       bar->hit_areas[i].type == HIT_TASKBAR ? BAR_DIRTY_TASKBAR :
+                       bar->hit_areas[i].type == HIT_TRAY ? BAR_DIRTY_TRAY : BAR_DIRTY_STATUS;
+        if (!(flags & bit)) bar->hit_areas[keep++] = bar->hit_areas[i];
+    }
+    bar->hit_n = keep;
+    ql_end = (flags & BAR_DIRTY_QUICKLAUNCH) ? draw_quicklaunch(cr, lay, h) : cached_ql;
+    status_start = (flags & BAR_DIRTY_STATUS) ? draw_status(cr, lay, h, w - 4) : cached_status;
+    tray_start = (flags & BAR_DIRTY_TRAY) ? draw_tray(cr, h, status_start - 4) : cached_tray;
+    // Width changes invalidate neighboring sections. Fall back to a full frame.
+    if (!full && (ql_end != cached_ql || status_start != cached_status || tray_start != cached_tray)) {
+        cairo_restore(cr);
+        full = true;
+        bar->dirty_flags |= BAR_DIRTY_ALL;
+        goto retry;
+    }
+    if (flags & BAR_DIRTY_TASKBAR) draw_taskbar(cr, ql_end + 8, tray_start - 8, h);
     draw_sep(cr, ql_end + 2, h);
-
-    /* Status modules (rightmost: power, clock, bat, vol) */
-    int status_start = draw_status(cr, lay, h, w - 4);
-
-    /* Tray (left of status modules) */
-    int tray_start = draw_tray(cr, h, status_start - 4);
-
-    /* Separator */
     draw_sep(cr, tray_start - 4, h);
-
-    /* Taskbar (center, fills remaining space) */
-    draw_taskbar(cr, ql_end + 8, tray_start - 8, h);
+    cached_ql = ql_end; cached_status = status_start; cached_tray = tray_start;
 
     /* Record dynamic boundaries for partial damage */
     bar->section_box[BAR_SECTION_QUICKLAUNCH].x1 = 0;
@@ -664,11 +680,16 @@ void bar_render(void) {
 
     cairo_restore(cr);
 
+    bar->hover_hit = -1;
+    for (int i = 0; i < bar->hit_n; i++) {
+        if (bar->hit_areas[i].type == bar->hover_type && bar->hit_areas[i].index == bar->hover_index)
+            bar->hover_hit = i;
+    }
     bar_surface_commit();
     bar->dirty = false;
 }
 
-void bar_render_cleanup(void) {
+void bar_render_invalidate_buffers(void) {
     if (s_grad_normal) { cairo_pattern_destroy(s_grad_normal); s_grad_normal = NULL; }
     if (s_grad_hover)  { cairo_pattern_destroy(s_grad_hover);  s_grad_hover  = NULL; }
     s_grad_btn_h = 0;
@@ -683,6 +704,11 @@ void bar_render_cleanup(void) {
     s_last_clock_w = -1;
     s_last_clock_h = -1;
 
+    s_cs_w = s_cs_h = 0;
+}
+
+void bar_render_cleanup(void) {
+    bar_render_invalidate_buffers();
     /* Release per-window taskbar layouts still attached to open toplevels
      * (tl_closed only frees them as windows close individually) and free the structs. */
     for (int i = 0; i < g_bar.toplevel_n; i++) {

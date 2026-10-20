@@ -56,6 +56,8 @@ struct Window {
 	bool autofloat;              // virou floating por heurística (não rouba foco)
 	bool tile_settled;           // já obedeceu uma proposta de tile (≈ tolerância); nunca mais reclassifica por mismatch
 	bool floating_clamped;       // clamp de flutuante grande já foi feito (1x só)
+	bool child_size_clamped;     // cap de tamanho de diálogo filho já foi feito (1x só)
+	bool pending;                // ainda em wm.pending_windows, aguardando classify_pending_window
 	// Duas últimas propostas de tile (0 = nenhuma). Duas porque uma janela lenta
 	// pode responder à proposta anterior depois de um relayout já ter registrado
 	// uma nova — essa resposta atrasada não é desobediência.
@@ -167,6 +169,7 @@ struct Seat {
 struct WindowManager {
 	struct wl_list outputs;
 	struct wl_list windows; // MainDeck order: 0=MAIN, 1=visible DECK, 2+=hidden
+	struct wl_list pending_windows; // staging: recém-criadas antes do manage_start que classifica
 	struct wl_list seats;
 	uint32_t target_index; // 0 or 1
 	bool maximized;

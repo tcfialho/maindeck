@@ -13,6 +13,7 @@
 
 #include "bar-state.h"
 #include "bar-surface.h"
+#include "bar-render.h"
 #include "bar-log.h"
 
 /* ------------------------------------------------------------------ */
@@ -20,6 +21,9 @@
 /* ------------------------------------------------------------------ */
 
 static void bar_surface_free_buffers(struct BarState *bar) {
+    bar_render_invalidate_buffers();
+    bar->prev_boxes_valid = false;
+    bar->buffer_busy[0] = bar->buffer_busy[1] = false;
     if (bar->buf[0]) { wl_buffer_destroy(bar->buf[0]); bar->buf[0] = NULL; }
     if (bar->buf[1]) { wl_buffer_destroy(bar->buf[1]); bar->buf[1] = NULL; }
     if (bar->shm_data) { munmap(bar->shm_data, (size_t)bar->buf_size * 2); bar->shm_data = NULL; }
@@ -374,6 +378,12 @@ void bar_surface_restore(void) {
 /* Public: resize / allocate buffers                                    */
 /* ------------------------------------------------------------------ */
 
+static void draw_buffer_release(void *data, struct wl_buffer *buffer) {
+    struct BarState *bar = data;
+    for (int i = 0; i < 2; i++) if (bar->buf[i] == buffer) bar->buffer_busy[i] = false;
+}
+static const struct wl_buffer_listener draw_buffer_listener = { .release = draw_buffer_release };
+
 void bar_surface_resize(int w, int h) {
     struct BarState *bar = &g_bar;
 
@@ -398,6 +408,7 @@ void bar_surface_resize(int w, int h) {
     bar->buf[1]   = wl_shm_pool_create_buffer(bar->shm_pool, size,
                         w, h, stride, WL_SHM_FORMAT_ARGB8888);
 
+    for (int i = 0; i < 2; i++) wl_buffer_add_listener(bar->buf[i], &draw_buffer_listener, bar);
     bar->buf_width  = w;
     bar->buf_height = h;
     bar->buf_stride = stride;
@@ -461,6 +472,8 @@ void bar_surface_commit(void) {
     bar->prev_boxes_valid = true;
     bar->dirty_flags = BAR_DIRTY_NONE;
 
+    bar->buffer_busy[bar->cur_buf] = true;
+    bar->last_buf = bar->cur_buf;
     wl_surface_commit(bar->wl_surface);
 
     /* Swap to next buffer */
@@ -474,5 +487,11 @@ void bar_surface_commit(void) {
 void *bar_surface_get_draw_data(void) {
     struct BarState *bar = &g_bar;
     if (!bar->shm_data) return NULL;
-    return (char *)bar->shm_data + (size_t)bar->cur_buf * (size_t)bar->buf_size;
+    if (bar->buffer_busy[bar->cur_buf]) bar->cur_buf ^= 1;
+    if (bar->buffer_busy[bar->cur_buf]) return NULL;
+    char *data = (char *)bar->shm_data + (size_t)bar->cur_buf * bar->buf_size;
+    // Both buffers must start from the latest complete image for partial redraw.
+    if (bar->prev_boxes_valid && !(bar->dirty_flags & BAR_DIRTY_ALL) && bar->cur_buf != bar->last_buf)
+        memcpy(data, (char *)bar->shm_data + (size_t)bar->last_buf * bar->buf_size, bar->buf_size);
+    return data;
 }

@@ -1,0 +1,53 @@
+PASS: pending-parent-close
+PASS: floating-child-visible
+PASS: pending-float-focus
+PASS: taskbar-from-floating
+PASS: minimize-child
+PASS: orphan-after-minimized
+PASS: pending-minimize
+PASS: node-released
+PASS: output-removed-fullscreen
+PASS: cycle-rejected
+PASS: random-state-sequence
+FAIL: xkb-allocation-failure
+tests/../wm-input.c:147:15: runtime error: member access within null pointer of type 'struct XkbBinding'
+AddressSanitizer:DEADLYSIGNAL
+=================================================================
+==146625==ERROR: AddressSanitizer: SEGV on unknown address 0x000000000000 (pc 0x5649fb37aafb bp 0x7ffd630a2590 sp 0x7ffd630a2550 T0)
+==146625==The signal is caused by a WRITE memory access.
+==146625==Hint: address points to the zero page.
+    #0 0x5649fb37aafb in xkb_binding_create tests/../wm-input.c:147
+    #1 0x5649fb3840b1 in main tests/wm-state-regressions.c:136
+    #2 0x7fb368e27c6d  (/usr/lib/libc.so.6+0x27c6d) (BuildId: 0481b3aba465048295b38e77daf6d474d17dc545)
+    #3 0x7fb368e27daa in __libc_start_main (/usr/lib/libc.so.6+0x27daa) (BuildId: 0481b3aba465048295b38e77daf6d474d17dc545)
+    #4 0x5649fb36e634 in _start (/tmp/maindeck-state-test.6KSDfA/state-tests+0x62634) (BuildId: 67a981d6a21b16a4b1f80a4c277e09ff417c7814)
+
+==146625==Register values:
+rax = 0x0000000000000000  rbx = 0x0000000000000000  rcx = 0x00007fb3692227db  rdx = 0x0000000000000000
+rdi = 0x00005649fb37ad1d  rsi = 0x00007ffd630a2540  rbp = 0x00007ffd630a2590  rsp = 0x00007ffd630a2550
+ r8 = 0x0000000000001000   r9 = 0x00007fb36a162000  r10 = 0x0000000000000000  r11 = 0x0000000000000206
+r12 = 0x00007bb366af0260  r13 = 0x0000000000000000  r14 = 0x0000000000000000  r15 = 0x0000000000000000
+AddressSanitizer can not provide additional info.
+SUMMARY: AddressSanitizer: SEGV tests/../wm-input.c:147 in xkb_binding_create
+==146625==ABORTING
+FAIL: pointer-allocation-failure
+tests/../wm-input.c:180:15: runtime error: member access within null pointer of type 'struct PointerBinding'
+AddressSanitizer:DEADLYSIGNAL
+=================================================================
+==146627==ERROR: AddressSanitizer: SEGV on unknown address 0x000000000000 (pc 0x564f67681f49 bp 0x7ffce9cbf3a0 sp 0x7ffce9cbf370 T0)
+==146627==The signal is caused by a WRITE memory access.
+==146627==Hint: address points to the zero page.
+    #0 0x564f67681f49 in pointer_binding_create tests/../wm-input.c:180
+    #1 0x564f6768b175 in main tests/wm-state-regressions.c:141
+    #2 0x7f28c1a27c6d  (/usr/lib/libc.so.6+0x27c6d) (BuildId: 0481b3aba465048295b38e77daf6d474d17dc545)
+    #3 0x7f28c1a27daa in __libc_start_main (/usr/lib/libc.so.6+0x27daa) (BuildId: 0481b3aba465048295b38e77daf6d474d17dc545)
+    #4 0x564f67675634 in _start (/tmp/maindeck-state-test.6KSDfA/state-tests+0x62634) (BuildId: 67a981d6a21b16a4b1f80a4c277e09ff417c7814)
+
+==146627==Register values:
+rax = 0x0000000000000000  rbx = 0x0000000000000000  rcx = 0x00007f28c1e227db  rdx = 0x0000000000000000
+rdi = 0x0000564f676820b1  rsi = 0x00007ffce9cbf360  rbp = 0x00007ffce9cbf3a0  rsp = 0x00007ffce9cbf370
+ r8 = 0x0000000000001000   r9 = 0x00007f28c2434000  r10 = 0x0000000000000000  r11 = 0x0000000000000206
+r12 = 0x00007b28bf6f0300  r13 = 0x0000000000000000  r14 = 0x0000000000000000  r15 = 0x0000000000000000
+AddressSanitizer can not provide additional info.
+SUMMARY: AddressSanitizer: SEGV tests/../wm-input.c:180 in pointer_binding_create
+==146627==ABORTING

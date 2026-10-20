@@ -54,7 +54,7 @@ static void window_set_visible(struct Window *w, bool visible) {
 	if (visible) {
 		river_window_v1_show(w->obj);
 	} else {
-		LOG_EVENT("[VIS-DIAG] hide SENT win=\"%s\" minimized=%d", w->title ? w->title : "", w->minimized);
+		LOG_TRACE("[VIS-DIAG] hide SENT win=\"%s\" minimized=%d", w->title ? w->title : "", w->minimized);
 		river_window_v1_hide(w->obj);
 	}
 	w->applied_visible = visible;
@@ -79,18 +79,22 @@ size_t visible_window_count(void) {
 }
 
 static struct wl_list *visible_region_end(void) {
+	// Orphaned children can leave roots interleaved with auxiliary/minimized
+	// windows. Find the last active root rather than assuming a packed prefix.
+	struct wl_list *last = &wm.windows;
 	struct Window *window;
 	wl_list_for_each(window, &wm.windows, link) {
-		if (window->minimized || window->parent != NULL || window->floating) return &window->link;
+		if (!window->minimized && window->parent == NULL && !window->floating)
+			last = &window->link;
 	}
-	return &wm.windows;
+	return last->next;
 }
 
 static struct Window *window_at(size_t index) {
 	size_t i = 0;
 	struct Window *window;
 	wl_list_for_each(window, &wm.windows, link) {
-		if (window->parent != NULL || window->floating) continue;
+		if (window->minimized || window->parent != NULL || window->floating) continue;
 		if (i == index) return window;
 		i++;
 	}
@@ -133,7 +137,7 @@ int32_t window_index(struct Window *needle) {
 	int32_t i = 0;
 	struct Window *window;
 	wl_list_for_each(window, &wm.windows, link) {
-		if (window->parent != NULL || window->floating) continue;
+		if (window->minimized || window->parent != NULL || window->floating) continue;
 		if (window == needle) return i;
 		i++;
 	}
@@ -294,17 +298,19 @@ static struct Window *window_by_identifier(const char *id) {
 }
 
 static void activate_window_from_taskbar(struct Window *window) {
-	// Flutuantes não têm índice MainDeck (window_index = -1): ativa por foco.
+	if (window->parent != NULL) {
+		struct Window *root = root_window(window);
+		activate_window_from_taskbar(root);
+		// Activating this exact child must win over the root's default dialog.
+		wm.pending_float_focus = NULL;
+		wm.pending_child_focus = window;
+		return;
+	}
+	wm.focus_dirty = true;
 	if (window->floating) {
 		window->minimized = false;
-		move_last(window); // topo entre as flutuantes + muda a assinatura → re-render
-		struct Seat *seat;
-		wl_list_for_each(seat, &wm.seats, link) {
-			if (seat->removed) continue;
-			river_seat_v1_clear_focus(seat->obj);
-			river_seat_v1_focus_window(seat->obj, window->obj);
-			seat->focused = window;
-		}
+		move_last(window);
+		wm.pending_float_focus = window;
 		LOG_EVENT("taskbar activate floating: app_id=%s identifier=%s",
 			window->app_id ? window->app_id : "",
 			window->identifier ? window->identifier : "");
@@ -363,7 +369,7 @@ static void target_tiled_window(struct Window *window) {
 /* Menu de contexto: maximiza uma janela específica = foca + maximized global
  * (decisão de design: maximized é estado global do MainDeck, segue o alvo). */
 void md_maximize_window(struct Window *window) {
-	if (window == NULL || window->closed || window->floating) return;
+	if (window == NULL || window->closed || window->floating || window->parent != NULL) return;
 	target_tiled_window(window);
 	wm.maximized = true;
 	mark_visible_tiled_anim(ANIMATION_INTENT_REFLOW_EASE);
@@ -430,7 +436,7 @@ static void restore_minimized_to_origin(struct Window *w) {
 /* Menu de contexto: "Restaurar" estilo Windows — reverte minimizado OU
  * maximizado. Minimizado tem precedência (volta à origem: main→main, deck→deck). */
 void md_restore_window(struct Window *window) {
-	if (window == NULL || window->closed) return;
+	if (window == NULL || window->closed || window->parent != NULL || window->floating) return;
 	if (window->minimized) {
 		window->minimized = false;
 		restore_minimized_to_origin(window); // main→main, deck→deck (empurra)
@@ -514,6 +520,7 @@ void focus_target_on_seats(void) {
 	// redirect-para-filha (md_effective_focus_window). A aplicação do float migrou do
 	// manage_start para cá, eliminando por construção a corrida float-vs-child.
 	struct Window *focus = md_effective_focus_window(target);
+	bool explicit_focus = false;
 
 	if (wm.pending_float_focus != NULL) {
 		// Maior precedência: flutuante recém-exibível pedindo foco (config-list, satty,
@@ -521,7 +528,8 @@ void focus_target_on_seats(void) {
 		struct Window *pf = wm.pending_float_focus;
 		wm.pending_float_focus = NULL;
 		if (!pf->closed && pf->floating) {
-			focus = pf;
+			focus = md_effective_focus_window(pf);
+			explicit_focus = true;
 			wm.pending_child_focus = NULL; // a nova flutuante anula a interação pendente na filha
 		}
 	} else if (wm.pending_child_focus != NULL) {
@@ -531,8 +539,9 @@ void focus_target_on_seats(void) {
 		struct Window *pc = wm.pending_child_focus;
 		wm.pending_child_focus = NULL;
 		if (!pc->closed && pc->parent != NULL &&
-		    window_is_really_visible(pc) && root_window(pc) == target) {
+		    window_is_really_visible(pc) && (root_window(pc) == target || root_window(pc)->floating)) {
 			focus = pc;
+			explicit_focus = true;
 			LOG_EVENT("child focus applied: \"%s\"", pc->title ? pc->title : "");
 		}
 	}
@@ -540,7 +549,8 @@ void focus_target_on_seats(void) {
 	struct Seat *seat;
 	wl_list_for_each(seat, &wm.seats, link) {
 		if (seat->removed) continue;
-		if (seat->focused != NULL && seat->focused->floating && !seat->focused->closed && !wm.focus_dirty) {
+		if (!explicit_focus && !wm.focus_dirty && seat->focused != NULL &&
+		    window_is_really_visible(seat->focused) && root_window(seat->focused)->floating) {
 			continue;
 		}
 		// Evita re-emitir foco idêntico, MAS não quando focus_dirty — após focus_none da
@@ -693,7 +703,12 @@ void md_minimize_window(struct Window *window) {
 	// main/deck). Uma floating não tem índice MainDeck (window_index = -1) e seria
 	// convertida em tiled no restore — então não entra aqui. (Guard de índice oculto
 	// fica fora a pedido: barrar oculta é só no menu, não no WM.)
-	if (window == NULL || window->closed || window->minimized || window->floating) return;
+	if (window == NULL || window->closed || window->minimized || window->floating || window->parent != NULL) return;
+	if (window->pending) {
+		// Keep list ownership with staging until classify_pending_windows.
+		window->minimized = true;
+		return;
+	}
 	// A fullscreen window that gets minimized is reconciled by window_render_layout
 	// (the `fullscreen && !minimized` guard falls through to exit_fullscreen), so
 	// we only set the flag here and let the layout pass issue the protocol exit.
@@ -755,12 +770,6 @@ void md_unminimize(void) {
 	log_state();
 }
 
-static int32_t clamp_implicit_child_dimension(int32_t value, int32_t min, int32_t cap) {
-	if (min > 0 && value < min) value = min;
-	if (cap > 0 && value > cap) value = cap;
-	return value > 0 ? value : 1;
-}
-
 struct Window *root_window(struct Window *window) {
 	struct Window *root = window;
 	int depth = 0;
@@ -784,49 +793,6 @@ struct Window *md_effective_focus_window(struct Window *root) {
 		if (root_window(w) == root) focus = w; // último match vence = topo da pilha
 	}
 	return focus;
-}
-
-static int32_t natural_implicit_child_dimension(int32_t current, int32_t min, int32_t max, int32_t cap, int32_t fallback) {
-	if (max > 0 && max <= cap) return max;
-	if (min > 0 && min <= cap) return min;
-	if (current > 0 && current <= cap) return current;
-	return fallback;
-}
-
-static void child_proposed_dimensions(struct Window *window, int32_t *width, int32_t *height, const struct LayoutView *view) {
-	if (!window->implicit_parent) {
-		*width = 0;
-		*height = 0;
-		return;
-	}
-
-	struct Window *root = root_window(window);
-	struct Box pbox = output_box();
-	if (root != NULL) {
-		if (root == view->main_win) {
-			pbox = view->main_box;
-		} else if (root == view->deck_win) {
-			pbox = view->deck_box;
-		} else if (view->single && root == view->target) {
-			pbox = view->output;
-		}
-	}
-
-	int32_t max_dialog_w = (pbox.width * 3) / 4;
-	int32_t max_dialog_h = (pbox.height * 3) / 4;
-	if (max_dialog_w < 1) max_dialog_w = DEFAULT_WIDTH;
-	if (max_dialog_h < 1) max_dialog_h = DEFAULT_HEIGHT;
-
-	int32_t fallback_w = max_dialog_w < 480 ? max_dialog_w : 480;
-	int32_t fallback_h = max_dialog_h < 320 ? max_dialog_h : 320;
-	int32_t natural_w = natural_implicit_child_dimension(window->width, window->min_width, window->max_width, max_dialog_w, fallback_w);
-	int32_t natural_h = natural_implicit_child_dimension(window->height, window->min_height, window->max_height, max_dialog_h, fallback_h);
-
-	int32_t proposed_w = natural_w + 48;
-	int32_t proposed_h = natural_h + 40;
-
-	*width = clamp_implicit_child_dimension(proposed_w, window->min_width, max_dialog_w);
-	*height = clamp_implicit_child_dimension(proposed_h, window->min_height, max_dialog_h);
 }
 
 void md_insert_new_window(struct Window *window) {
@@ -863,13 +829,16 @@ void md_insert_new_window(struct Window *window) {
 }
 
 void window_manage_layout(struct Window *window, size_t index, const struct LayoutView *view) {
-	// Transient windows / dialogs: compositor/client owns position/dimensions.
+	// Transient windows / dialogs: preserve natural size within the usable output.
 	if (window->parent != NULL) {
 		river_window_v1_use_ssd(window->obj);
 		river_window_v1_set_tiled(window->obj, RIVER_WINDOW_V1_EDGES_NONE);
 		if (!window->transient_size_proposed) {
 			int32_t width, height;
-			child_proposed_dimensions(window, &width, &height, view);
+			// Let the client choose its natural size. Minimum hints are
+			// constraints, not a preferred size (Chromium can report 179x36).
+			width = 0;
+			height = 0;
 			river_window_v1_propose_dimensions(window->obj, width, height);
 			LOG_EVENT("child dimensions proposed: \"%s\" implicit=%d proposed=%dx%d hint=%dx%d..%dx%d",
 				window->title ? window->title : "",
@@ -881,6 +850,26 @@ void window_manage_layout(struct Window *window, size_t index, const struct Layo
 				window->max_width,
 				window->max_height);
 			window->transient_size_proposed = true;
+		}
+		// Dialogs may need more room than a small DECK card. Bound them
+		// against the usable output, preserving minimum hints when they fit.
+		if (!window->child_size_clamped && window->width > 0 && window->height > 0) {
+			int32_t cap_w = (view->output.width * 9) / 10;
+			int32_t cap_h = (view->output.height * 9) / 10;
+			if (window->min_width > cap_w) cap_w = window->min_width;
+			if (window->min_height > cap_h) cap_h = window->min_height;
+			if (cap_w > view->output.width) cap_w = view->output.width;
+			if (cap_h > view->output.height) cap_h = view->output.height;
+			if (cap_w > 0 && cap_h > 0 &&
+			    (window->width > cap_w || window->height > cap_h)) {
+				river_window_v1_propose_dimensions(window->obj,
+					window->width > cap_w ? cap_w : window->width,
+					window->height > cap_h ? cap_h : window->height);
+				window->child_size_clamped = true;
+				LOG_EVENT("child clamped: \"%s\" %dx%d -> cap %dx%d",
+					window->title ? window->title : "",
+					window->width, window->height, cap_w, cap_h);
+			}
 		}
 		window->new = false;
 		return;
@@ -975,7 +964,7 @@ void window_manage_layout(struct Window *window, size_t index, const struct Layo
 void window_render_layout(struct Window *window, size_t index, const struct LayoutView *view) {
 	if (window->minimized) {
 		bool was_visible = window->last_applied_visible;
-		LOG_EVENT("[MIN-DIAG] minimized path win=\"%s\" was_visible=%d applied_visible=%d win_pending=%d",
+		LOG_TRACE("[MIN-DIAG] minimized path win=\"%s\" was_visible=%d applied_visible=%d win_pending=%d",
 			window->title ? window->title : "", was_visible, window->applied_visible, window->pending_anim);
 		if (was_visible) {
 			// DECLARATIVO PURO: a ação md_minimize_window já marcou ESTA janela com
@@ -991,7 +980,7 @@ void window_render_layout(struct Window *window, size_t index, const struct Layo
 			// janela visível na tela com applied_visible=0). No minimize é crítico
 			// que o hide CHEGUE ao river no mesmo render que o intent, senão o
 			// orphan (que exige requested.hidden) nunca dispara. Enviamos direto.
-			LOG_EVENT("[VIS-DIAG] hide FORCED win=\"%s\"", window->title ? window->title : "");
+			LOG_TRACE("[VIS-DIAG] hide FORCED win=\"%s\"", window->title ? window->title : "");
 			river_window_v1_hide(window->obj);
 			window->applied_visible = false;
 		}
@@ -1018,7 +1007,11 @@ void window_render_layout(struct Window *window, size_t index, const struct Layo
 			struct Window *root = root_window(window);
 			struct Box pbox;
 			bool found = false;
-			if (root == view->main_win) {
+			if (root->floating) {
+				pbox = (struct Box){root->last_render_x, root->last_render_y,
+					root->width, root->height};
+				found = true;
+			} else if (root == view->main_win) {
 				pbox = view->main_box;
 				found = true;
 			} else if (root == view->deck_win) {
@@ -1033,6 +1026,18 @@ void window_render_layout(struct Window *window, size_t index, const struct Layo
 				int32_t ch = window->height > 0 ? window->height : pbox.height / 2;
 				int32_t cx = pbox.x + (pbox.width  - cw) / 2;
 				int32_t cy = pbox.y + (pbox.height - ch) / 2;
+				// Keep all edges within the usable output when centering
+				// over a small parent box or near an output edge.
+				if (cx < view->output.x) cx = view->output.x;
+				if (cy < view->output.y) cy = view->output.y;
+				if (cx + cw > view->output.x + view->output.width)
+					cx = view->output.x + view->output.width - cw;
+				if (cy + ch > view->output.y + view->output.height)
+					cy = view->output.y + view->output.height - ch;
+				// Re-clamp mínimo: diálogo maior que a tela fica colado no topo/
+				// esquerda (mostra o canto superior, o mais importante).
+				if (cx < view->output.x) cx = view->output.x;
+				if (cy < view->output.y) cy = view->output.y;
 				if (was_visible && visible) {
 					AnimationIntent intent = ANIMATION_INTENT_NONE;
 					bool pos_changed = (cx != window->last_render_x || cy != window->last_render_y);
@@ -1216,12 +1221,13 @@ bool window_is_really_visible(struct Window *w) {
 bool window_is_really_visible_view(struct Window *w, const struct LayoutView *view) {
 	int depth = 0;
 	while (w != NULL) {
-		if (w->minimized) return false;
+		if (w->closed || w->minimized) return false;
 		if (w->parent == NULL) break;
 		if (++depth > 32) return false;   // guarda anti-ciclo / aninhamento patológico
 		w = w->parent;
 	}
 	if (w == NULL) return false;
+	if (w->floating) return true;
 	if (view->single) {
 		return w == view->target;
 	}

@@ -1,0 +1,4 @@
+Render CPU, 3000 hover frames: full=466.03 ms regional=303.67 ms
+PASS: 501 partial redraws match full frames byte for byte
+[bar] [WARN] icons: no icon found for 'maindeck-nonexistent-icon-regression'
+PASS: UI queues 2000 requests in 0.155 ms while icon IO is blocked; publication, deduplication, negative cache and shutdown OK

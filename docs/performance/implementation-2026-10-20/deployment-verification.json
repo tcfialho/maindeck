@@ -1,0 +1,28 @@
+{
+  "backup": "/home/tcfialho/.local/state/maindeck/backups/performance-20261020-162004",
+  "old_pids": {
+    "maindeck-wm": [
+      152457
+    ],
+    "maindeck-bar": [
+      4422
+    ],
+    "maindeck-menu": []
+  },
+  "new_pids": {
+    "maindeck-wm": 252551,
+    "maindeck-bar": 252618
+  },
+  "diagnostic_level": "warn",
+  "five_second_observation": {
+    "maindeck-wm": {
+      "wchar": 0,
+      "syscw": 0
+    },
+    "maindeck-bar": {
+      "wchar": 0,
+      "syscw": 0
+    }
+  },
+  "observation_note": "Uncontrolled live desktop sample; not a performance benchmark."
+}

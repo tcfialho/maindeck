@@ -109,7 +109,7 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface, u
     int w = state->width;
     int h = state->height;
     
-    if (strcmp(client->mode, "--normal") == 0) {
+    if (strcmp(client->mode, "--normal") == 0 || strcmp(client->mode, "--min-hint") == 0) {
         if (w <= 0 || h <= 0) {
             w = 640;
             h = 480;
@@ -156,8 +156,8 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface, u
         }
     } else if (strcmp(client->mode, "--child") == 0) {
         if (w <= 0 || h <= 0) {
-            w = 320;
-            h = 240;
+            w = client->target_w > 0 ? client->target_w : 320;
+            h = client->target_h > 0 ? client->target_h : 240;
         }
     }
     
@@ -213,6 +213,9 @@ static void init_window(struct Client *client, struct WindowState *state, const 
     xdg_toplevel_set_app_id(state->xdg_toplevel, app_id);
     xdg_toplevel_set_title(state->xdg_toplevel, app_id);
     
+    if (strcmp(client->mode, "--min-hint") == 0) {
+        xdg_toplevel_set_min_size(state->xdg_toplevel, 179, 36);
+    }
     if (strcmp(client->mode, "--fixed") == 0) {
         xdg_toplevel_set_min_size(state->xdg_toplevel, client->target_w, client->target_h);
         xdg_toplevel_set_max_size(state->xdg_toplevel, client->target_w, client->target_h);

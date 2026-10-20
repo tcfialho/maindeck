@@ -7,6 +7,9 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <sys/eventfd.h>
+#include <errno.h>
 
 #include <librsvg/rsvg.h>
 #include <cairo/cairo.h>
@@ -22,6 +25,7 @@ struct IconEntry {
     cairo_surface_t  *surf;
     bool              occupied;
     bool              not_found;
+    bool              pending;
 };
 
 static struct IconEntry *g_hash_table = NULL;
@@ -54,17 +58,19 @@ static struct IconEntry *hash_table_lookup(const char *name, int size) {
     return NULL;
 }
 
-static void hash_table_insert_entry(struct IconEntry *table, int capacity, const char *name, int size, cairo_surface_t *surf, bool not_found) {
+static bool hash_table_insert_entry(struct IconEntry *table, int capacity, const char *name, int size, cairo_surface_t *surf, bool not_found) {
     uint32_t h = hash_key(name, size);
     int idx = (int)(h & (capacity - 1));
     while (table[idx].occupied) {
         idx = (idx + 1) & (capacity - 1);
     }
     table[idx].name = strdup(name);
+    if (!table[idx].name) return false;
     table[idx].size = size;
     table[idx].surf = surf;
     table[idx].occupied = true;
     table[idx].not_found = not_found;
+    return true;
 }
 
 static void hash_table_resize(int new_capacity) {
@@ -83,6 +89,7 @@ static void hash_table_resize(int new_capacity) {
             new_table[idx].surf = g_hash_table[i].surf;
             new_table[idx].occupied = true;
             new_table[idx].not_found = g_hash_table[i].not_found;
+            new_table[idx].pending = g_hash_table[i].pending;
         }
     }
     free(g_hash_table);
@@ -102,9 +109,8 @@ static void hash_table_insert(const char *name, int size, cairo_surface_t *surf,
         hash_table_resize(g_hash_capacity * 2);
     }
 
-    if (g_hash_table) {
-        hash_table_insert_entry(g_hash_table, g_hash_capacity, name, size, surf, not_found);
-        g_hash_count++;
+    if (g_hash_table && g_hash_count + 1 < g_hash_capacity) {
+        if (hash_table_insert_entry(g_hash_table, g_hash_capacity, name, size, surf, not_found)) g_hash_count++;
     }
 }
 
@@ -367,19 +373,7 @@ const char *bar_icon_nf_glyph(const char *name) {
     return NULL;
 }
 
-cairo_surface_t *bar_icon_get(const char *name, int size) {
-    if (!name || !name[0]) return NULL;
-
-    /* nf: prefix → caller renders text, we return NULL */
-    if (strncmp(name, "nf:", 3) == 0) return NULL;
-
-    /* Check cache */
-    struct IconEntry *entry = hash_table_lookup(name, size);
-    if (entry) {
-        if (entry->not_found) return NULL;
-        return entry->surf;
-    }
-
+static cairo_surface_t *resolve_icon(const char *name, int size) {
     /* Not in cache — resolve */
     char icon_name[128];
     /* First try name directly as icon name */
@@ -443,14 +437,67 @@ cairo_surface_t *bar_icon_get(const char *name, int size) {
         LOG_WARN("icons: no icon found for '%s'", name);
     }
 
-    /* Store in cache (even if NULL to avoid repeated lookups) */
-    if (surf) {
-        hash_table_insert(name, size, surf, false);
-    } else {
-        hash_table_insert(name, size, NULL, true);
-    }
-
     return surf;
+}
+
+/* Worker owns only its jobs and private Cairo surfaces. Cache and all Wayland
+ * objects remain on the UI thread. Publication transfers surface ownership. */
+struct IconJob {
+    char *name;
+    int size;
+    cairo_surface_t *surface;
+    struct IconJob *next;
+};
+static pthread_t icon_thread;
+static pthread_mutex_t icon_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t icon_cond = PTHREAD_COND_INITIALIZER;
+static struct IconJob *jobs, *jobs_tail, *done, *done_tail;
+static int notify_fd = -1;
+static bool worker_started, worker_stop;
+
+static void *icon_worker(void *unused) {
+    (void)unused;
+    for (;;) {
+        pthread_mutex_lock(&icon_lock);
+        while (!jobs && !worker_stop) pthread_cond_wait(&icon_cond, &icon_lock);
+        if (worker_stop) { pthread_mutex_unlock(&icon_lock); break; }
+        struct IconJob *job = jobs;
+        jobs = job->next;
+        if (!jobs) jobs_tail = NULL;
+        pthread_mutex_unlock(&icon_lock);
+        job->surface = resolve_icon(job->name, job->size);
+        job->next = NULL;
+        pthread_mutex_lock(&icon_lock);
+        if (done_tail) done_tail->next = job; else done = job;
+        done_tail = job;
+        pthread_mutex_unlock(&icon_lock);
+        uint64_t one = 1;
+        while (write(notify_fd, &one, sizeof(one)) < 0 && errno == EINTR) {}
+    }
+    return NULL;
+}
+
+cairo_surface_t *bar_icon_get(const char *name, int size) {
+    if (!name || !name[0] || size <= 0 || !strncmp(name, "nf:", 3)) return NULL;
+    struct IconEntry *entry = hash_table_lookup(name, size);
+    if (entry && (entry->surf || entry->pending || entry->not_found)) return entry->surf;
+    bar_icons_init();
+    if (!worker_started) return NULL; // Fail without blocking the UI.
+    struct IconJob *job = calloc(1, sizeof(*job));
+    if (!job) return NULL;
+    job->name = strdup(name);
+    job->size = size;
+    if (!job->name) { free(job); return NULL; }
+    if (!entry) hash_table_insert(name, size, NULL, true);
+    entry = hash_table_lookup(name, size);
+    if (!entry) { free(job->name); free(job); return NULL; }
+    entry->pending = true;
+    pthread_mutex_lock(&icon_lock);
+    if (jobs_tail) jobs_tail->next = job; else jobs = job;
+    jobs_tail = job;
+    pthread_cond_signal(&icon_cond);
+    pthread_mutex_unlock(&icon_lock);
+    return NULL;
 }
 
 void bar_icon_draw(cairo_t *cr, cairo_surface_t *icon, double x, double y, int size) {
@@ -465,13 +512,62 @@ void bar_icon_draw(cairo_t *cr, cairo_surface_t *icon, double x, double y, int s
     cairo_paint(cr);
 }
 
-void bar_icons_init(void) {}
+void bar_icons_init(void) {
+    if (worker_started) return;
+    notify_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (notify_fd < 0) return;
+    worker_stop = false;
+    if (pthread_create(&icon_thread, NULL, icon_worker, NULL)) {
+        close(notify_fd); notify_fd = -1;
+        LOG_WARN("icons: cannot start loader");
+        return;
+    }
+    worker_started = true;
+}
 
-int bar_icons_get_notify_fd(void) { return -1; }
+int bar_icons_get_notify_fd(void) { return notify_fd; }
 
-void bar_icons_notify_done(void) {}
+void bar_icons_notify_done(void) {
+    uint64_t count;
+    while (read(notify_fd, &count, sizeof(count)) > 0) {}
+    pthread_mutex_lock(&icon_lock);
+    struct IconJob *batch = done;
+    done = done_tail = NULL;
+    pthread_mutex_unlock(&icon_lock);
+    while (batch) {
+        struct IconJob *next = batch->next;
+        struct IconEntry *entry = hash_table_lookup(batch->name, batch->size);
+        if (entry) {
+            entry->surf = batch->surface;
+            entry->not_found = batch->surface == NULL;
+            entry->pending = false;
+        } else if (batch->surface) cairo_surface_destroy(batch->surface);
+        free(batch->name); free(batch); batch = next;
+    }
+}
+
+void bar_icons_retry_missing(void) {
+    for (int i = 0; i < g_hash_capacity; i++)
+        if (g_hash_table[i].occupied && !g_hash_table[i].pending && !g_hash_table[i].surf)
+            g_hash_table[i].not_found = false;
+}
 
 void bar_icons_cleanup(void) {
+    if (worker_started) {
+        pthread_mutex_lock(&icon_lock);
+        worker_stop = true;
+        pthread_cond_signal(&icon_cond);
+        pthread_mutex_unlock(&icon_lock);
+        pthread_join(icon_thread, NULL);
+        worker_started = false;
+        bar_icons_notify_done();
+        close(notify_fd); notify_fd = -1;
+    }
+    while (jobs) {
+        struct IconJob *next = jobs->next;
+        free(jobs->name); free(jobs); jobs = next;
+    }
+    jobs_tail = NULL;
     if (g_hash_table) {
         for (int i = 0; i < g_hash_capacity; i++) {
             if (g_hash_table[i].occupied) {

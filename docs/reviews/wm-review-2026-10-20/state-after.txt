@@ -1,0 +1,14 @@
+PASS: pending-parent-close
+PASS: floating-child-visible
+PASS: pending-float-focus
+PASS: taskbar-from-floating
+PASS: taskbar-floating-child
+PASS: minimize-child
+PASS: orphan-after-minimized
+PASS: pending-minimize
+PASS: node-released
+PASS: output-removed-fullscreen
+PASS: declared-parent-preserved
+PASS: random-state-sequence
+PASS: xkb-allocation-failure
+PASS: pointer-allocation-failure
