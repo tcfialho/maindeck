@@ -1,0 +1,172 @@
+--- a/types.h
++++ b/types.h
+@@ -91,6 +91,10 @@
+ 	// este é específico — não contamina janelas colaterais que mudam de slot por
+ 	// efeito da mesma ação. 0 (NONE) = sem intent per-window declarado.
+ 	uint32_t pending_anim;
++	// Nudge de foco pedido ao river (só Super+Tab simples confirmado). One-shot:
++	// o render cycle envia ANIMATION_INTENT_NUDGE e zera. O river não anima mais
++	// foco por conta própria — menu, clique e foco devolvido não animam.
++	bool pending_nudge;
+ 
+ 	struct wl_list link; // WindowManager.windows in MainDeck order
+ };
+@@ -133,6 +137,7 @@
+ 	struct Seat *seat;
+ 	enum Action tap_action;
+ 	enum Action hold_action; // ACTION_NONE if no hold behavior
++	uint32_t keysym; // keysym da tecla (Tab arma o nudge do TOGGLE_TARGET)
+ 	bool held;
+ 	bool hold_fired;
+ 	struct timespec press_time;
+--- a/wm-input.c
++++ b/wm-input.c
+@@ -25,6 +25,15 @@
+ #define HOLD_THRESHOLD_MS 360
+ #define DOUBLE_TAP_MS 280
+ 
++// Nudge adiado do Super+Tab: o 1º tap troca o foco na hora, mas só anima depois
++// de DOUBLE_TAP_MS sem 2º tap (Super+Tab+Tab = DECK_NEXT cancela). Guarda a janela
++// que virou alvo; no disparo só anima se ela AINDA for o alvo (troca no meio,
++// fechamento ou outra ação = sem nudge). Ponteiro só é comparado, nunca deref.
++static bool g_toggle_from_tab = false;
++static bool g_nudge_armed = false;
++static struct Window *g_nudge_window = NULL;
++static struct timespec g_nudge_armed_at;
++
+ static struct timespec last_launcher_spawn;
+ static bool last_launcher_spawn_valid = false;
+ 
+@@ -127,6 +136,8 @@
+ 		binding->seat->pending_action = (binding->tap_action == ACTION_TOGGLE_TARGET)
+ 			? resolve_toggle_tap()
+ 			: binding->tap_action;
++		if (binding->seat->pending_action == ACTION_TOGGLE_TARGET && binding->keysym == XKB_KEY_Tab)
++			g_toggle_from_tab = true;
+ 	}
+ }
+ 
+@@ -157,6 +168,7 @@
+ 	binding->seat = seat;
+ 	binding->tap_action = tap_action;
+ 	binding->hold_action = hold_action;
++	binding->keysym = keysym;
+ 	binding->held = false;
+ 	binding->hold_fired = false;
+ 	river_xkb_binding_v1_add_listener(binding->obj, &river_xkb_binding_listener, binding);
+@@ -207,10 +219,45 @@
+ 
+ static void seat_action(struct Seat *seat, enum Action action); // forward decl
+ 
++static long ms_since(const struct timespec *then, const struct timespec *now) {
++	return (now->tv_sec - then->tv_sec) * 1000L + (now->tv_nsec - then->tv_nsec) / 1000000L;
++}
++
++static void arm_focus_nudge(struct Window *window) {
++	g_nudge_window = window;
++	g_nudge_armed = window != NULL;
++	clock_gettime(CLOCK_MONOTONIC, &g_nudge_armed_at);
++}
++
++static void disarm_focus_nudge(void) {
++	g_nudge_armed = false;
++	g_nudge_window = NULL;
++}
++
++// Roda a cada volta do loop (não só no timeout de poll: com eventos Wayland
++// chegando o tempo todo o branch de timeout pode nunca rodar). Retorna true se
++// marcou um nudge, p/ o chamador pedir manage_dirty e o render cycle o enviar.
++bool process_nudge_timer(void) {
++	if (!g_nudge_armed) return false;
++	struct timespec now;
++	clock_gettime(CLOCK_MONOTONIC, &now);
++	if (ms_since(&g_nudge_armed_at, &now) < DOUBLE_TAP_MS) return false;
++	struct Window *armed = g_nudge_window;
++	disarm_focus_nudge();
++	struct Window *target = target_window();
++	if (target == NULL || target != armed || target->closed) return false;
++	target->pending_nudge = true;
++	return true;
++}
++
+ int compute_poll_timeout(void) {
+ 	struct timespec now;
+ 	clock_gettime(CLOCK_MONOTONIC, &now);
+ 	int timeout = -1;
++	if (g_nudge_armed) {
++		long remaining = DOUBLE_TAP_MS - ms_since(&g_nudge_armed_at, &now);
++		timeout = remaining > 0 ? (int)remaining : 0;
++	}
+ 	struct Seat *seat;
+ 	wl_list_for_each(seat, &wm.seats, link) {
+ 		if (seat->removed) continue;
+@@ -527,13 +574,17 @@
+ 		}
+ 		break;
+ 	}
+-	case ACTION_TOGGLE_TARGET:
++	case ACTION_TOGGLE_TARGET: {
++		bool from_tab = g_toggle_from_tab;
++		g_toggle_from_tab = false;
+ 		if (visible_window_count() >= 2) {
+ 			wm.target_index = wm.target_index == 0 ? 1 : 0;
+ 			wm.maximized = false;
+ 			wm.focus_dirty = true;
++			if (from_tab) arm_focus_nudge(target_window());
+ 		}
+ 		break;
++	}
+ 	case ACTION_SWAP_MAIN_DECK:
+ 		// md_swap_main_deck marca as DUAS janelas per-window (SPRING). Sem global.
+ 		md_swap_main_deck();
+@@ -543,6 +594,7 @@
+ 		// md_deck_next marca PER-WINDOW os dois papéis (a que sai → SLIDE_DECK_OUT,
+ 		// a que entra → SLIDE_IN). Não usa pending_anim global: o deck-switch afeta
+ 		// 2 janelas com intents distintos, que um único valor global não expressa.
++		disarm_focus_nudge(); // Super+Tab+Tab: o 1º tap não anima
+ 		md_deck_next();
+ 		wm.focus_dirty = true;
+ 		break;
+--- a/wm-input.h
++++ b/wm-input.h
+@@ -6,6 +6,7 @@
+ void close_launcher(void);
+ int compute_poll_timeout(void);
+ void process_hold_timers(void);
++bool process_nudge_timer(void);
+ void seat_maybe_destroy(struct Seat *seat);
+ void seat_manage(struct Seat *seat);
+ 
+--- a/wm-ipc.c
++++ b/wm-ipc.c
+@@ -253,6 +253,10 @@
+ 			river_window_manager_v1_manage_dirty(window_manager_v1);
+ 			if (wl_display_dispatch_pending(display) < 0) break;
+ 		}
++
++		if (process_nudge_timer()) {
++			river_window_manager_v1_manage_dirty(window_manager_v1);
++		}
+ 	}
+ 
+ done:
+--- a/wm-handlers.c
++++ b/wm-handlers.c
+@@ -1003,6 +1003,17 @@
+ 		last_render_sig = sig;
+ 		have_last_render_sig = true;
+ 	}
++	// Nudge do Super+Tab: fora do bloco do sig de propósito — o nudge chega
++	// DOUBLE_TAP_MS depois da troca, quando o layout já não muda mais.
++	{
++		struct Window *window;
++		wl_list_for_each(window, &wm.windows, link) {
++			if (!window->pending_nudge) continue;
++			window->pending_nudge = false;
++			if (!window->closed && window_is_really_visible(window))
++				md_send_animation_intent(window, ANIMATION_INTENT_NUDGE);
++		}
++	}
+ 	// pending_anim é one-shot: a ação o declarou para ESTE ciclo de render e o
+ 	// relayout acima já o transmitiu às janelas afetadas. Zera sempre (mesmo se o
+ 	// sig não mudou) para não vazar a animação de uma ação para a próxima transição.

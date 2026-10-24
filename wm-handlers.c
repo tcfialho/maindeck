@@ -1003,6 +1003,17 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 		last_render_sig = sig;
 		have_last_render_sig = true;
 	}
+	// Nudge do Super+Tab: fora do bloco do sig de propósito — o nudge chega
+	// DOUBLE_TAP_MS depois da troca, quando o layout já não muda mais.
+	{
+		struct Window *window;
+		wl_list_for_each(window, &wm.windows, link) {
+			if (!window->pending_nudge) continue;
+			window->pending_nudge = false;
+			if (!window->closed && window_is_really_visible(window))
+				md_send_animation_intent(window, ANIMATION_INTENT_NUDGE);
+		}
+	}
 	// pending_anim é one-shot: a ação o declarou para ESTE ciclo de render e o
 	// relayout acima já o transmitiu às janelas afetadas. Zera sempre (mesmo se o
 	// sig não mudou) para não vazar a animação de uma ação para a próxima transição.

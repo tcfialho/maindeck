@@ -91,6 +91,10 @@ struct Window {
 	// este é específico — não contamina janelas colaterais que mudam de slot por
 	// efeito da mesma ação. 0 (NONE) = sem intent per-window declarado.
 	uint32_t pending_anim;
+	// Nudge de foco pedido ao river (só Super+Tab simples confirmado). One-shot:
+	// o render cycle envia ANIMATION_INTENT_NUDGE e zera. O river não anima mais
+	// foco por conta própria — menu, clique e foco devolvido não animam.
+	bool pending_nudge;
 
 	struct wl_list link; // WindowManager.windows in MainDeck order
 };
@@ -133,6 +137,7 @@ struct XkbBinding {
 	struct Seat *seat;
 	enum Action tap_action;
 	enum Action hold_action; // ACTION_NONE if no hold behavior
+	uint32_t keysym; // keysym da tecla (Tab arma o nudge do TOGGLE_TARGET)
 	bool held;
 	bool hold_fired;
 	struct timespec press_time;

@@ -6,6 +6,7 @@
 void close_launcher(void);
 int compute_poll_timeout(void);
 void process_hold_timers(void);
+bool process_nudge_timer(void);
 void seat_maybe_destroy(struct Seat *seat);
 void seat_manage(struct Seat *seat);
 

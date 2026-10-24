@@ -253,6 +253,10 @@ int main(void) {
 			river_window_manager_v1_manage_dirty(window_manager_v1);
 			if (wl_display_dispatch_pending(display) < 0) break;
 		}
+
+		if (process_nudge_timer()) {
+			river_window_manager_v1_manage_dirty(window_manager_v1);
+		}
 	}
 
 done:
