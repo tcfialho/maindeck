@@ -43,6 +43,7 @@ struct TrayItem {
     char   service[128];   /* e.g. ":1.27" */
     char   obj_path[128];  /* e.g. "/org/ayatana/NotificationItem/trayid48171" */
     char   icon_name[128];
+    char   menu_path[256];
     char   title[64];
     cairo_surface_t *icon;
     bool   active;
@@ -106,6 +107,8 @@ static void on_props_reply(DBusPendingCall *pending, void *user_data) {
         return;
     }
 
+    cairo_surface_t *pixmap_icon = NULL;
+    int best_distance = 100000;
     DBusMessageIter iter, arr;
     dbus_message_iter_init(reply, &iter);
     if (dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_ARRAY) {
@@ -137,6 +140,55 @@ static void on_props_reply(DBusPendingCall *pending, void *user_data) {
                     else if (strcmp(key, "Title") == 0)
                         snprintf(it->title, sizeof(it->title), "%s", val);
                 }
+            } else if (inner == DBUS_TYPE_OBJECT_PATH && strcmp(key, "Menu") == 0) {
+                const char *path = NULL;
+                dbus_message_iter_get_basic(&variant, &path);
+                snprintf(it->menu_path, sizeof(it->menu_path), "%s", path ? path : "");
+            } else if (inner == DBUS_TYPE_ARRAY && strcmp(key, "IconPixmap") == 0) {
+                DBusMessageIter images;
+                dbus_message_iter_recurse(&variant, &images);
+                while (dbus_message_iter_get_arg_type(&images) == DBUS_TYPE_STRUCT) {
+                    DBusMessageIter image, bytes;
+                    dbus_message_iter_recurse(&images, &image);
+                    int32_t w = 0, h = 0;
+                    if (dbus_message_iter_get_arg_type(&image) != DBUS_TYPE_INT32) goto next_image;
+                    dbus_message_iter_get_basic(&image, &w);
+                    if (!dbus_message_iter_next(&image) || dbus_message_iter_get_arg_type(&image) != DBUS_TYPE_INT32) goto next_image;
+                    dbus_message_iter_get_basic(&image, &h);
+                    if (!dbus_message_iter_next(&image) || dbus_message_iter_get_arg_type(&image) != DBUS_TYPE_ARRAY) goto next_image;
+                    dbus_message_iter_recurse(&image, &bytes);
+                    if (dbus_message_iter_get_arg_type(&bytes) != DBUS_TYPE_BYTE) goto next_image;
+                    unsigned char *data = NULL;
+                    int length = 0;
+                    dbus_message_iter_get_fixed_array(&bytes, &data, &length);
+                    if (w <= 0 || h <= 0 || w > 1024 || h > 1024 || length != w * h * 4) goto next_image;
+                    int distance = abs(w - ICON_SIZE) + abs(h - ICON_SIZE);
+                    if (distance >= best_distance) goto next_image;
+                    cairo_surface_t *candidate = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+                    if (cairo_surface_status(candidate) != CAIRO_STATUS_SUCCESS) { cairo_surface_destroy(candidate); goto next_image; }
+                    unsigned char *out = cairo_image_surface_get_data(candidate);
+                    int stride = cairo_image_surface_get_stride(candidate);
+                    for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+                        const unsigned char *p = data + (y * w + x) * 4;
+                        unsigned a = p[0];
+                        uint32_t v = (a << 24) | (((p[1]*a+127)/255) << 16) | (((p[2]*a+127)/255) << 8) | ((p[3]*a+127)/255);
+                        ((uint32_t *)(out + y * stride))[x] = v;
+                    }
+                    cairo_surface_mark_dirty(candidate);
+                    cairo_surface_t *scaled = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, ICON_SIZE, ICON_SIZE);
+                    cairo_t *cr = cairo_create(scaled);
+                    cairo_scale(cr, (double)ICON_SIZE / w, (double)ICON_SIZE / h);
+                    cairo_set_source_surface(cr, candidate, 0, 0);
+                    cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BEST);
+                    cairo_paint(cr);
+                    cairo_destroy(cr);
+                    cairo_surface_destroy(candidate);
+                    if (pixmap_icon) cairo_surface_destroy(pixmap_icon);
+                    pixmap_icon = scaled;
+                    best_distance = distance;
+                next_image:
+                    dbus_message_iter_next(&images);
+                }
             }
         }
         dbus_message_iter_next(&arr);
@@ -145,7 +197,10 @@ static void on_props_reply(DBusPendingCall *pending, void *user_data) {
     dbus_pending_call_unref(pending);
 
     /* Load icon surface (TrayItem owns its reference simetrically) */
-    if (it->icon_name[0]) {
+    if (pixmap_icon) {
+        if (it->icon) cairo_surface_destroy(it->icon);
+        it->icon = pixmap_icon;
+    } else if (it->icon_name[0]) {
         cairo_surface_t *new_icon = bar_icon_get(it->icon_name, ICON_SIZE);
         if (!new_icon) new_icon = bar_icon_get(it->service, ICON_SIZE);
         if (new_icon) cairo_surface_reference(new_icon);
@@ -1204,9 +1259,11 @@ void bar_tray_open_menu(int idx, int icon_x, int icon_w, uint32_t serial) {
     g_menu_item_n    = 0;
     snprintf(g_menu_service, sizeof(g_menu_service), "%s", it->service);
 
-    /* Build menu path: SNI obj_path + "/Menu" OR read the Menu property */
     char menu_path[256];
-    snprintf(menu_path, sizeof(menu_path), "%s/Menu", it->obj_path);
+    if (it->menu_path[0] && strcmp(it->menu_path, "/NO_DBUSMENU") != 0)
+        snprintf(menu_path, sizeof(menu_path), "%s", it->menu_path);
+    else
+        snprintf(menu_path, sizeof(menu_path), "%s/Menu", it->obj_path);
 
     /* GetLayout(parentId=0, recursionDepth=1, propertyNames=[]) */
     DBusMessage *msg = dbus_message_new_method_call(
@@ -1297,7 +1354,10 @@ void bar_tray_menu_activate(int row, uint32_t time) {
     struct TrayItem *it = &g_items[g_menu_tray_idx];
 
     char menu_path[256];
-    snprintf(menu_path, sizeof(menu_path), "%s/Menu", it->obj_path);
+    if (it->menu_path[0] && strcmp(it->menu_path, "/NO_DBUSMENU") != 0)
+        snprintf(menu_path, sizeof(menu_path), "%s", it->menu_path);
+    else
+        snprintf(menu_path, sizeof(menu_path), "%s/Menu", it->obj_path);
 
     DBusMessage *msg = dbus_message_new_method_call(
         it->service, menu_path, "com.canonical.dbusmenu", "Event");

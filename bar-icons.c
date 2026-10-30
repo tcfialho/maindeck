@@ -12,12 +12,12 @@
 #include <errno.h>
 
 #include <librsvg/rsvg.h>
+#include <gdk-pixbuf/gdk-pixbuf.h>
+#include <stdint.h>
 #include <cairo/cairo.h>
 
 #include "bar-icons.h"
 #include "bar-log.h"
-
-#include <stdint.h>
 
 struct IconEntry {
     char              *name;
@@ -167,9 +167,8 @@ static bool scan_dir_recursive(const char *dir_path, const char *icon_name, char
 
         struct stat st;
         if (lstat(full_path, &st) == 0) {
-            if (S_ISLNK(st.st_mode)) {
-                continue; // Pula links simbólicos para evitar loops infinitos
-            }
+            if (S_ISLNK(st.st_mode) && (stat(full_path, &st) != 0 || !S_ISREG(st.st_mode)))
+                continue; /* Follow icon files, never symlinked directories. */
             if (S_ISDIR(st.st_mode)) {
                 if (scan_dir_recursive(full_path, icon_name, path_out, cap)) {
                     found = true;
@@ -201,28 +200,43 @@ static bool scan_dir_recursive(const char *dir_path, const char *icon_name, char
 
 static int find_icon_path(const char *icon_name, int size, char *path_out, size_t cap) {
     /* Try exact size first, then common sizes */
-    static const int sizes[] = { 32, 24, 48, 16, 64, 128, 256, 0 };
+    static const int sizes[] = { 32, 24, 48, 16, 64, 128, 256, 512, 0 };
 
     /* Directories to search */
-    const char *themes[] = { "hicolor", "breeze", "breeze-dark", "Papirus", NULL };
+    const char *themes[] = { "hicolor", "breeze", "breeze-dark", "Papirus", "Adwaita", "AdwaitaLegacy", NULL };
     
-    char local_icons_dir[512] = "";
     char local_pixmaps_dir[512] = "";
+    char icon_dirs[32][512];
+    const char *base_dirs[33];
+    int base_dirs_n = 0;
     const char *home = getenv("HOME");
-    if (home) {
-        snprintf(local_icons_dir, sizeof(local_icons_dir), "%s/.local/share/icons", home);
+    const char *data_home = getenv("XDG_DATA_HOME");
+    if (data_home && data_home[0] == '/') {
+        snprintf(icon_dirs[base_dirs_n], sizeof(icon_dirs[0]), "%s/icons", data_home);
+        base_dirs[base_dirs_n] = icon_dirs[base_dirs_n]; base_dirs_n++;
+        snprintf(local_pixmaps_dir, sizeof(local_pixmaps_dir), "%s/pixmaps", data_home);
+    } else if (home) {
+        snprintf(icon_dirs[base_dirs_n], sizeof(icon_dirs[0]), "%s/.local/share/icons", home);
+        base_dirs[base_dirs_n] = icon_dirs[base_dirs_n]; base_dirs_n++;
         snprintf(local_pixmaps_dir, sizeof(local_pixmaps_dir), "%s/.local/share/pixmaps", home);
     }
-
-    const char *base_dirs[5];
-    int base_dirs_n = 0;
-    if (local_icons_dir[0]) {
-        base_dirs[base_dirs_n++] = local_icons_dir;
+    if (home) {
+        snprintf(icon_dirs[base_dirs_n], sizeof(icon_dirs[0]), "%s/.local/share/flatpak/exports/share/icons", home);
+        base_dirs[base_dirs_n] = icon_dirs[base_dirs_n]; base_dirs_n++;
     }
-    base_dirs[base_dirs_n++] = "/usr/share/icons";
-    base_dirs[base_dirs_n++] = "/usr/local/share/icons";
+    const char *xdg_dirs = getenv("XDG_DATA_DIRS");
+    char *dirs = strdup(xdg_dirs && *xdg_dirs ? xdg_dirs : "/usr/local/share:/usr/share");
+    if (dirs) {
+        char *save = NULL;
+        for (char *dir = strtok_r(dirs, ":", &save); dir && base_dirs_n < 31; dir = strtok_r(NULL, ":", &save)) {
+            if (dir[0] != '/') continue;
+            snprintf(icon_dirs[base_dirs_n], sizeof(icon_dirs[0]), "%s/icons", dir);
+            base_dirs[base_dirs_n] = icon_dirs[base_dirs_n]; base_dirs_n++;
+        }
+        free(dirs);
+    }
     base_dirs[base_dirs_n++] = "/var/lib/flatpak/exports/share/icons";
-    base_dirs[base_dirs_n++] = NULL;
+    base_dirs[base_dirs_n] = NULL;
 
     /* If icon_name is an absolute path */
     if (icon_name[0] == '/') {
@@ -230,7 +244,7 @@ static int find_icon_path(const char *icon_name, int size, char *path_out, size_
         return 0;
     }
 
-    static const char *categories[] = { "apps", "places", "actions", NULL };
+    static const char *categories[] = { "apps", "places", "actions", "mimetypes", "devices", "status", NULL };
 
     for (int b = 0; base_dirs[b]; b++) {
         for (int th = 0; themes[th]; th++) {
@@ -333,6 +347,24 @@ static cairo_surface_t *load_icon_to_cairo_surface(const char *path, int size) {
 
         cairo_destroy(cr);
         g_object_unref(handle);
+    } else if (len > 4 && strcasecmp(path + len - 4, ".png") != 0) {
+        GdkPixbuf *pix = gdk_pixbuf_new_from_file_at_scale(path, size, size, TRUE, NULL);
+        if (!pix) return NULL;
+        int w = gdk_pixbuf_get_width(pix), h = gdk_pixbuf_get_height(pix);
+        int channels = gdk_pixbuf_get_n_channels(pix), stride = gdk_pixbuf_get_rowstride(pix);
+        const guchar *pixels = gdk_pixbuf_get_pixels(pix);
+        surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
+        unsigned char *data = cairo_image_surface_get_data(surf);
+        int out_stride = cairo_image_surface_get_stride(surf);
+        for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+            const guchar *p = pixels + y * stride + x * channels;
+            unsigned a = channels == 4 ? p[3] : 255;
+            uint32_t value = (a << 24) | (((p[0] * a + 127) / 255) << 16) |
+                (((p[1] * a + 127) / 255) << 8) | ((p[2] * a + 127) / 255);
+            ((uint32_t *)(data + (y + (size-h)/2) * out_stride))[x + (size-w)/2] = value;
+        }
+        cairo_surface_mark_dirty(surf);
+        g_object_unref(pix);
     } else {
         cairo_surface_t *img = cairo_image_surface_create_from_png(path);
         if (cairo_surface_status(img) != CAIRO_STATUS_SUCCESS) {

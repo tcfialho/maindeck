@@ -1173,7 +1173,9 @@ static bool render(void) {
                 a->icon_surface = cairo_surface_reference(raw_surf);
             }
         }
-        bar_icon_draw(cr, a->icon_surface, 20, list_y + 8, 18);
+        cairo_surface_t *display_icon = a->icon_surface;
+        if (!display_icon) display_icon = bar_icon_get("application-x-generic", 18);
+        bar_icon_draw(cr, display_icon, 20, list_y + 8, 18);
 
         pango_layout_set_text(layout, a->name, -1);
         cairo_set_source_rgba(cr, 0.92, 0.92, 0.92, 1.0); // COL_TEXT (mesma cor branca da barra)

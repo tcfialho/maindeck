@@ -7,5 +7,5 @@ cc -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer -D_POSIX_C_SOURCE
     $(pkg-config --cflags --libs cairo pangocairo wayland-client) -o "$work_dir/render"
 ASAN_OPTIONS=detect_leaks=0 "$work_dir/render"
 cc -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer -I. tests/icon-loader-regressions.c diagnostics.c \
-    $(pkg-config --cflags --libs cairo librsvg-2.0) -pthread -o "$work_dir/icons"
+    $(pkg-config --cflags --libs cairo librsvg-2.0 gdk-pixbuf-2.0) -pthread -o "$work_dir/icons"
 timeout 20 env ASAN_OPTIONS=detect_leaks=0 "$work_dir/icons" "$work_dir"

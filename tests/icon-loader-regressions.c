@@ -32,6 +32,18 @@ int main(int argc,char **argv) {
     cairo_t *cr=cairo_create(image); cairo_set_source_rgb(cr,.2,.8,.4); cairo_paint(cr); cairo_destroy(cr);
     assert(cairo_surface_write_to_png(image,png_path)==CAIRO_STATUS_SUCCESS);
     cairo_surface_destroy(image);
+    // Exercise the Windows ICO format used by game launchers.
+    char ico_path[512]; snprintf(ico_path, sizeof(ico_path), "%s/icon.ico", argv[1]);
+    FILE *ico = fopen(ico_path, "wb"); assert(ico);
+    const unsigned char ico_data[] = {
+        0,0,1,0,1,0, 1,1,0,0,1,0,32,0,48,0,0,0,22,0,0,0,
+        40,0,0,0, 1,0,0,0, 2,0,0,0, 1,0,32,0,
+        0,0,0,0, 4,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        0,128,255,255, 0,0,0,0
+    };
+    assert(fwrite(ico_data, 1, sizeof(ico_data), ico) == sizeof(ico_data)); fclose(ico);
+    cairo_surface_t *ico_surface = load_icon_to_cairo_surface(ico_path, 18);
+    assert(ico_surface); cairo_surface_destroy(ico_surface);
     assert(mkfifo(fifo_path,0600)==0);
     pthread_t thread; assert(pthread_create(&thread,NULL,writer,NULL)==0);
     struct timespec a,b; clock_gettime(CLOCK_MONOTONIC,&a);
