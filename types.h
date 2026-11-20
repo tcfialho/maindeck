@@ -96,6 +96,18 @@ struct Window {
 	// foco por conta própria — menu, clique e foco devolvido não animam.
 	bool pending_nudge;
 
+	// Destacar (Super+D / menu da taskbar): janela tiled vira flutuante por
+	// escolha do usuário e pode voltar a MAIN. float_x/y só valem com float_pos_set
+	// (senão centraliza). detach_size_pending: propõe 60%x70% da área útil uma vez.
+	// op_active: arrasto/redimensionamento por ponteiro em curso (sem animações).
+	bool detached;
+	bool detach_size_pending;
+	bool float_pos_set;
+	int32_t float_x, float_y;
+	bool resize_pending;
+	int32_t resize_w, resize_h;
+	bool op_active;
+
 	struct wl_list link; // WindowManager.windows in MainDeck order
 };
 
@@ -116,6 +128,10 @@ enum Action {
 	ACTION_TOGGLE_MAXIMIZE,
 	ACTION_MINIMIZE_TARGET,
 	ACTION_UNMINIMIZE,
+	ACTION_TOGGLE_DETACH,
+	ACTION_SHOW_HELP,
+	ACTION_POINTER_PRIMARY,
+	ACTION_POINTER_RESIZE,
 	ACTION_EXIT,
 };
 
@@ -128,6 +144,7 @@ enum WindowAction {
 	WINDOW_ACTION_MAXIMIZE,
 	WINDOW_ACTION_RESTORE,
 	WINDOW_ACTION_CLOSE,
+	WINDOW_ACTION_TOGGLE_DETACH,
 };
 
 typedef enum WindowAction WindowAction;
@@ -163,6 +180,13 @@ struct Seat {
 
 	struct Window *focused;
 	struct Window *interacted;
+	struct Window *hovered; // janela sob o ponteiro (river pointer_enter)
+
+	// Operação interativa de ponteiro (mover/redimensionar flutuante).
+	enum { SEAT_OP_NONE = 0, SEAT_OP_MOVE, SEAT_OP_RESIZE } op_kind;
+	struct Window *op_window;
+	bool op_release_pending;
+	int32_t op_base_x, op_base_y, op_base_w, op_base_h;
 
 	struct wl_list xkb_bindings;
 	struct wl_list pointer_bindings;

@@ -74,6 +74,8 @@ static void wm_notify_bar_windows(void) {
 		//   '!' = minimizada (a barra escurece o botão);
 		//   '+' = maximizada (a barra usa para habilitar Maximizar/Restaurar no
 		//         menu de contexto);
+		//   '^' = destacada pelo usuário (flutuante que pode ser encaixada de volta);
+		//   '~' = flutuante por regra/heurística (não encaixável pelo menu);
 		//   '#' = escondida (deck-overflow, idx >= 2): não minimizável → a barra
 		//         desabilita "Minimizar" no menu de contexto.
 		// São mutuamente exclusivos (minimizar zera wm.maximized; escondida não é
@@ -82,7 +84,9 @@ static void wm_notify_bar_windows(void) {
 		const char *pfx =
 			window->minimized ? "!" :
 			(window == max_win ? "+" :
-			(window_index(window) >= 2 ? "#" : ""));
+			(window->floating && window->detached ? "^" :
+			(window->floating ? "~" :
+			(window_index(window) >= 2 ? "#" : ""))));
 		int n = snprintf(msg + off, sizeof(msg) - off, " %s%s", pfx, window->identifier);
 		if (n < 0 || (size_t)n >= sizeof(msg) - off) return; // não envia conjunto truncado
 		off += (size_t)n;
@@ -649,6 +653,11 @@ static void window_destroy_closed(struct Window *window, bool flush_now) {
 				wm.pending_float_focus = root;
 		}
 		if (seat->interacted == window) seat->interacted = NULL;
+		if (seat->hovered == window) seat->hovered = NULL;
+		if (seat->op_window == window) {
+			seat->op_window = NULL;
+			seat->op_release_pending = true;
+		}
 	}
 	if (wm.last_placed_top_node == window->node) {
 		wm.last_placed_top_node = NULL;
@@ -745,6 +754,17 @@ static uint64_t compute_layout_signature(const struct LayoutView *view) {
 		if (w->parent != NULL || w->floating) {
 			SIG_MIX((uint32_t)w->width);
 			SIG_MIX((uint32_t)w->height);
+		}
+		if (w->floating) {
+			// Destacar/arrastar/redimensionar: sem isto o ciclo manage/render pula o
+			// relayout (gate por assinatura) e a nova posição/tamanho não é aplicada.
+			SIG_MIX(w->float_pos_set);
+			SIG_MIX((uint32_t)w->float_x);
+			SIG_MIX((uint32_t)w->float_y);
+			SIG_MIX(w->resize_pending);
+			SIG_MIX((uint32_t)w->resize_w);
+			SIG_MIX((uint32_t)w->resize_h);
+			SIG_MIX(w->detach_size_pending);
 		}
 	}
 
@@ -965,6 +985,7 @@ static void wm_handle_render_start(void *data, struct river_window_manager_v1 *o
 	}
 
 	apply_output_presentation_modes();
+	sig = (sig ^ (uint64_t)(uintptr_t)md_keyboard_focus_root()) * 1099511628211ULL;
 
 	if (!have_last_render_sig || sig != last_render_sig) {
 		size_t index = 0;

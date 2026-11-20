@@ -440,14 +440,15 @@ static void seat_handle_removed(void *data, struct river_seat_v1 *obj) {
 }
 
 static void seat_handle_pointer_enter(void *data, struct river_seat_v1 *obj, struct river_window_v1 *river_window) {
-	(void)data;
+	struct Seat *seat = data;
 	(void)obj;
-	(void)river_window;
+	seat->hovered = river_window_v1_get_user_data(river_window);
 }
 
 static void seat_handle_pointer_leave(void *data, struct river_seat_v1 *obj) {
-	(void)data;
+	struct Seat *seat = data;
 	(void)obj;
+	seat->hovered = NULL;
 }
 
 static void seat_handle_window_interaction(void *data, struct river_seat_v1 *obj, struct river_window_v1 *river_window) {
@@ -462,8 +463,13 @@ static void seat_handle_wl_seat(void *data, struct river_seat_v1 *obj, uint32_t 
 	seat_bind_wl_seat(seat, id);
 }
 static void seat_handle_shell_surface_interaction(void *data, struct river_seat_v1 *obj, struct river_shell_surface_v1 *river_shell_surface) {}
-static void seat_handle_op_delta(void *data, struct river_seat_v1 *obj, int32_t dx, int32_t dy) {}
-static void seat_handle_op_release(void *data, struct river_seat_v1 *obj) {}
+static void seat_handle_op_delta(void *data, struct river_seat_v1 *obj, int32_t dx, int32_t dy) {
+	md_float_op_delta(data, dx, dy);
+}
+static void seat_handle_op_release(void *data, struct river_seat_v1 *obj) {
+	struct Seat *seat = data;
+	seat->op_release_pending = true;
+}
 static void seat_handle_pointer_position(void *data, struct river_seat_v1 *obj, int32_t x, int32_t y) {}
 
 const struct river_seat_v1_listener river_seat_listener = {
@@ -526,6 +532,10 @@ static const char *action_name(enum Action a) {
 	case ACTION_TOGGLE_MAXIMIZE: return "TOGGLE_MAXIMIZE";
 	case ACTION_MINIMIZE_TARGET: return "MINIMIZE";
 	case ACTION_UNMINIMIZE: return "UNMINIMIZE";
+	case ACTION_TOGGLE_DETACH: return "TOGGLE_DETACH";
+	case ACTION_SHOW_HELP: return "SHOW_HELP";
+	case ACTION_POINTER_PRIMARY: return "POINTER_PRIMARY";
+	case ACTION_POINTER_RESIZE: return "POINTER_RESIZE";
 	case ACTION_EXIT: return "EXIT";
 	}
 	return "?";
@@ -574,9 +584,33 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		}
 		break;
 	}
+	case ACTION_SHOW_HELP:
+		md_show_shortcuts_help();
+		break;
 	case ACTION_TOGGLE_TARGET: {
 		bool from_tab = g_toggle_from_tab;
 		g_toggle_from_tab = false;
+		// Ciclo MAIN → DECK → flutuante (mais recente) → MAIN.
+		struct Window *focus_root = md_keyboard_focus_root();
+		struct Window *floating_root = NULL;
+		struct Window *candidate;
+		wl_list_for_each(candidate, &wm.windows, link) {
+			if (candidate->floating && candidate->parent == NULL &&
+			    !candidate->closed && !candidate->minimized && candidate->width > 0)
+				floating_root = candidate;
+		}
+		if (focus_root != NULL && focus_root->floating) {
+			wm.target_index = 0;
+			wm.focus_dirty = true;
+			if (from_tab) arm_focus_nudge(target_window());
+			break;
+		}
+		bool at_last_tiled = visible_window_count() < 2 || wm.target_index == 1;
+		if (floating_root != NULL && at_last_tiled) {
+			wm.pending_float_focus = floating_root;
+			wm.focus_dirty = true;
+			break;
+		}
 		if (visible_window_count() >= 2) {
 			wm.target_index = wm.target_index == 0 ? 1 : 0;
 			wm.maximized = false;
@@ -662,6 +696,25 @@ static void seat_action(struct Seat *seat, enum Action action) {
 		md_unminimize();
 		wm.focus_dirty = true;
 		break;
+	case ACTION_TOGGLE_DETACH: {
+		struct Window *focused = seat->focused;
+		struct Window *subject = (focused != NULL && !focused->closed &&
+			focused->floating && focused->parent == NULL) ? focused : target_window();
+		md_toggle_detach(subject);
+		break;
+	}
+	case ACTION_POINTER_PRIMARY:
+		// Super+clique: arrasta flutuante sob o ponteiro; nas demais, alterna o ALVO.
+		if (seat->hovered != NULL && seat->hovered->floating && seat->hovered->parent == NULL) {
+			md_float_op_begin(seat, seat->hovered, false);
+		} else {
+			seat_action(seat, ACTION_TOGGLE_TARGET);
+		}
+		break;
+	case ACTION_POINTER_RESIZE:
+		if (seat->hovered != NULL && seat->hovered->floating && seat->hovered->parent == NULL)
+			md_float_op_begin(seat, seat->hovered, true);
+		break;
 	case ACTION_EXIT:
 		spawn_sh("sudo -n systemctl restart sddm 2>/dev/null || loginctl terminate-session \"$XDG_SESSION_ID\"");
 		break;
@@ -701,6 +754,8 @@ void seat_manage(struct Seat *seat) {
 		// (F14 não faz round-trip neste keymap; F19 sim — é o keysym do launcher.)
 		xkb_binding_create(seat, ctrl, XKB_KEY_F19, ACTION_TOGGLE_MAXIMIZE, ACTION_NONE);
 		xkb_binding_create(seat, super, XKB_KEY_Return, ACTION_SPAWN_TERMINAL, ACTION_NONE);
+		xkb_binding_create(seat, super, XKB_KEY_d, ACTION_TOGGLE_DETACH, ACTION_NONE);
+		xkb_binding_create(seat, super, XKB_KEY_F1, ACTION_SHOW_HELP, ACTION_NONE);
 		xkb_binding_create(seat, 0, XKB_KEY_Print, ACTION_SPAWN_SCREENSHOT, ACTION_NONE);
 		xkb_binding_create(seat, super, XKB_KEY_Delete, ACTION_CLOSE_TARGET, ACTION_NONE);
 		xkb_binding_create(seat, alt, XKB_KEY_F4, ACTION_CLOSE_TARGET, ACTION_NONE);
@@ -711,7 +766,8 @@ void seat_manage(struct Seat *seat) {
 		xkb_binding_create(seat, super, XKB_KEY_Down, ACTION_RESTORE, ACTION_MINIMIZE_TARGET);
 		xkb_binding_create(seat, super | RIVER_SEAT_V1_MODIFIERS_SHIFT, XKB_KEY_Escape, ACTION_EXIT, ACTION_NONE);
 
-		pointer_binding_create(seat, super, BTN_LEFT, ACTION_TOGGLE_TARGET);
+		pointer_binding_create(seat, super, BTN_LEFT, ACTION_POINTER_PRIMARY);
+		pointer_binding_create(seat, super, BTN_RIGHT, ACTION_POINTER_RESIZE);
 	}
 
 	if (seat->interacted != NULL) {
@@ -755,6 +811,8 @@ void seat_manage(struct Seat *seat) {
 		}
 	}
 	seat->interacted = NULL;
+
+	if (seat->op_release_pending) md_float_op_end(seat);
 
 	seat_action(seat, seat->pending_action);
 	seat->pending_action = ACTION_NONE;

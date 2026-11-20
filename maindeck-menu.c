@@ -2201,7 +2201,7 @@ int main(int argc, char **argv) {
                     g_app.running = false;
                 } else if (buf[0] == 'M') {
                     if (!menu_visible) menu_show();
-                    else { g_app.close_pending = false; g_app.dirty = true; }
+                    else menu_hide();
                 } else if (buf[0] == 'T') {
                     if (menu_visible) menu_hide(); else menu_show();
                 } else if (buf[0] == 'C') {

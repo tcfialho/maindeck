@@ -61,6 +61,18 @@ void md_minimize_target(void);
 /* Un-minimize the most recently minimized window (LIFO), bringing it back as
    MAIN. No-op if nothing is minimized. */
 void md_unminimize(void);
+/* Destacar/encaixar: tiled vira flutuante (60%x70%, centrada); destacada volta
+   como MAIN. No-op para flutuantes não destacadas pelo usuário, filhas e
+   minimizadas/fullscreen. */
+void md_toggle_detach(struct Window *window);
+/* Raiz da janela com foco de teclado (1º seat), ou NULL. */
+struct Window *md_keyboard_focus_root(void);
+/* Super+F1: notificação com a lista de atalhos. */
+void md_show_shortcuts_help(void);
+/* Operações interativas de ponteiro sobre flutuantes (Super+arrastar). */
+void md_float_op_begin(struct Seat *seat, struct Window *window, bool resize);
+void md_float_op_delta(struct Seat *seat, int32_t dx, int32_t dy);
+void md_float_op_end(struct Seat *seat);
 void md_insert_new_window(struct Window *window);
 void window_manage_layout(struct Window *window, size_t index, const struct LayoutView *view);
 void window_render_layout(struct Window *window, size_t index, const struct LayoutView *view);

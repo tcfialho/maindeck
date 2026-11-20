@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory(prefix='maindeck-lifecycle-') as directory:
     app = None
     keyboard = None
     with (tmp / 'river.log').open('w') as compositor_log, (tmp / 'client.log').open('w') as client_log:
-        river = subprocess.Popen([str(Path.home() / '.local/bin/river'), '-no-xwayland', '-c', str(init)],
+        river = subprocess.Popen([os.environ.get('RIVER_BIN', str(Path.home() / '.local/bin/river')), '-no-xwayland', '-c', str(init)],
                                  env=env, stdout=compositor_log, stderr=compositor_log, start_new_session=True)
         try:
             wait_for(lambda: (runtime / 'maindeck-wm.sock').is_socket(), 'WM did not start')

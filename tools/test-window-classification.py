@@ -10,7 +10,7 @@ import time
 
 repo = Path(__file__).resolve().parent.parent
 wm = repo / 'build/maindeck-wm'
-river = Path.home() / '.local/bin/river'
+river = Path(os.environ.get('RIVER_BIN', str(Path.home() / '.local/bin/river')))
 probe_source = repo / 'janelas-filhas-task/autofloat-test/probe.c'
 
 

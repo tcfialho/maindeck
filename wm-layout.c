@@ -25,8 +25,26 @@ uint32_t all_edges(void) {
 		RIVER_WINDOW_V1_EDGES_LEFT | RIVER_WINDOW_V1_EDGES_RIGHT;
 }
 
+struct Window *md_keyboard_focus_root(void) {
+	struct Seat *seat;
+	wl_list_for_each(seat, &wm.seats, link) {
+		if (seat->removed || seat->focused == NULL || seat->focused->closed) continue;
+		return root_window(seat->focused);
+	}
+	return NULL;
+}
+
+// Marca de foco (traço azul): na flutuante quando ELA tem o teclado; no alvo
+// tiled só quando nenhuma flutuante está com o foco.
+static bool window_has_focus_mark(struct Window *w) {
+	struct Window *focus_root = md_keyboard_focus_root();
+	if (w->floating) return focus_root == w;
+	if (focus_root != NULL && focus_root->floating) return false;
+	return w == target_window();
+}
+
 static void window_apply_borders(struct Window *w, enum BorderState desired) {
-	bool is_target = (w == target_window());
+	bool is_target = window_has_focus_mark(w);
 	if (w->border_state == desired && w->border_focused == is_target) return;
 
 	if (desired == BORDER_NONE) {
@@ -490,9 +508,16 @@ void apply_pending_window_action(void) {
 		LOG_EVENT("ctx-menu close: \"%s\"", window->title ? window->title : "");
 		log_state();
 		break;
+	case WINDOW_ACTION_TOGGLE_DETACH:
+		md_toggle_detach(window);
+		break;
 	case WINDOW_ACTION_NONE:
 		break;
 	}
+}
+
+void md_show_shortcuts_help(void) {
+	spawn_command("maindeck-help");
 }
 
 static void osd(const char *message) {
@@ -770,6 +795,118 @@ void md_unminimize(void) {
 	log_state();
 }
 
+#define DETACH_WIDTH_PERCENT 60
+#define DETACH_HEIGHT_PERCENT 70
+#define FLOAT_MIN_WIDTH 160
+#define FLOAT_MIN_HEIGHT 100
+
+void md_toggle_detach(struct Window *window) {
+	if (window == NULL || window->closed || window->parent != NULL ||
+	    window->fullscreen || window->minimized || window->pending) return;
+	if (!window->floating) {
+		int32_t old_index = window_index(window);
+		window->floating = true;
+		window->detached = true;
+		window->autofloat = false;
+		window->float_pos_set = false;
+		window->detach_size_pending = true;
+		window->floating_size_proposed = true;
+		window->floating_clamped = true;
+		move_last(window);
+		if (old_index == 0) wm.target_index = 0;
+		wm.maximized = false;
+		clamp_target();
+		mark_visible_tiled_anim(ANIMATION_INTENT_REFLOW_EASE);
+		wm.pending_float_focus = window;
+		wm.focus_dirty = true;
+		LOG_EVENT("detach: \"%s\" app_id=%s", window->title ? window->title : "",
+			window->app_id ? window->app_id : "");
+		log_state();
+		return;
+	}
+	if (!window->detached) return;
+	window->floating = false;
+	window->detached = false;
+	window->autofloat = false;
+	window->float_pos_set = false;
+	window->detach_size_pending = false;
+	window->resize_pending = false;
+	window->floating_size_proposed = false;
+	window->floating_clamped = false;
+	window->tile_settled = false;
+	window->tile_proposed_w = window->tile_proposed_h = 0;
+	window->tile_proposed_prev_w = window->tile_proposed_prev_h = 0;
+	wl_list_remove(&window->link);
+	md_insert_new_window(window);
+	window->pending_anim = ANIMATION_INTENT_REFLOW_EASE;
+	mark_visible_tiled_anim(ANIMATION_INTENT_REFLOW_EASE);
+	LOG_EVENT("attach: \"%s\" app_id=%s", window->title ? window->title : "",
+		window->app_id ? window->app_id : "");
+}
+
+void md_float_op_begin(struct Seat *seat, struct Window *window, bool resize) {
+	if (seat->op_window != NULL || window == NULL || window->closed ||
+	    !window->floating || window->parent != NULL ||
+	    window->width <= 0 || window->height <= 0) return;
+	seat->op_kind = resize ? SEAT_OP_RESIZE : SEAT_OP_MOVE;
+	seat->op_window = window;
+	seat->op_release_pending = false;
+	seat->op_base_x = window->float_pos_set ? window->float_x : window->last_render_x;
+	seat->op_base_y = window->float_pos_set ? window->float_y : window->last_render_y;
+	seat->op_base_w = window->width;
+	seat->op_base_h = window->height;
+	window->float_x = seat->op_base_x;
+	window->float_y = seat->op_base_y;
+	window->float_pos_set = true;
+	window->op_active = true;
+	move_last(window);
+	wm.pending_float_focus = window;
+	wm.focus_dirty = true;
+	river_seat_v1_op_start_pointer(seat->obj);
+	if (resize) river_window_v1_inform_resize_start(window->obj);
+}
+
+void md_float_op_delta(struct Seat *seat, int32_t dx, int32_t dy) {
+	struct Window *window = seat->op_window;
+	if (window == NULL || window->closed) return;
+	if (seat->op_kind == SEAT_OP_MOVE) {
+		window->float_x = seat->op_base_x + dx;
+		window->float_y = seat->op_base_y + dy;
+		return;
+	}
+	int32_t w = seat->op_base_w + dx;
+	int32_t h = seat->op_base_h + dy;
+	int32_t min_w = window->min_width > FLOAT_MIN_WIDTH ? window->min_width : FLOAT_MIN_WIDTH;
+	int32_t min_h = window->min_height > FLOAT_MIN_HEIGHT ? window->min_height : FLOAT_MIN_HEIGHT;
+	if (w < min_w) w = min_w;
+	if (h < min_h) h = min_h;
+	if (window->max_width > 0 && w > window->max_width) w = window->max_width;
+	if (window->max_height > 0 && h > window->max_height) h = window->max_height;
+	window->resize_w = w;
+	window->resize_h = h;
+	window->resize_pending = true;
+}
+
+void md_float_op_end(struct Seat *seat) {
+	struct Window *window = seat->op_window;
+	river_seat_v1_op_end(seat->obj);
+	if (window != NULL) {
+		LOG_EVENT("float op end: \"%s\" %s pos=%d,%d size=%dx%d actual=%dx%d",
+			window->title ? window->title : "",
+			seat->op_kind == SEAT_OP_RESIZE ? "resize" : "move",
+			window->float_x, window->float_y,
+			seat->op_kind == SEAT_OP_RESIZE ? window->resize_w : window->width,
+			seat->op_kind == SEAT_OP_RESIZE ? window->resize_h : window->height,
+			window->width, window->height);
+		window->op_active = false;
+		if (!window->closed && seat->op_kind == SEAT_OP_RESIZE)
+			river_window_v1_inform_resize_end(window->obj);
+	}
+	seat->op_window = NULL;
+	seat->op_kind = SEAT_OP_NONE;
+	seat->op_release_pending = false;
+}
+
 struct Window *root_window(struct Window *window) {
 	struct Window *root = window;
 	int depth = 0;
@@ -913,6 +1050,21 @@ void window_manage_layout(struct Window *window, size_t index, const struct Layo
 		// Sem propose_dimensions o river nunca envia o configure inicial e a
 		// janela nunca é exibida ("The window will not be displayed until the
 		// first dimensions event is received").
+		if (window->detach_size_pending) {
+			int32_t w = (view->output.width * DETACH_WIDTH_PERCENT) / 100;
+			int32_t h = (view->output.height * DETACH_HEIGHT_PERCENT) / 100;
+			if (window->min_width > w) w = window->min_width;
+			if (window->min_height > h) h = window->min_height;
+			if (window->max_width > 0 && w > window->max_width) w = window->max_width;
+			if (window->max_height > 0 && h > window->max_height) h = window->max_height;
+			river_window_v1_propose_dimensions(window->obj, w, h);
+			window->detach_size_pending = false;
+		}
+		if (window->resize_pending) {
+			river_window_v1_propose_dimensions(window->obj, window->resize_w, window->resize_h);
+			LOG_EVENT("float resize propose: \"%s\" %dx%d", window->title ? window->title : "", window->resize_w, window->resize_h);
+			window->resize_pending = false;
+		}
 		if (!window->floating_size_proposed) {
 			// (0,0): o cliente decide o próprio tamanho (protocolo permite explicitamente).
 			river_window_v1_propose_dimensions(window->obj, 0, 0);
@@ -1086,14 +1238,23 @@ void window_render_layout(struct Window *window, size_t index, const struct Layo
 			md_send_animation_intent(window, intent);
 		}
 		window_set_visible(window, true);
-		window_apply_borders(window, BORDER_NONE);
+		window_apply_borders(window, BORDER_TILED);
 		// Centraliza na área útil assim que as dimensões reais são conhecidas.
 		if (window->width > 0 && window->height > 0) {
 			int32_t cx = view->output.x + (view->output.width - window->width) / 2;
 			int32_t cy = view->output.y + (view->output.height - window->height) / 2;
 			if (cx < view->output.x) cx = view->output.x;
 			if (cy < view->output.y) cy = view->output.y;
-			if (was_visible && visible) {
+			if (window->float_pos_set) {
+				// Posição escolhida pelo usuário: mantém um pedaço da janela e a
+				// barra de título dentro da área útil, para nunca ficar inalcançável.
+				int32_t min_x = view->output.x - window->width + 80;
+				int32_t max_x = view->output.x + view->output.width - 80;
+				int32_t max_y = view->output.y + view->output.height - 40;
+				cx = window->float_x < min_x ? min_x : (window->float_x > max_x ? max_x : window->float_x);
+				cy = window->float_y < view->output.y ? view->output.y : (window->float_y > max_y ? max_y : window->float_y);
+			}
+			if (was_visible && visible && !window->op_active) {
 				AnimationIntent intent = ANIMATION_INTENT_NONE;
 				bool pos_changed = (cx != window->last_render_x || cy != window->last_render_y);
 				bool size_changed = (window->width != window->last_render_width || window->height != window->last_render_height);

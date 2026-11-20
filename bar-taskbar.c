@@ -594,6 +594,10 @@ void bar_taskbar_set_wm_windows(const char *msg) {
     int  max_n = 0;
     char hidden_ids[BAR_MAX_TOPLEVELS][33];
     int  hidden_n = 0;
+    char detached_ids[BAR_MAX_TOPLEVELS][33];
+    int  detached_n = 0;
+    char floating_ids[BAR_MAX_TOPLEVELS][33];
+    int  floating_n = 0;
     int n = 0;
     while (*p != '\0' && n < BAR_MAX_TOPLEVELS) {
         while (*p == ' ' || *p == '\n') p++;
@@ -601,7 +605,9 @@ void bar_taskbar_set_wm_windows(const char *msg) {
         bool minimized = (*p == '!');
         bool maximized = (*p == '+');
         bool hidden = (*p == '#');
-        if (minimized || maximized || hidden) p++; /* pula o prefixo */
+        bool detached = (*p == '^');
+        bool floating_rule = (*p == '~');
+        if (minimized || maximized || hidden || detached || floating_rule) p++; /* pula o prefixo */
         const char *start = p;
         while (*p != '\0' && *p != ' ' && *p != '\n') p++;
         size_t len = (size_t)(p - start);
@@ -622,6 +628,16 @@ void bar_taskbar_set_wm_windows(const char *msg) {
                 memcpy(hidden_ids[hidden_n], start, len);
                 hidden_ids[hidden_n][len] = '\0';
                 hidden_n++;
+            }
+            if (detached && detached_n < BAR_MAX_TOPLEVELS) {
+                memcpy(detached_ids[detached_n], start, len);
+                detached_ids[detached_n][len] = '\0';
+                detached_n++;
+            }
+            if ((detached || floating_rule) && floating_n < BAR_MAX_TOPLEVELS) {
+                memcpy(floating_ids[floating_n], start, len);
+                floating_ids[floating_n][len] = '\0';
+                floating_n++;
             }
             n++;
         }
@@ -646,6 +662,16 @@ void bar_taskbar_set_wm_windows(const char *msg) {
         for (int j = 0; j < hidden_n; j++) {
             if (strcmp(hidden_ids[j], tl->identifier) == 0) { hid = true; break; }
         }
+        bool det = false;
+        for (int j = 0; j < detached_n; j++) {
+            if (strcmp(detached_ids[j], tl->identifier) == 0) { det = true; break; }
+        }
+        bool flt = false;
+        for (int j = 0; j < floating_n; j++) {
+            if (strcmp(floating_ids[j], tl->identifier) == 0) { flt = true; break; }
+        }
+        tl->detached = det;
+        tl->floating = flt;
         if (tl->minimized != min) {
             tl->minimized = min;
             bar_request_redraw_flags(bar, BAR_DIRTY_TASKBAR);

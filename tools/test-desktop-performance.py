@@ -34,7 +34,7 @@ with tempfile.TemporaryDirectory(prefix='maindeck-desktop-perf-') as directory:
     env.pop('WAYLAND_DISPLAY',None)
     processes=[]
     with (tmp/'session.txt').open('w') as log:
-        river=subprocess.Popen([str(Path.home()/'.local/bin/river'),'-no-xwayland','-c',str(init)],env=env,stdout=log,stderr=log,start_new_session=True)
+        river=subprocess.Popen([os.environ.get('RIVER_BIN', str(Path.home()/'.local/bin/river')),'-no-xwayland','-c',str(init)],env=env,stdout=log,stderr=log,start_new_session=True)
         try:
             wait_for(lambda:(runtime/'maindeck-wm.sock').is_socket(),'WM did not start')
             env['WAYLAND_DISPLAY']=next(p.name for p in runtime.glob('wayland-*') if p.is_socket())

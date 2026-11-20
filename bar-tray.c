@@ -768,7 +768,7 @@ static int              g_menu_win_idx   = -1;
 static char             g_menu_win_id[33] = "";
 
 /* WindowAction codificada em MenuItem.id para linhas do menu de janela. */
-enum { WIN_ACT_CLOSE = 1, WIN_ACT_MAXIMIZE, WIN_ACT_MINIMIZE, WIN_ACT_RESTORE };
+enum { WIN_ACT_CLOSE = 1, WIN_ACT_MAXIMIZE, WIN_ACT_MINIMIZE, WIN_ACT_RESTORE, WIN_ACT_DETACH };
 
 static void menu_shm_create(int w, int h) {
     struct BarState *bar = &g_bar;
@@ -1210,9 +1210,13 @@ void bar_taskbar_open_menu(int idx, int icon_x, int icon_w, uint32_t serial) {
     bool fullscreen = tl->fullscreen;
 
     bool en_close    = true; /* sempre */
-    bool en_max      = has_id && !minimized && !maximized && !fullscreen;
-    bool en_min      = has_id && !minimized && !hidden; /* maximizada PODE minimizar; escondida NÃO */
-    bool en_restore  = has_id && (minimized || maximized);
+    bool floating = tl->floating;      /* fora do MainDeck: sem maximizar/minimizar/restaurar */
+    bool en_max      = has_id && !floating && !minimized && !maximized && !fullscreen;
+    bool en_min      = has_id && !floating && !minimized && !hidden; /* maximizada PODE minimizar; escondida NÃO */
+    bool en_restore  = has_id && !floating && (minimized || maximized);
+    /* Destacar (tiled → flutuante) ou Encaixar (destacada → MAIN). Flutuante por
+     * regra/heurística (ex.: pavucontrol) não encaixa: item desabilitado. */
+    bool en_detach   = has_id && !minimized && !hidden && !fullscreen && (!floating || tl->detached);
 
     g_menu_kind    = MENU_KIND_WINDOW;
     g_menu_win_idx = idx;
@@ -1227,6 +1231,7 @@ void bar_taskbar_open_menu(int idx, int icon_x, int icon_w, uint32_t serial) {
     winmenu_add("Maximizar", WIN_ACT_MAXIMIZE, en_max);
     winmenu_add("Minimizar", WIN_ACT_MINIMIZE, en_min);
     winmenu_add("Restaurar", WIN_ACT_RESTORE, en_restore);
+    winmenu_add(tl->detached ? "Encaixar" : "Destacar", WIN_ACT_DETACH, en_detach);
     winmenu_add("Fechar",    WIN_ACT_CLOSE,    en_close);
 
     /* Taskbar fica à esquerda: âncora no TOPO-esquerda da barra (y=0) + gravity
@@ -1340,6 +1345,9 @@ void bar_tray_menu_activate(int row, uint32_t time) {
             break;
         case WIN_ACT_MINIMIZE:
             bar_taskbar_send_wm("minimize", g_menu_win_id);
+            break;
+        case WIN_ACT_DETACH:
+            bar_taskbar_send_wm("detach", g_menu_win_id);
             break;
         case WIN_ACT_RESTORE:
             bar_taskbar_send_wm("restore", g_menu_win_id);

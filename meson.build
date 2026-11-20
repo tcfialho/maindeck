@@ -176,6 +176,18 @@ executable(
 )
 
 executable(
+  'maindeck-help',
+  'maindeck-help.c',
+  bar_protocols,
+  dependencies: [
+    wayland_client,
+    cairo_dep,
+    pangocairo,
+  ],
+  install: true,
+)
+
+executable(
   'maindeck-toplevel-smoke',
   'tools/toplevel-smoke.c',
   toplevel_protocols,
